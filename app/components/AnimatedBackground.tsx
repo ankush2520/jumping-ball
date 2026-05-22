@@ -24,7 +24,6 @@ export default function AnimatedBackground(): JSX.Element {
       r: number;
       hue: number;
       alpha: number;
-      life: number;
     };
 
     let particles: Particle[] = [];
@@ -42,22 +41,22 @@ export default function AnimatedBackground(): JSX.Element {
     };
 
     const initParticles = () => {
-      const area = width * height;
-      const density = Math.max(28, Math.min(160, Math.round(area / 14000)));
-      particles = new Array(density).fill(0).map(() => {
-        const speed = 0.08 + Math.random() * 0.6; // base speed
+      // Drastically reduced particle count for performance
+      const density = width < 768 ? 12 : 16;
+      particles = [];
+      for (let i = 0; i < density; i++) {
+        const speed = 0.15 + Math.random() * 0.35;
         const angle = Math.random() * Math.PI * 2;
-        return {
+        particles.push({
           x: Math.random() * width,
           y: Math.random() * height,
           vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed * 0.6,
-          r: 1 + Math.random() * 8,
-          hue: 230 - Math.random() * 60, // blue -> purple
-          alpha: 0.06 + Math.random() * 0.28,
-          life: 0,
-        } as Particle;
-      });
+          vy: Math.sin(angle) * speed * 0.5,
+          r: 2 + Math.random() * 4,
+          hue: 230 - Math.random() * 60,
+          alpha: 0.1 + Math.random() * 0.2,
+        });
+      }
     };
 
     let lastT = performance.now();
@@ -87,61 +86,29 @@ export default function AnimatedBackground(): JSX.Element {
       ctx.fillRect(0, 0, width, height);
     }
 
-    function drawFog(t: number) {
-      // subtle moving fog using large soft circles
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
-      const fogAlpha = 0.06;
-      for (let i = 0; i < 3; i++) {
-        const sx = (Math.sin(t * 0.00012 + i) * 0.5 + 0.5) * width;
-        const sy = (Math.cos(t * 0.00009 + i * 1.3) * 0.5 + 0.5) * height;
-        const rad = Math.max(width, height) * (0.45 + i * 0.12);
-        const fg = ctx.createRadialGradient(sx, sy, 0, sx, sy, rad);
-        fg.addColorStop(0, `rgba(90,60,140,${fogAlpha})`);
-        fg.addColorStop(0.4, `rgba(30,20,60,${fogAlpha * 0.9})`);
-        fg.addColorStop(1, "rgba(0,0,0,0)");
-        ctx.fillStyle = fg;
-        ctx.fillRect(0, 0, width, height);
-      }
-      ctx.restore();
-    }
-
     function updateAndRender(t: number) {
       const now = t;
-      const dt = Math.min(48, now - lastT) / 16.6667; // normalize to ~60fps
+      const dt = Math.min(48, now - lastT) / 16.6667;
       lastT = now;
 
-      // cinematic gradient base
       drawGradient();
 
-      // subtle moving fog
-      drawFog(t);
-
-      // particles glow
-      ctx.save();
-      ctx.globalCompositeOperation = "lighter";
+      ctx.globalCompositeOperation = "screen";
       for (let p of particles) {
-        p.x += p.vx * dt * (0.6 + Math.sin(t * 0.0005 + p.r) * 0.4);
-        p.y += p.vy * dt * (0.6 + Math.cos(t * 0.0003 + p.r) * 0.4);
-        p.life += dt * 0.02;
+        p.x += p.vx * 0.5;
+        p.y += p.vy * 0.5;
 
-        // wrap edges
         if (p.x < -p.r) p.x = width + p.r;
         if (p.x > width + p.r) p.x = -p.r;
         if (p.y < -p.r) p.y = height + p.r;
         if (p.y > height + p.r) p.y = -p.r;
 
         ctx.beginPath();
-        const col = `hsla(${p.hue} 70% 60% / ${p.alpha})`;
-        ctx.fillStyle = col;
-        ctx.shadowBlur = p.r * 8;
-        ctx.shadowColor = `hsla(${p.hue} 80% 60% / ${Math.min(0.9, p.alpha + 0.2)})`;
+        ctx.fillStyle = `hsla(${p.hue} 70% 50% / ${p.alpha})`;
         ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.restore();
-
-      // soft vignette to add cinematic depth
+      ctx.globalCompositeOperation = "source-over";
       drawVignette();
 
       raf = requestAnimationFrame(updateAndRender);
