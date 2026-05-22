@@ -923,7 +923,13 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
             width: 52px;
             height: 52px;
           }
-        }
+        git worktree add /tmp/gh-pages gh-pages || (git checkout -b gh-pages)
+        rm -rf /tmp/gh-pages/*
+        cp -R out/* /tmp/gh-pages/
+        cd /tmp/gh-pages
+        git add .
+        git commit -m "Publish site"
+        git push origin gh-pages --force        }
       `}</style>
     </div>
   );
