@@ -8,7 +8,16 @@ export default function Home() {
   const [showSimulation, setShowSimulation] = useState(false);
 
   return (
-    <div style={{ minHeight: "100vh", position: "relative" }}>
+    <div
+      style={{
+        minHeight: "100vh",
+        position: "relative",
+        width: "100%",
+        maxWidth: "100%",
+        overflowX: "hidden",
+        overflowY: "visible",
+      }}
+    >
       {showSimulation ? (
         <>
           <button

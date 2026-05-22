@@ -14,10 +14,20 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html {
+  min-height: 100%;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
-  overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
   background:
     radial-gradient(
       circle at top left,
@@ -37,8 +47,9 @@ body {
 
 canvas {
   display: block;
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  min-height: 100vh;
+  height: auto;
 }
 
 /* Animated background canvas */
