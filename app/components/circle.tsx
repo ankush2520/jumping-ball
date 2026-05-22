@@ -11,14 +11,16 @@ type GravityBall = {
   mass: number;
   color: string;
   glow: string;
+  slowTime: number;
 };
 
-type GravityWell = {
+type BlackHole = {
   x: number;
   y: number;
-  strength: number;
   radius: number;
-  createdAt: number;
+  targetRadius: number;
+  strength: number;
+  mass: number;
 };
 
 type Arena = {
@@ -27,16 +29,24 @@ type Arena = {
   dpr: number;
 };
 
-const BALL_COUNT = 18;
-const MIN_RADIUS = 8;
-const MAX_RADIUS = 24;
+type CycleState = {
+  phase: "running" | "collapse" | "explosion";
+  phaseStartedAt: number;
+  shockwaveAt: number;
+};
+
+const BALL_COUNT = 26;
+const BALL_SPEED_SCALE = 1.2;
+const MIN_RADIUS = 7;
+const MAX_RADIUS = 19;
+const BASE_HOLE_RADIUS = 18;
+const BASE_GRAVITY = 52000;
 const WALL_RESTITUTION = 0.94;
-const BALL_RESTITUTION = 0.92;
-const MAX_SPEED = 620;
-const WELL_STRENGTH = 82000;
-const WELL_SOFTENING = 5200;
-const SWIRL_FORCE = 34;
-const MAX_WELLS = 5;
+const BALL_RESTITUTION = 0.9;
+const MAX_SPEED = 880;
+const MIN_SPEED = 140;
+const COLLAPSE_PAUSE = 0.9;
+const EXPLOSION_TIME = 1.25;
 
 const palette = [
   { color: "#67e8f9", glow: "rgba(103, 232, 249, 0.62)" },
@@ -57,35 +67,93 @@ const clampSpeed = (ball: GravityBall) => {
   ball.vy *= scale;
 };
 
-const createBall = (arena: Arena, index: number): GravityBall => {
+const enforceMinimumSpeed = (
+  ball: GravityBall,
+  blackHole: BlackHole,
+  dt: number,
+) => {
+  const speed = Math.hypot(ball.vx, ball.vy);
+  if (speed >= MIN_SPEED) {
+    ball.slowTime = 0;
+    return;
+  }
+
+  const dx = blackHole.x - ball.x;
+  const dy = blackHole.y - ball.y;
+  const distance = Math.hypot(dx, dy) || 1;
+  const nx = dx / distance;
+  const ny = dy / distance;
+  const directionX = speed > 0.001 ? ball.vx / speed : -ny;
+  const directionY = speed > 0.001 ? ball.vy / speed : nx;
+  const boostScale = MIN_SPEED / Math.max(speed, 1);
+
+  ball.vx = directionX * speed * boostScale;
+  ball.vy = directionY * speed * boostScale;
+  ball.slowTime += dt;
+
+  if (ball.slowTime > 0.5) {
+    const impulse = MIN_SPEED * 0.42;
+    const massScale = blackHole.radius / BASE_HOLE_RADIUS;
+    ball.vx += (-ny * 0.75 - nx * 0.25) * impulse * massScale;
+    ball.vy += (nx * 0.75 - ny * 0.25) * impulse * massScale;
+    ball.slowTime = 0;
+  }
+};
+
+const createBlackHole = (arena: Arena): BlackHole => ({
+  x: arena.width / 2,
+  y: arena.height / 2,
+  radius: BASE_HOLE_RADIUS,
+  targetRadius: BASE_HOLE_RADIUS,
+  strength: BASE_GRAVITY,
+  mass: 1,
+});
+
+const createOrbitBall = (arena: Arena, index: number): GravityBall => {
   const radius = randomBetween(MIN_RADIUS, MAX_RADIUS);
   const angle = randomBetween(0, Math.PI * 2);
   const orbitRadius = randomBetween(
-    Math.min(arena.width, arena.height) * 0.14,
-    Math.min(arena.width, arena.height) * 0.38,
+    Math.min(arena.width, arena.height) * 0.22,
+    Math.min(arena.width, arena.height) * 0.45,
   );
-  const speed = randomBetween(90, 260);
+  const speed = randomBetween(120, 285);
   const tone = palette[index % palette.length];
 
   return {
     x: arena.width / 2 + Math.cos(angle) * orbitRadius,
     y: arena.height / 2 + Math.sin(angle) * orbitRadius,
-    vx: Math.cos(angle + Math.PI / 2) * speed + randomBetween(-70, 70),
-    vy: Math.sin(angle + Math.PI / 2) * speed + randomBetween(-70, 70),
+    vx:
+      (Math.cos(angle + Math.PI / 2) * speed + randomBetween(-90, 90)) *
+      BALL_SPEED_SCALE,
+    vy:
+      (Math.sin(angle + Math.PI / 2) * speed + randomBetween(-90, 90)) *
+      BALL_SPEED_SCALE,
     radius,
     mass: radius * radius,
     color: tone.color,
     glow: tone.glow,
+    slowTime: 0,
   };
 };
 
-const createWell = (x: number, y: number, createdAt: number): GravityWell => ({
-  x,
-  y,
-  strength: WELL_STRENGTH,
-  radius: 150,
-  createdAt,
-});
+const createExplosionBall = (arena: Arena, index: number): GravityBall => {
+  const radius = randomBetween(MIN_RADIUS, MAX_RADIUS);
+  const angle = (index / BALL_COUNT) * Math.PI * 2 + randomBetween(-0.16, 0.16);
+  const speed = randomBetween(430, 760);
+  const tone = palette[index % palette.length];
+
+  return {
+    x: arena.width / 2 + Math.cos(angle) * (BASE_HOLE_RADIUS + radius + 4),
+    y: arena.height / 2 + Math.sin(angle) * (BASE_HOLE_RADIUS + radius + 4),
+    vx: (Math.cos(angle) * speed + randomBetween(-70, 70)) * BALL_SPEED_SCALE,
+    vy: (Math.sin(angle) * speed + randomBetween(-70, 70)) * BALL_SPEED_SCALE,
+    radius,
+    mass: radius * radius,
+    color: tone.color,
+    glow: tone.glow,
+    slowTime: 0,
+  };
+};
 
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -145,13 +213,11 @@ const resolveBallCollision = (ballA: GravityBall, ballB: GravityBall) => {
   const impulse =
     (-(1 + BALL_RESTITUTION) * velocityAlongNormal) /
     (1 / ballA.mass + 1 / ballB.mass);
-  const impulseX = impulse * nx;
-  const impulseY = impulse * ny;
 
-  ballA.vx -= impulseX / ballA.mass;
-  ballA.vy -= impulseY / ballA.mass;
-  ballB.vx += impulseX / ballB.mass;
-  ballB.vy += impulseY / ballB.mass;
+  ballA.vx -= (impulse * nx) / ballA.mass;
+  ballA.vy -= (impulse * ny) / ballA.mass;
+  ballB.vx += (impulse * nx) / ballB.mass;
+  ballB.vy += (impulse * ny) / ballB.mass;
 
   clampSpeed(ballA);
   clampSpeed(ballB);
@@ -161,24 +227,26 @@ const drawBackground = (
   ctx: CanvasRenderingContext2D,
   arena: Arena,
   time: number,
+  blackHole: BlackHole,
   alpha = 1,
 ) => {
   const { width, height } = arena;
+  const massGlow = Math.min(1, (blackHole.mass - 1) / BALL_COUNT);
+
   ctx.save();
   ctx.globalAlpha = alpha;
   const gradient = ctx.createLinearGradient(0, 0, width, height);
-  gradient.addColorStop(0, "#050814");
-  gradient.addColorStop(0.48, "#070b1f");
-  gradient.addColorStop(1, "#03131d");
+  gradient.addColorStop(0, "#030712");
+  gradient.addColorStop(0.5, "#06091d");
+  gradient.addColorStop(1, "#020b12");
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, width, height);
 
-  ctx.save();
-  ctx.globalAlpha = 0.22;
-  ctx.strokeStyle = "rgba(125, 249, 255, 0.08)";
+  ctx.globalAlpha = 0.12;
+  ctx.strokeStyle = "rgba(125, 249, 255, 0.06)";
   ctx.lineWidth = 1;
-  const grid = 72;
-  const offset = (time * 10) % grid;
+  const grid = 82;
+  const offset = (time * (7 + massGlow * 12)) % grid;
   for (let x = -grid + offset; x < width + grid; x += grid) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
@@ -191,114 +259,139 @@ const drawBackground = (
     ctx.lineTo(width, y);
     ctx.stroke();
   }
-  ctx.restore();
 
-  const wellGlow = ctx.createRadialGradient(
-    width / 2,
-    height / 2,
-    20,
-    width / 2,
-    height / 2,
-    Math.min(width, height) * 0.46,
+  ctx.globalAlpha = alpha;
+  const glow = ctx.createRadialGradient(
+    blackHole.x,
+    blackHole.y,
+    blackHole.radius,
+    blackHole.x,
+    blackHole.y,
+    Math.min(width, height) * (0.42 + massGlow * 0.16),
   );
-  wellGlow.addColorStop(0, "rgba(125, 249, 255, 0.18)");
-  wellGlow.addColorStop(0.26, "rgba(96, 165, 250, 0.08)");
-  wellGlow.addColorStop(0.62, "rgba(168, 85, 247, 0.05)");
-  wellGlow.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = wellGlow;
+  glow.addColorStop(0, `rgba(125, 249, 255, ${0.12 + massGlow * 0.16})`);
+  glow.addColorStop(0.28, `rgba(96, 165, 250, ${0.07 + massGlow * 0.09})`);
+  glow.addColorStop(0.62, `rgba(168, 85, 247, ${0.035 + massGlow * 0.06})`);
+  glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = glow;
   ctx.fillRect(0, 0, width, height);
   ctx.restore();
 };
 
-const drawWell = (
+const drawBlackHole = (
   ctx: CanvasRenderingContext2D,
-  well: GravityWell,
+  blackHole: BlackHole,
   time: number,
+  cycle: CycleState,
 ) => {
-  const age = Math.max(0, time - well.createdAt);
-  const entrance = Math.min(1, age / 0.35);
-  const pulse = Math.sin(time * 2.4 + well.x * 0.01) * 0.5 + 0.5;
-  const rippleRadius = well.radius * (0.38 + pulse * 0.18);
-  const coreRadius = 18 + pulse * 3;
+  const massRatio = Math.min(1, (blackHole.mass - 1) / BALL_COUNT);
+  const pulse = Math.sin(time * (2.1 + massRatio)) * 0.5 + 0.5;
+  const coreRadius = blackHole.radius;
+  const ringRadius = coreRadius * (2.05 + pulse * 0.08);
+  const collapseBoost = cycle.phase === "collapse" ? 1.35 : 1;
 
   ctx.save();
+  ctx.translate(blackHole.x, blackHole.y);
   ctx.globalCompositeOperation = "lighter";
-  ctx.translate(well.x, well.y);
-  ctx.scale(entrance, entrance);
 
-  const light = ctx.createRadialGradient(0, 0, 0, 0, 0, well.radius * 1.45);
-  light.addColorStop(0, `rgba(255, 255, 255, ${0.16 + pulse * 0.05})`);
-  light.addColorStop(0.12, "rgba(125, 249, 255, 0.2)");
-  light.addColorStop(0.32, "rgba(96, 165, 250, 0.08)");
-  light.addColorStop(0.58, "rgba(88, 28, 135, 0.055)");
-  light.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = light;
-  ctx.fillRect(
-    -well.radius * 1.5,
-    -well.radius * 1.5,
-    well.radius * 3,
-    well.radius * 3,
-  );
+  const halo = ctx.createRadialGradient(0, 0, coreRadius, 0, 0, coreRadius * 8);
+  halo.addColorStop(0, `rgba(255, 255, 255, ${0.14 + massRatio * 0.08})`);
+  halo.addColorStop(0.1, `rgba(125, 249, 255, ${0.2 + massRatio * 0.18})`);
+  halo.addColorStop(0.36, `rgba(96, 165, 250, ${0.08 + massRatio * 0.12})`);
+  halo.addColorStop(0.66, `rgba(168, 85, 247, ${0.04 + massRatio * 0.08})`);
+  halo.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = halo;
+  ctx.fillRect(-coreRadius * 8, -coreRadius * 8, coreRadius * 16, coreRadius * 16);
 
-  const distortion = ctx.createRadialGradient(0, 0, coreRadius, 0, 0, well.radius);
+  ctx.save();
+  ctx.rotate(time * (0.42 + massRatio * 0.24));
+  const accretion = ctx.createRadialGradient(0, 0, coreRadius, 0, 0, ringRadius * 1.55);
+  accretion.addColorStop(0, "rgba(0, 0, 0, 0)");
+  accretion.addColorStop(0.34, `rgba(255, 255, 255, ${0.22 * collapseBoost})`);
+  accretion.addColorStop(0.43, `rgba(125, 249, 255, ${0.28 * collapseBoost})`);
+  accretion.addColorStop(0.54, `rgba(167, 139, 250, ${0.16 * collapseBoost})`);
+  accretion.addColorStop(0.72, "rgba(0, 0, 0, 0)");
+  ctx.scale(1.45, 0.38);
+  ctx.fillStyle = accretion;
+  ctx.beginPath();
+  ctx.arc(0, 0, ringRadius * 1.55, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  const distortion = ctx.createRadialGradient(0, 0, coreRadius * 0.9, 0, 0, coreRadius * 4.2);
   distortion.addColorStop(0, "rgba(0, 0, 0, 0)");
-  distortion.addColorStop(0.36, "rgba(125, 249, 255, 0.035)");
-  distortion.addColorStop(0.44, "rgba(255, 255, 255, 0.12)");
-  distortion.addColorStop(0.5, "rgba(125, 249, 255, 0.035)");
+  distortion.addColorStop(0.46, `rgba(255, 255, 255, ${0.09 + massRatio * 0.08})`);
+  distortion.addColorStop(0.52, `rgba(125, 249, 255, ${0.04 + massRatio * 0.06})`);
   distortion.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = distortion;
-  ctx.fillRect(-well.radius, -well.radius, well.radius * 2, well.radius * 2);
-
-  ctx.strokeStyle = `rgba(125, 249, 255, ${0.08 + pulse * 0.04})`;
-  ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.arc(0, 0, rippleRadius, 0, Math.PI * 2);
-  ctx.stroke();
+  ctx.arc(0, 0, coreRadius * 4.2, 0, Math.PI * 2);
+  ctx.fill();
 
-  for (let i = 0; i < 16; i++) {
-    const lane = i % 4;
-    const angle = -time * (1.1 + lane * 0.16) + i * ((Math.PI * 2) / 16);
-    const radius =
-      well.radius * (0.18 + lane * 0.07) +
-      Math.sin(time * 2 + i) * 4;
-    const size = 1 + lane * 0.35;
-    const alpha = 0.34 + (3 - lane) * 0.08;
+  for (let i = 0; i < 28; i++) {
+    const lane = i % 5;
+    const angle = -time * (1.2 + lane * 0.18 + massRatio * 0.7) + i * 0.84;
+    const radius = coreRadius * (1.55 + lane * 0.38) + Math.sin(time * 2 + i) * 5;
+    const size = 0.9 + lane * 0.22;
+    const alpha = 0.22 + massRatio * 0.2 + (4 - lane) * 0.025;
     ctx.fillStyle =
       i % 2 === 0
         ? `rgba(125, 249, 255, ${alpha})`
         : `rgba(167, 139, 250, ${alpha * 0.8})`;
     ctx.beginPath();
-    ctx.arc(
-      Math.cos(angle) * radius,
-      Math.sin(angle) * radius,
-      size,
-      0,
-      Math.PI * 2,
-    );
+    ctx.arc(Math.cos(angle) * radius, Math.sin(angle) * radius, size, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  const accretion = ctx.createRadialGradient(0, 0, coreRadius, 0, 0, 62);
-  accretion.addColorStop(0, "rgba(0, 0, 0, 0)");
-  accretion.addColorStop(0.24, "rgba(255, 255, 255, 0.3)");
-  accretion.addColorStop(0.38, "rgba(125, 249, 255, 0.22)");
-  accretion.addColorStop(0.62, "rgba(96, 165, 250, 0.08)");
-  accretion.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = accretion;
-  ctx.beginPath();
-  ctx.arc(0, 0, 64, 0, Math.PI * 2);
-  ctx.fill();
-
   ctx.globalCompositeOperation = "source-over";
-  const core = ctx.createRadialGradient(0, 0, 0, 0, 0, coreRadius * 1.6);
+  const core = ctx.createRadialGradient(0, 0, 0, 0, 0, coreRadius * 1.45);
   core.addColorStop(0, "rgba(0, 0, 0, 1)");
-  core.addColorStop(0.52, "rgba(1, 4, 12, 0.98)");
-  core.addColorStop(0.7, "rgba(6, 182, 212, 0.22)");
+  core.addColorStop(0.62, "rgba(0, 0, 0, 0.98)");
+  core.addColorStop(0.74, `rgba(6, 182, 212, ${0.24 + massRatio * 0.18})`);
   core.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = core;
   ctx.beginPath();
-  ctx.arc(0, 0, coreRadius * 1.7, 0, Math.PI * 2);
+  ctx.arc(0, 0, coreRadius * 1.45, 0, Math.PI * 2);
   ctx.fill();
+  ctx.restore();
+};
+
+const drawExplosion = (
+  ctx: CanvasRenderingContext2D,
+  arena: Arena,
+  cycle: CycleState,
+  time: number,
+) => {
+  if (cycle.shockwaveAt <= 0) return;
+  const age = time - cycle.shockwaveAt;
+  if (age < 0 || age > EXPLOSION_TIME) return;
+
+  const progress = age / EXPLOSION_TIME;
+  const radius = Math.max(arena.width, arena.height) * progress;
+  const alpha = 1 - progress;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.strokeStyle = `rgba(125, 249, 255, ${0.55 * alpha})`;
+  ctx.lineWidth = 2 + 12 * alpha;
+  ctx.beginPath();
+  ctx.arc(arena.width / 2, arena.height / 2, radius, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const flash = ctx.createRadialGradient(
+    arena.width / 2,
+    arena.height / 2,
+    0,
+    arena.width / 2,
+    arena.height / 2,
+    Math.min(arena.width, arena.height) * (0.18 + progress * 0.52),
+  );
+  flash.addColorStop(0, `rgba(255, 255, 255, ${0.34 * alpha})`);
+  flash.addColorStop(0.18, `rgba(125, 249, 255, ${0.28 * alpha})`);
+  flash.addColorStop(0.48, `rgba(167, 139, 250, ${0.16 * alpha})`);
+  flash.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = flash;
+  ctx.fillRect(0, 0, arena.width, arena.height);
   ctx.restore();
 };
 
@@ -334,8 +427,13 @@ const drawBall = (ctx: CanvasRenderingContext2D, ball: GravityBall) => {
 const Circle = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ballsRef = useRef<GravityBall[]>([]);
-  const wellsRef = useRef<GravityWell[]>([]);
+  const blackHoleRef = useRef<BlackHole | null>(null);
   const arenaRef = useRef<Arena>({ width: 0, height: 0, dpr: 1 });
+  const cycleRef = useRef<CycleState>({
+    phase: "running",
+    phaseStartedAt: 0,
+    shockwaveAt: -Infinity,
+  });
   const animationRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
 
@@ -344,66 +442,101 @@ const Circle = () => {
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
 
+    const spawnOrbitBalls = () => {
+      ballsRef.current = Array.from({ length: BALL_COUNT }, (_, index) =>
+        createOrbitBall(arenaRef.current, index),
+      );
+    };
+
+    const respawnFromExplosion = (time: number) => {
+      ballsRef.current = Array.from({ length: BALL_COUNT }, (_, index) =>
+        createExplosionBall(arenaRef.current, index),
+      );
+      blackHoleRef.current = createBlackHole(arenaRef.current);
+      cycleRef.current = {
+        phase: "explosion",
+        phaseStartedAt: time,
+        shockwaveAt: time,
+      };
+    };
+
     const resetArena = () => {
       arenaRef.current = resizeCanvas(canvas);
-      if (ballsRef.current.length === 0) {
-        ballsRef.current = Array.from({ length: BALL_COUNT }, (_, index) =>
-          createBall(arenaRef.current, index),
-        );
-        wellsRef.current = [
-          createWell(
-            arenaRef.current.width / 2,
-            arenaRef.current.height / 2,
-            performance.now() / 1000,
-          ),
-        ];
-      } else {
-        ballsRef.current.forEach((ball) => {
-          ball.x = Math.min(
-            Math.max(ball.x, ball.radius),
-            arenaRef.current.width - ball.radius,
-          );
-          ball.y = Math.min(
-            Math.max(ball.y, ball.radius),
-            arenaRef.current.height - ball.radius,
-          );
-        });
-        wellsRef.current.forEach((well) => {
-          well.x = Math.min(Math.max(well.x, 0), arenaRef.current.width);
-          well.y = Math.min(Math.max(well.y, 0), arenaRef.current.height);
-        });
-      }
+      blackHoleRef.current = createBlackHole(arenaRef.current);
+      spawnOrbitBalls();
+      cycleRef.current = {
+        phase: "running",
+        phaseStartedAt: performance.now() / 1000,
+        shockwaveAt: -Infinity,
+      };
     };
 
-    const addWell = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      const rect = canvas.getBoundingClientRect();
-      const x = event.clientX - rect.left;
-      const y = event.clientY - rect.top;
-      wellsRef.current = [
-        ...wellsRef.current.slice(-(MAX_WELLS - 1)),
-        createWell(x, y, performance.now() / 1000),
-      ];
+    const absorbBall = (blackHole: BlackHole, ball: GravityBall) => {
+      blackHole.mass += 1;
+      blackHole.targetRadius += Math.max(2.2, ball.radius * 0.24);
+      blackHole.strength += 19000 + ball.mass * 14;
     };
 
-    const stepPhysics = (dt: number) => {
+    const stepPhysics = (dt: number, time: number) => {
       const arena = arenaRef.current;
+      const blackHole = blackHoleRef.current;
+      const cycle = cycleRef.current;
+      if (!blackHole) return;
 
+      blackHole.x = arena.width / 2;
+      blackHole.y = arena.height / 2;
+      blackHole.radius += (blackHole.targetRadius - blackHole.radius) * 0.055;
+
+      if (cycle.phase === "collapse") {
+        blackHole.targetRadius += dt * 7;
+        blackHole.strength += dt * 78000;
+        if (time - cycle.phaseStartedAt > COLLAPSE_PAUSE) {
+          respawnFromExplosion(time);
+          return;
+        }
+      } else if (cycle.phase === "explosion") {
+        if (time - cycle.phaseStartedAt > EXPLOSION_TIME) {
+          cycleRef.current = {
+            phase: "running",
+            phaseStartedAt: time,
+            shockwaveAt: cycle.shockwaveAt,
+          };
+        }
+      } else {
+        blackHole.strength += dt * (2500 + blackHole.mass * 260);
+      }
+
+      const survivors: GravityBall[] = [];
       ballsRef.current.forEach((ball) => {
-        wellsRef.current.forEach((well) => {
-          const dx = well.x - ball.x;
-          const dy = well.y - ball.y;
-          const distanceSq = dx * dx + dy * dy + WELL_SOFTENING;
-          const distance = Math.sqrt(distanceSq);
-          const influence = Math.min(1, (well.radius * well.radius * 4) / distanceSq);
-          const gravity = (well.strength * influence) / distanceSq;
-          const nx = dx / distance;
-          const ny = dy / distance;
-          const swirl = SWIRL_FORCE * influence;
+        const dx = blackHole.x - ball.x;
+        const dy = blackHole.y - ball.y;
+        const actualDistance = Math.hypot(dx, dy) || 1;
+        const nx = dx / actualDistance;
+        const ny = dy / actualDistance;
+        const influenceRadius = blackHole.radius * 7;
 
-          ball.vx += (nx * gravity + -ny * swirl) * dt;
-          ball.vy += (ny * gravity + nx * swirl) * dt;
-        });
+        if (
+          cycle.phase === "running" &&
+          actualDistance < blackHole.radius + ball.radius
+        ) {
+          absorbBall(blackHole, ball);
+          return;
+        }
+
+        if (actualDistance < influenceRadius) {
+          const distanceFactor = 1 - actualDistance / influenceRadius;
+          const gravityStrength =
+            blackHole.strength * (blackHole.radius / BASE_HOLE_RADIUS);
+          const force = gravityStrength * distanceFactor * dt * 0.012;
+          const tangent =
+            (58 + blackHole.mass * 3.4) *
+            (blackHole.radius / BASE_HOLE_RADIUS) *
+            distanceFactor;
+
+          ball.vx += nx * force + -ny * tangent * dt;
+          ball.vy += ny * force + nx * tangent * dt;
+        }
+
         ball.vx *= 0.999;
         ball.vy *= 0.999;
         clampSpeed(ball);
@@ -411,37 +544,90 @@ const Circle = () => {
         ball.x += ball.vx * dt;
         ball.y += ball.vy * dt;
         resolveWallCollision(ball, arena);
+
+        if (cycle.phase === "running") {
+          const postMoveDistance = Math.hypot(
+            ball.x - blackHole.x,
+            ball.y - blackHole.y,
+          );
+          if (postMoveDistance < blackHole.radius + ball.radius) {
+            absorbBall(blackHole, ball);
+            return;
+          }
+        }
+
+        enforceMinimumSpeed(ball, blackHole, dt);
+        clampSpeed(ball);
+
+        if (
+          cycle.phase === "running" &&
+          Math.hypot(ball.x - blackHole.x, ball.y - blackHole.y) <
+            blackHole.radius + ball.radius
+        ) {
+          absorbBall(blackHole, ball);
+          return;
+        }
+
+        survivors.push(ball);
       });
+
+      ballsRef.current = survivors;
 
       for (let i = 0; i < ballsRef.current.length; i++) {
         for (let j = i + 1; j < ballsRef.current.length; j++) {
           resolveBallCollision(ballsRef.current[i], ballsRef.current[j]);
         }
       }
+
+      ballsRef.current.forEach((ball) => {
+        enforceMinimumSpeed(ball, blackHole, dt);
+        clampSpeed(ball);
+      });
+
+      if (cycle.phase === "running" && ballsRef.current.length === 0) {
+        cycleRef.current = {
+          phase: "collapse",
+          phaseStartedAt: time,
+          shockwaveAt: cycle.shockwaveAt,
+        };
+      }
     };
 
     const animate = (timeMs: number) => {
       const arena = arenaRef.current;
+      const blackHole = blackHoleRef.current;
+      const cycle = cycleRef.current;
+      if (!blackHole) return;
+
       const time = timeMs / 1000;
       const previous = lastTimeRef.current || timeMs;
       const dt = Math.min((timeMs - previous) / 1000, 0.032);
       lastTimeRef.current = timeMs;
 
-      ctx.setTransform(arena.dpr, 0, 0, arena.dpr, 0, 0);
+      const collapseAge =
+        cycle.phase === "collapse" ? time - cycle.phaseStartedAt : 0;
+      const explosionAge = time - cycle.shockwaveAt;
+      const shake =
+        Math.max(0, 1 - collapseAge / COLLAPSE_PAUSE) *
+          (cycle.phase === "collapse" ? 5 : 0) +
+        Math.max(0, 1 - explosionAge / 0.42) * 12;
+      const shakeX = shake ? randomBetween(-shake, shake) : 0;
+      const shakeY = shake ? randomBetween(-shake, shake) : 0;
 
-      ctx.fillStyle = "rgba(3, 7, 18, 0.2)";
-      ctx.fillRect(0, 0, arena.width, arena.height);
-      drawBackground(ctx, arena, time, 0.24);
-      stepPhysics(dt);
-      wellsRef.current.forEach((well) => drawWell(ctx, well, time));
+      ctx.setTransform(arena.dpr, 0, 0, arena.dpr, shakeX, shakeY);
+      ctx.fillStyle = "rgba(3, 7, 18, 0.18)";
+      ctx.fillRect(-shakeX, -shakeY, arena.width + 24, arena.height + 24);
+      drawBackground(ctx, arena, time, blackHole, 0.24);
+
+      stepPhysics(dt, time);
+      drawBlackHole(ctx, blackHole, time, cycleRef.current);
       ballsRef.current.forEach((ball) => drawBall(ctx, ball));
+      drawExplosion(ctx, arena, cycleRef.current, time);
 
       animationRef.current = requestAnimationFrame(animate);
     };
 
     resetArena();
-    canvas.style.touchAction = "none";
-    canvas.addEventListener("pointerdown", addWell);
     window.addEventListener("resize", resetArena);
     animationRef.current = requestAnimationFrame(animate);
 
@@ -449,7 +635,6 @@ const Circle = () => {
       if (animationRef.current !== null) {
         cancelAnimationFrame(animationRef.current);
       }
-      canvas.removeEventListener("pointerdown", addWell);
       window.removeEventListener("resize", resetArena);
     };
   }, []);
@@ -459,7 +644,7 @@ const Circle = () => {
       <canvas ref={canvasRef} className="gravity-canvas" />
       <div className="gravity-hud" aria-hidden="true">
         <span>Gravity Well</span>
-        <strong>Left click to create wells</strong>
+        <strong>Absorb. Collapse. Reignite.</strong>
       </div>
       <style jsx>{`
         .gravity-well {
