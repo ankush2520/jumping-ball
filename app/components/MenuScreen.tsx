@@ -100,8 +100,20 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
         >
           <circle cx="32" cy="32" r="6" fill="currentColor" />
           <ellipse cx="32" cy="32" rx="24" ry="10" />
-          <ellipse cx="32" cy="32" rx="24" ry="10" transform="rotate(60 32 32)" />
-          <ellipse cx="32" cy="32" rx="24" ry="10" transform="rotate(120 32 32)" />
+          <ellipse
+            cx="32"
+            cy="32"
+            rx="24"
+            ry="10"
+            transform="rotate(60 32 32)"
+          />
+          <ellipse
+            cx="32"
+            cy="32"
+            rx="24"
+            ry="10"
+            transform="rotate(120 32 32)"
+          />
           <circle cx="52" cy="32" r="3" fill="currentColor" opacity="0.65" />
         </svg>
       ),
@@ -124,7 +136,10 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           strokeLinecap="round"
         >
           <path d="M8 34c6-18 12 18 18 0s12-18 18 0 12 18 18 0" />
-          <path d="M8 44c6-10 12 10 18 0s12-10 18 0 12 10 18 0" opacity="0.45" />
+          <path
+            d="M8 44c6-10 12 10 18 0s12-10 18 0 12 10 18 0"
+            opacity="0.45"
+          />
           <path d="M12 22h40" opacity="0.35" />
         </svg>
       ),
@@ -174,9 +189,7 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           <h1 className="hero-title">
             PHYSICS <span className="gradient-text">LAB</span>
           </h1>
-          <p className="hero-subtitle">
-            Interactive Simulation Playground
-          </p>
+          <p className="hero-subtitle">Interactive Simulation Playground</p>
           <div className="hero-divider" />
         </div>
 
@@ -259,12 +272,7 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
               rgba(168, 85, 247, 0.1),
               transparent 28%
             ),
-            linear-gradient(
-              135deg,
-              #070b18 0%,
-              #0d1024 48%,
-              #071622 100%
-            );
+            linear-gradient(135deg, #070b18 0%, #0d1024 48%, #071622 100%);
           color: #f8fafc;
           overflow-x: hidden;
           overflow-y: visible;
@@ -277,13 +285,12 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           inset: 0;
           pointer-events: none;
           z-index: 0;
-          background:
-            linear-gradient(
-              180deg,
-              rgba(255, 255, 255, 0.035),
-              transparent 28%,
-              rgba(2, 6, 23, 0.28)
-            );
+          background: linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.035),
+            transparent 28%,
+            rgba(2, 6, 23, 0.28)
+          );
           mix-blend-mode: screen;
           opacity: 0.45;
         }
@@ -326,13 +333,12 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           inset: 0;
           pointer-events: none;
           z-index: 2;
-          background:
-            linear-gradient(
-              115deg,
-              transparent 0%,
-              rgba(125, 249, 255, 0.035) 42%,
-              transparent 68%
-            );
+          background: linear-gradient(
+            115deg,
+            transparent 0%,
+            rgba(125, 249, 255, 0.035) 42%,
+            transparent 68%
+          );
           opacity: 0.3;
           mix-blend-mode: screen;
         }
@@ -379,8 +385,7 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           position: relative;
           margin: 20px 0 0 0;
           font-family:
-            "Geist Mono", "SFMono-Regular", "Roboto Mono", "Orbitron",
-            monospace;
+            "Geist Mono", "SFMono-Regular", "Roboto Mono", "Orbitron", monospace;
           font-size: clamp(3.8rem, 10.6vw, 8.6rem);
           line-height: 0.9;
           font-weight: 900;
@@ -433,8 +438,7 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
 
         .hero-subtitle {
           margin: 22px 0 0 0;
-          font-family:
-            "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
+          font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
           font-size: clamp(0.92rem, 1.55vw, 1.18rem);
           color: rgba(226, 246, 255, 0.86);
           line-height: 1.5;
@@ -562,13 +566,12 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           position: absolute;
           inset: 1px;
           border-radius: inherit;
-          background:
-            linear-gradient(
-              155deg,
-              rgba(255, 255, 255, 0.14) 0%,
-              rgba(255, 255, 255, 0.04) 18%,
-              transparent 36%
-            );
+          background: linear-gradient(
+            155deg,
+            rgba(255, 255, 255, 0.14) 0%,
+            rgba(255, 255, 255, 0.04) 18%,
+            transparent 36%
+          );
           opacity: 0.46;
           pointer-events: none;
           mix-blend-mode: screen;
@@ -923,13 +926,7 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
             width: 52px;
             height: 52px;
           }
-        git worktree add /tmp/gh-pages gh-pages || (git checkout -b gh-pages)
-        rm -rf /tmp/gh-pages/*
-        cp -R out/* /tmp/gh-pages/
-        cd /tmp/gh-pages
-        git add .
-        git commit -m "Publish site"
-        git push origin gh-pages --force        }
+        }
       `}</style>
     </div>
   );

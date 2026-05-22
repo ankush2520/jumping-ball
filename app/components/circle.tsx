@@ -1045,11 +1045,21 @@ const Circle = () => {
       const absorbedCount = Math.max(0, Math.round(blackHole.mass - 1));
       const stability =
         cycle.phase === "collapse"
-          ? Math.max(0, Math.round(100 * (1 - (time - cycle.phaseStartedAt) / COLLAPSE_PAUSE)))
+          ? Math.max(
+              0,
+              Math.round(
+                100 * (1 - (time - cycle.phaseStartedAt) / COLLAPSE_PAUSE),
+              ),
+            )
           : Math.max(0, Math.round(100 - (absorbedCount / BALL_COUNT) * 86));
       const charge =
         cycle.phase === "collapse"
-          ? Math.min(100, Math.round(((time - cycle.phaseStartedAt) / COLLAPSE_PAUSE) * 100))
+          ? Math.min(
+              100,
+              Math.round(
+                ((time - cycle.phaseStartedAt) / COLLAPSE_PAUSE) * 100,
+              ),
+            )
           : Math.min(100, Math.round((absorbedCount / BALL_COUNT) * 100));
 
       setHudStats({
@@ -1147,6 +1157,21 @@ const Circle = () => {
     };
   }, []);
 
+  const roundedMobileCharge = Math.min(
+    100,
+    Math.max(0, Math.round(hudStats.charge / 5) * 5),
+  );
+  const mobileStatus =
+    hudStats.charge >= 100
+      ? "SUPERNOVA READY"
+      : hudStats.stability <= 18
+        ? "COLLAPSE IMMINENT"
+        : hudStats.stage === "Critical" || hudStats.charge >= 76
+          ? "CRITICAL MASS"
+          : hudStats.charge >= 60
+            ? `SUPERNOVA ${roundedMobileCharge}%`
+            : "";
+
   return (
     <div className="gravity-well">
       <canvas ref={canvasRef} className="gravity-canvas" />
@@ -1165,6 +1190,15 @@ const Circle = () => {
         </div>
         <p>{hudStats.stage}</p>
       </div>
+      {mobileStatus ? (
+        <div
+          key={mobileStatus}
+          className="mobile-gravity-status"
+          aria-label="Black hole alert"
+        >
+          {mobileStatus}
+        </div>
+      ) : null}
       <style jsx>{`
         .gravity-well {
           position: fixed;
@@ -1182,22 +1216,22 @@ const Circle = () => {
 
         .gravity-stats {
           position: fixed;
-          left: 18px;
-          bottom: 18px;
+          left: 16px;
+          bottom: 16px;
           z-index: 5;
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 12px;
-          min-width: min(460px, calc(100vw - 36px));
-          padding: 12px 14px;
-          border: 1px solid rgba(125, 249, 255, 0.14);
-          border-radius: 16px;
-          background: rgba(3, 7, 18, 0.46);
-          color: rgba(226, 246, 255, 0.72);
+          gap: 10px;
+          min-width: min(380px, calc(100vw - 32px));
+          padding: 9px 11px;
+          border: 1px solid rgba(125, 249, 255, 0.11);
+          border-radius: 12px;
+          background: rgba(3, 7, 18, 0.34);
+          color: rgba(226, 246, 255, 0.66);
           font-family: var(--font-geist-mono), monospace;
-          letter-spacing: 0.07em;
+          letter-spacing: 0.06em;
           text-transform: uppercase;
-          backdrop-filter: blur(8px);
+          backdrop-filter: blur(6px);
         }
 
         .gravity-stats div {
@@ -1206,33 +1240,66 @@ const Circle = () => {
         }
 
         .gravity-stats span {
-          font-size: 0.62rem;
+          font-size: 0.55rem;
         }
 
         .gravity-stats strong {
           color: #e0faff;
-          font-size: 0.92rem;
+          font-size: 0.8rem;
         }
 
         .gravity-stats p {
           grid-column: 1 / -1;
           margin: 0;
           color: #67e8f9;
-          font-size: 0.68rem;
+          font-size: 0.58rem;
+        }
+
+        .mobile-gravity-status {
+          display: none;
         }
 
         @media (max-width: 640px) {
           .gravity-stats {
-            left: 12px;
-            right: 12px;
-            bottom: 12px;
-            min-width: 0;
-            gap: 8px;
-            padding: 10px 12px;
+            display: none;
           }
 
-          .gravity-stats strong {
-            font-size: 0.8rem;
+          .mobile-gravity-status {
+            position: fixed;
+            top: 14px;
+            right: 14px;
+            z-index: 5;
+            display: block;
+            max-width: min(220px, calc(100vw - 28px));
+            color: rgba(224, 250, 255, 0.82);
+            font-family: var(--font-geist-mono), monospace;
+            font-size: 0.66rem;
+            font-weight: 600;
+            letter-spacing: 0.12em;
+            line-height: 1.35;
+            text-align: right;
+            text-shadow:
+              0 0 10px rgba(103, 232, 249, 0.38),
+              0 0 18px rgba(167, 139, 250, 0.22);
+            text-transform: uppercase;
+            pointer-events: none;
+            animation: mobileStatusFade 2.4s ease-out forwards;
+          }
+        }
+
+        @keyframes mobileStatusFade {
+          0% {
+            opacity: 0;
+            transform: translateY(-4px);
+          }
+          16%,
+          62% {
+            opacity: 1;
+            transform: translateY(0);
+          }
+          100% {
+            opacity: 0;
+            transform: translateY(-2px);
           }
         }
       `}</style>
