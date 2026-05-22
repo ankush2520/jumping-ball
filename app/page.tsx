@@ -1,10 +1,42 @@
-import Image from "next/image";
+"use client";
+
+import { useState } from "react";
 import Circle from "./components/circle";
+import MenuScreen from "./components/MenuScreen";
 
 export default function Home() {
+  const [showSimulation, setShowSimulation] = useState(false);
+
   return (
-    <div>
-      <Circle />
+    <div style={{ minHeight: "100vh", position: "relative" }}>
+      {showSimulation ? (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowSimulation(false)}
+            style={{
+              position: "fixed",
+              left: 16,
+              top: 16,
+              zIndex: 20,
+              padding: "12px 18px",
+              borderRadius: 14,
+              border: "none",
+              background: "rgba(15, 23, 42, 0.92)",
+              color: "#f8fafc",
+              fontSize: 14,
+              fontWeight: 700,
+              cursor: "pointer",
+              boxShadow: "0 18px 40px rgba(15, 23, 42, 0.4)",
+            }}
+          >
+            ← Back to menu
+          </button>
+          <Circle />
+        </>
+      ) : (
+        <MenuScreen onLaunch={() => setShowSimulation(true)} />
+      )}
     </div>
   );
 }
