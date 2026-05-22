@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "predeploy": "GITHUB_PAGES=true npm run build",
-    "deploy": "npx gh-pages -d out",
+    "predeploy": "GITHUB_PAGES=true npm run build && node -e \"require('fs').writeFileSync('out/.nojekyll', '')\"",
+    "deploy": "npx gh-pages -d out --dotfiles",
     "start": "next start",
     "lint": "eslint"
   },
