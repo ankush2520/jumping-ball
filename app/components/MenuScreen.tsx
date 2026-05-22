@@ -1,12 +1,14 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 
 interface Props {
   onLaunch: () => void;
 }
 
 const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
+  const [comingSoonTitle, setComingSoonTitle] = useState<string | null>(null);
+
   const menuItems = [
     {
       title: "Gravity Well",
@@ -31,6 +33,7 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
       ),
       action: onLaunch,
       glow: "card-cyan",
+      available: true,
     },
     {
       title: "Plasma Bounce",
@@ -52,8 +55,9 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           <circle cx="46" cy="20" r="5" fill="currentColor" opacity="0.35" />
         </svg>
       ),
-      action: onLaunch,
+      action: () => setComingSoonTitle("Plasma Bounce"),
       glow: "card-violet",
+      available: false,
     },
     {
       title: "Neon Particles",
@@ -76,8 +80,9 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           <circle cx="32" cy="36" r="3" fill="currentColor" opacity="0.5" />
         </svg>
       ),
-      action: onLaunch,
+      action: () => setComingSoonTitle("Neon Particles"),
       glow: "card-emerald",
+      available: false,
     },
     {
       title: "Orbital Chaos",
@@ -100,8 +105,9 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           <circle cx="52" cy="32" r="3" fill="currentColor" opacity="0.65" />
         </svg>
       ),
-      action: onLaunch,
+      action: () => setComingSoonTitle("Orbital Chaos"),
       glow: "card-amber",
+      available: false,
     },
     {
       title: "Quantum Wave",
@@ -122,8 +128,9 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           <path d="M12 22h40" opacity="0.35" />
         </svg>
       ),
-      action: onLaunch,
+      action: () => setComingSoonTitle("Quantum Wave"),
       glow: "card-blue",
+      available: false,
     },
     {
       title: "Collision Lab",
@@ -147,8 +154,9 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           <path d="m28 28 8 8" />
         </svg>
       ),
-      action: onLaunch,
+      action: () => setComingSoonTitle("Collision Lab"),
       glow: "card-rose",
+      available: false,
     },
   ];
 
@@ -189,7 +197,7 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
                 </div>
               </div>
               <div className="button-arrow">
-                <span>Launch</span>
+                <span>{item.available ? "Launch" : "Soon"}</span>
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
@@ -208,6 +216,25 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           <p>Powered by React & Canvas | 60 FPS Physics Engine</p>
         </div>
       </div>
+
+      {comingSoonTitle && (
+        <div className="coming-soon-overlay" role="dialog" aria-modal="true">
+          <button
+            type="button"
+            className="coming-soon-backdrop"
+            aria-label="Close coming soon message"
+            onClick={() => setComingSoonTitle(null)}
+          />
+          <div className="coming-soon-panel">
+            <span>Coming Soon</span>
+            <strong>{comingSoonTitle}</strong>
+            <p>This simulation is still in development.</p>
+            <button type="button" onClick={() => setComingSoonTitle(null)}>
+              Close
+            </button>
+          </div>
+        </div>
+      )}
       <style jsx>{`
         * {
           box-sizing: border-box;
@@ -719,6 +746,70 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
           font-size: 0.95rem;
           font-weight: 300;
           letter-spacing: 0.5px;
+        }
+
+        .coming-soon-overlay {
+          position: fixed;
+          inset: 0;
+          z-index: 50;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+        }
+
+        .coming-soon-backdrop {
+          position: absolute;
+          inset: 0;
+          border: 0;
+          background: rgba(2, 6, 23, 0.64);
+          cursor: pointer;
+        }
+
+        .coming-soon-panel {
+          position: relative;
+          z-index: 1;
+          width: min(420px, 100%);
+          padding: 26px;
+          border: 1px solid rgba(125, 249, 255, 0.2);
+          border-radius: 18px;
+          background: rgba(3, 7, 18, 0.86);
+          color: #f8fafc;
+          text-align: center;
+          box-shadow: 0 24px 70px rgba(2, 8, 23, 0.55);
+          backdrop-filter: blur(14px);
+        }
+
+        .coming-soon-panel span {
+          display: block;
+          margin-bottom: 10px;
+          color: #67e8f9;
+          font-size: 0.78rem;
+          font-weight: 800;
+          letter-spacing: 0.16em;
+          text-transform: uppercase;
+        }
+
+        .coming-soon-panel strong {
+          display: block;
+          font-size: 1.45rem;
+          margin-bottom: 10px;
+        }
+
+        .coming-soon-panel p {
+          margin: 0 0 20px;
+          color: rgba(226, 246, 255, 0.72);
+        }
+
+        .coming-soon-panel button {
+          min-height: 40px;
+          padding: 0 18px;
+          border: 1px solid rgba(125, 249, 255, 0.28);
+          border-radius: 12px;
+          background: rgba(14, 165, 233, 0.16);
+          color: #ecfeff;
+          font-weight: 800;
+          cursor: pointer;
         }
 
         /* Responsive */

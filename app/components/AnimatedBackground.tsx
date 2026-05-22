@@ -2,14 +2,13 @@
 
 import React, { useEffect, useRef } from "react";
 
-export default function AnimatedBackground(): JSX.Element {
+export default function AnimatedBackground(): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    const ctx = canvas.getContext("2d")!;
 
     let raf = 0;
     let width = 0;
