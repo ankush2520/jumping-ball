@@ -125,7 +125,8 @@ const EXPLOSION_LAUNCH_SCALE = 1.85;
 const SHAKE_DURATION = 0.3;
 const TARGET_FPS = performanceMode ? 45 : 60;
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
-const DPR_CAP = performanceMode ? 1.5 : 2;
+const DESKTOP_DPR_CAP = 1.5;
+const MOBILE_DPR_CAP = 2.5;
 const HUD_UPDATE_INTERVAL = 0.18;
 
 const palette = [
@@ -748,14 +749,23 @@ const resetExplosionBall = (
 };
 
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
-  const dpr = Math.min(window.devicePixelRatio || 1, DPR_CAP);
+  const isMobile = window.innerWidth < 600;
+  const dpr = Math.min(
+    window.devicePixelRatio || 1,
+    isMobile ? MOBILE_DPR_CAP : DESKTOP_DPR_CAP,
+  );
   const width = window.innerWidth;
   const height = window.innerHeight;
+  const ctx = canvas.getContext("2d");
 
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
+  if (ctx) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
 
   return { width, height, dpr };
 };
@@ -845,7 +855,7 @@ const drawBackground = (
 ) => {
   const { width, height } = arena;
   const massGlow = Math.min(1, (blackHole.mass - 1) / BALL_COUNT);
-  const darkening = 0.08 + massGlow * 0.32;
+  const darkening = 0.06 + massGlow * 0.24;
 
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -888,11 +898,11 @@ const drawBackground = (
     blackHole.radius,
     blackHole.x,
     blackHole.y,
-    Math.min(width, height) * (0.42 + massGlow * 0.16),
+    Math.min(width, height) * (0.34 + massGlow * 0.1),
   );
-  glow.addColorStop(0, `rgba(125, 249, 255, ${0.12 + massGlow * 0.16})`);
-  glow.addColorStop(0.28, `rgba(96, 165, 250, ${0.07 + massGlow * 0.09})`);
-  glow.addColorStop(0.62, `rgba(168, 85, 247, ${0.035 + massGlow * 0.06})`);
+  glow.addColorStop(0, `rgba(125, 249, 255, ${0.09 + massGlow * 0.1})`);
+  glow.addColorStop(0.28, `rgba(96, 165, 250, ${0.045 + massGlow * 0.06})`);
+  glow.addColorStop(0.62, `rgba(168, 85, 247, ${0.02 + massGlow * 0.035})`);
   glow.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, width, height);
@@ -1017,8 +1027,9 @@ const drawBlackHole = (
   ctx.globalCompositeOperation = "source-over";
   const core = ctx.createRadialGradient(0, 0, 0, 0, 0, coreRadius * 1.45);
   core.addColorStop(0, "rgba(0, 0, 0, 1)");
-  core.addColorStop(0.62, "rgba(0, 0, 0, 0.98)");
-  core.addColorStop(0.74, `rgba(6, 182, 212, ${0.24 + massRatio * 0.18})`);
+  core.addColorStop(0.68, "rgba(0, 0, 0, 1)");
+  core.addColorStop(0.78, `rgba(6, 182, 212, ${0.3 + massRatio * 0.2})`);
+  core.addColorStop(0.86, "rgba(0, 0, 0, 0.92)");
   core.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = core;
   ctx.beginPath();
@@ -1187,7 +1198,7 @@ const drawBall = (
   ctx.globalCompositeOperation = "lighter";
   if (!performanceMode || ball.radius > 14) {
     ctx.shadowColor = ball.glow;
-    ctx.shadowBlur = radius * (performanceMode ? 0.82 : 1.7) * glowAlpha;
+    ctx.shadowBlur = radius * (performanceMode ? 0.52 : 1.2) * glowAlpha;
   }
 
   if (performanceMode && ball.radius <= 14) {
@@ -1201,9 +1212,10 @@ const drawBall = (
       ball.y,
       radius,
     );
-    body.addColorStop(0, "rgba(255, 255, 255, 0.95)");
-    body.addColorStop(0.22, ball.color);
-    body.addColorStop(1, "rgba(2, 6, 23, 0.85)");
+    body.addColorStop(0, "rgba(255, 255, 255, 1)");
+    body.addColorStop(0.14, "rgba(224, 250, 255, 0.92)");
+    body.addColorStop(0.34, ball.color);
+    body.addColorStop(1, "rgba(2, 6, 23, 0.9)");
     ctx.fillStyle = body;
   }
 
@@ -1211,9 +1223,9 @@ const drawBall = (
   ctx.arc(ball.x, ball.y, radius, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.shadowBlur = !performanceMode || ball.radius > 14 ? radius * 0.42 : 0;
+  ctx.shadowBlur = !performanceMode || ball.radius > 14 ? radius * 0.26 : 0;
   ctx.strokeStyle = ball.glow;
-  ctx.lineWidth = Math.max(0.8, 1.4 * visualScale);
+  ctx.lineWidth = Math.max(0.7, 1.15 * visualScale);
   ctx.stroke();
   ctx.restore();
 };
@@ -1240,13 +1252,13 @@ const drawTrails = (
     const alpha = trail.life / trail.maxLife;
     ctx.fillStyle = trail.color.replace(
       "ALPHA",
-      `${0.14 * alpha * (0.75 + visualScale * 0.25)}`,
+      `${0.095 * alpha * (0.78 + visualScale * 0.22)}`,
     );
     ctx.beginPath();
     ctx.arc(
       trail.x,
       trail.y,
-      trail.radius * visualScale * (0.72 + alpha * 0.88),
+      trail.radius * visualScale * (0.48 + alpha * 0.58),
       0,
       Math.PI * 2,
     );
@@ -1452,7 +1464,7 @@ const Circle = () => {
       trail.life =
         (performanceMode ? 0.28 : 0.42) * (visualScale < 1 ? 0.7 : 1);
       trail.maxLife = trail.life;
-      trail.radius = Math.max(1.4, ball.radius * 0.42);
+      trail.radius = Math.max(1.1, ball.radius * 0.3);
       trail.color = ball.glow.replace(/[\d.]+\)$/, "ALPHA)");
     };
 
@@ -1467,7 +1479,7 @@ const Circle = () => {
       trail.y = ball.y - ball.vy * 0.018;
       trail.life = 0.34 * (visualScale < 1 ? 0.7 : 1);
       trail.maxLife = trail.life;
-      trail.radius = Math.max(3, ball.radius * (0.7 + intensity * 0.35));
+      trail.radius = Math.max(2, ball.radius * (0.48 + intensity * 0.24));
       trail.color = "rgba(220, 252, 255, ALPHA)";
     };
 
@@ -1769,6 +1781,7 @@ const Circle = () => {
       const shakeY = shake ? randomBetween(-shake, shake) : 0;
 
       ctx.setTransform(arena.dpr, 0, 0, arena.dpr, shakeX, shakeY);
+      ctx.imageSmoothingEnabled = true;
       ctx.fillStyle = "rgba(3, 7, 18, 0.18)";
       ctx.fillRect(-shakeX, -shakeY, arena.width + 24, arena.height + 24);
       drawBackground(ctx, arena, time, blackHole, 0.24);
