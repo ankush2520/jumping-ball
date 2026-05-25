@@ -126,7 +126,7 @@ const SHAKE_DURATION = 0.3;
 const TARGET_FPS = performanceMode ? 45 : 60;
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 const DESKTOP_DPR_CAP = 1.5;
-const MOBILE_DPR_CAP = 2.5;
+const MOBILE_DPR_CAP = 3;
 const HUD_UPDATE_INTERVAL = 0.18;
 
 const palette = [
@@ -934,37 +934,38 @@ const drawBlackHole = (
   ctx.translate(blackHole.x, blackHole.y);
   ctx.globalCompositeOperation = "lighter";
 
+  const haloScale = visualScale < 1 ? 0.78 : 1;
   const halo = ctx.createRadialGradient(
     0,
     0,
     coreRadius,
     0,
     0,
-    coreRadius * (6.2 + explosionPulse * 3.6) * glowScale,
+    coreRadius * (5.1 + explosionPulse * 2.8) * glowScale * haloScale,
   );
   halo.addColorStop(
     0,
-    `rgba(255, 255, 255, ${0.14 + massRatio * 0.08 + explosionPulse * 0.18})`,
+    `rgba(255, 255, 255, ${0.1 + massRatio * 0.06 + explosionPulse * 0.14})`,
   );
   halo.addColorStop(
     0.1,
-    `rgba(125, 249, 255, ${0.2 + massRatio * 0.18 + explosionPulse * 0.24})`,
+    `rgba(125, 249, 255, ${0.14 + massRatio * 0.12 + explosionPulse * 0.18})`,
   );
   halo.addColorStop(
     0.36,
-    `rgba(96, 165, 250, ${0.08 + massRatio * 0.12 + explosionPulse * 0.14})`,
+    `rgba(96, 165, 250, ${0.05 + massRatio * 0.08 + explosionPulse * 0.1})`,
   );
   halo.addColorStop(
     0.66,
-    `rgba(168, 85, 247, ${0.04 + massRatio * 0.08 + explosionPulse * 0.1})`,
+    `rgba(168, 85, 247, ${0.025 + massRatio * 0.045 + explosionPulse * 0.07})`,
   );
   halo.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = halo;
   ctx.fillRect(
-    -coreRadius * 7,
-    -coreRadius * 7,
-    coreRadius * 14,
-    coreRadius * 14,
+    -coreRadius * 6,
+    -coreRadius * 6,
+    coreRadius * 12,
+    coreRadius * 12,
   );
 
   ctx.save();
@@ -998,14 +999,14 @@ const drawBlackHole = (
   ctx.fill();
   ctx.restore();
 
-  const distortion = ctx.createRadialGradient(0, 0, coreRadius * 0.9, 0, 0, coreRadius * 4.2);
+  const distortion = ctx.createRadialGradient(0, 0, coreRadius * 0.95, 0, 0, coreRadius * 3.35);
   distortion.addColorStop(0, "rgba(0, 0, 0, 0)");
-  distortion.addColorStop(0.46, `rgba(255, 255, 255, ${0.09 + massRatio * 0.08})`);
-  distortion.addColorStop(0.52, `rgba(125, 249, 255, ${0.04 + massRatio * 0.06})`);
+  distortion.addColorStop(0.48, `rgba(255, 255, 255, ${0.065 + massRatio * 0.06})`);
+  distortion.addColorStop(0.54, `rgba(125, 249, 255, ${0.028 + massRatio * 0.04})`);
   distortion.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = distortion;
   ctx.beginPath();
-  ctx.arc(0, 0, coreRadius * 4.2, 0, Math.PI * 2);
+  ctx.arc(0, 0, coreRadius * 3.35, 0, Math.PI * 2);
   ctx.fill();
 
   for (let i = 0; i < 28; i++) {
@@ -1462,7 +1463,7 @@ const Circle = () => {
       trail.x = ball.x;
       trail.y = ball.y;
       trail.life =
-        (performanceMode ? 0.28 : 0.42) * (visualScale < 1 ? 0.7 : 1);
+        (performanceMode ? 0.22 : 0.34) * (visualScale < 1 ? 0.58 : 1);
       trail.maxLife = trail.life;
       trail.radius = Math.max(1.1, ball.radius * 0.3);
       trail.color = ball.glow.replace(/[\d.]+\)$/, "ALPHA)");
@@ -1477,7 +1478,7 @@ const Circle = () => {
       trail.active = true;
       trail.x = ball.x - ball.vx * 0.018;
       trail.y = ball.y - ball.vy * 0.018;
-      trail.life = 0.34 * (visualScale < 1 ? 0.7 : 1);
+      trail.life = 0.26 * (visualScale < 1 ? 0.6 : 1);
       trail.maxLife = trail.life;
       trail.radius = Math.max(2, ball.radius * (0.48 + intensity * 0.24));
       trail.color = "rgba(220, 252, 255, ALPHA)";
@@ -1592,15 +1593,7 @@ const Circle = () => {
         const ny = dy / actualDistance;
         const influenceRadius =
           blackHole.radius * 7 * scale.gravityScale * gravityMultiplier;
-        const visualBallRadius = ball.radius * scale.visualScale;
-        const baseAbsorbRadius =
-          scale.visualScale < 1
-            ? blackHole.radius * 0.75 + visualBallRadius * 0.5
-            : blackHole.radius + ball.radius * 0.6;
-        const absorbRadius =
-          cycle.phase === "awakening"
-            ? baseAbsorbRadius * 0.72
-            : baseAbsorbRadius;
+        const absorbRadius = blackHole.radius + ball.radius * 0.5;
 
         if (
           absorptionEnabled &&
@@ -1616,23 +1609,37 @@ const Circle = () => {
             cycle.phase === "active" && cycleAge < scale.minCycleTime
               ? 0.55 + 0.45 * (cycleAge / scale.minCycleTime)
               : 1;
-          const distanceFactor = 1 - actualDistance / influenceRadius;
-          const gravityStrength =
+          const normalizedDistance = Math.min(
+            1,
+            Math.max(0, actualDistance / influenceRadius),
+          );
+          const innerPull = 1 - normalizedDistance;
+          const tx = -ny;
+          const ty = nx;
+          const mobileOrbitScale = arena.width < 600 ? 0.74 : 1;
+          const baseForce =
             blackHole.strength *
             (blackHole.radius / BASE_HOLE_RADIUS) *
             scale.gravityScale *
             gravityMultiplier *
             earlyCycleDamping;
-          const force = gravityStrength * distanceFactor * dt * 0.012;
-          const tangent =
-            (58 + blackHole.mass * 3.4) *
-            (blackHole.radius / BASE_HOLE_RADIUS) *
-            scale.gravityScale *
+          const orbitStrength =
+            (42 + blackHole.mass * 2.8) *
+            (0.35 + normalizedDistance * 0.95) *
             gravityMultiplier *
-            distanceFactor;
+            mobileOrbitScale *
+            dt;
+          const inwardStrength =
+            baseForce *
+            (0.08 + innerPull * innerPull * 0.92) *
+            (arena.width < 600 ? 0.72 : 1) *
+            dt *
+            0.0065;
 
-          ball.vx += nx * force + -ny * tangent * dt;
-          ball.vy += ny * force + nx * tangent * dt;
+          ball.vx += tx * orbitStrength + nx * inwardStrength;
+          ball.vy += ty * orbitStrength + ny * inwardStrength;
+          ball.vx *= 0.998;
+          ball.vy *= 0.998;
 
           const radialVelocity = ball.vx * nx + ball.vy * ny;
           if (
@@ -1789,6 +1796,11 @@ const Circle = () => {
       stepPhysics(dt, time);
       updateHud(time);
       soundRef.current?.updateHum(Math.min(1, (blackHole.mass - 1) / BALL_COUNT));
+      drawTrails(ctx, trailParticlesRef.current, dt, renderScale.visualScale);
+      for (let i = 0; i < ballsRef.current.length; i++) {
+        const ball = ballsRef.current[i];
+        if (ball.active) drawBall(ctx, ball, renderScale.visualScale);
+      }
       drawBlackHole(
         ctx,
         blackHole,
@@ -1796,11 +1808,6 @@ const Circle = () => {
         cycleRef.current,
         renderScale.blackHoleVisualScale,
       );
-      drawTrails(ctx, trailParticlesRef.current, dt, renderScale.visualScale);
-      for (let i = 0; i < ballsRef.current.length; i++) {
-        const ball = ballsRef.current[i];
-        if (ball.active) drawBall(ctx, ball, renderScale.visualScale);
-      }
       drawExplosion(
         ctx,
         arena,
