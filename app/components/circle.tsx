@@ -56,6 +56,7 @@ type HudStats = {
 };
 
 type BlackHole = {
+  active: boolean;
   x: number;
   y: number;
   radius: number;
@@ -147,6 +148,9 @@ const getHungerStage = (absorbedCount: number) => {
 
 const randomBetween = (min: number, max: number) =>
   min + Math.random() * (max - min);
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
 
 class SoundManager {
   private audio: AudioContext | null = null;
@@ -371,6 +375,31 @@ class SoundManager {
     gain.connect(this.masterGain);
     osc.start(now);
     osc.stop(now + 0.36);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+    };
+  }
+
+  playSpawn() {
+    if (!this.audio || this.audio.state !== "running" || !this.masterGain) {
+      return;
+    }
+    if (this.muted) return;
+
+    const now = this.audio.currentTime;
+    const osc = this.audio.createOscillator();
+    const gain = this.audio.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(140, now);
+    osc.frequency.exponentialRampToValueAtTime(320, now + 0.22);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.09, now + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.3);
     osc.onended = () => {
       osc.disconnect();
       gain.disconnect();
@@ -632,46 +661,21 @@ const enforceMinimumSpeed = (
   }
 };
 
-const createBlackHole = (arena: Arena, balls: GravityBall[] = []): BlackHole => {
+const createPlacedBlackHole = (arena: Arena, x: number, y: number): BlackHole => {
   const isMobile = arena.width < 600;
-  const initialRadius = randomBetween(isMobile ? 5 : 8, isMobile ? 7 : 12);
-  const minX = arena.width * (isMobile ? 0.3 : 0.25);
-  const maxX = arena.width * (isMobile ? 0.7 : 0.75);
-  const minY = arena.height * (isMobile ? 0.28 : 0.25);
-  const maxY = arena.height * (isMobile ? 0.72 : 0.75);
-  const backButtonSafeX = 190;
-  const backButtonSafeY = 82;
-  let x = arena.width / 2;
-  let y = arena.height / 2;
-
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const candidateX = randomBetween(minX, maxX);
-    const candidateY = randomBetween(minY, maxY);
-    let isSafe = true;
-
-    if (candidateX < backButtonSafeX && candidateY < backButtonSafeY) {
-      isSafe = false;
-    }
-
-    for (let i = 0; i < balls.length; i++) {
-      const ball = balls[i];
-      if (!ball.active) continue;
-      if (Math.hypot(candidateX - ball.x, candidateY - ball.y) < 95) {
-        isSafe = false;
-        break;
-      }
-    }
-
-    x = candidateX;
-    y = candidateY;
-    if (isSafe) break;
-  }
+  const margin = Math.min(
+    120,
+    Math.max(48, Math.min(arena.width, arena.height) * 0.28),
+  );
+  const initialRadius = isMobile ? 2.2 : 3;
+  const targetRadius = isMobile ? 5.8 : 9;
 
   return {
-    x,
-    y,
+    active: true,
+    x: clamp(x, margin, arena.width - margin),
+    y: clamp(y, margin, arena.height - margin),
     radius: initialRadius,
-    targetRadius: initialRadius,
+    targetRadius,
     strength: BASE_GRAVITY * 0.05,
     mass: 1,
     rotationAngle: randomBetween(0, Math.PI * 2),
@@ -850,11 +854,11 @@ const drawBackground = (
   ctx: CanvasRenderingContext2D,
   arena: Arena,
   time: number,
-  blackHole: BlackHole,
+  blackHole: BlackHole | null,
   alpha = 1,
 ) => {
   const { width, height } = arena;
-  const massGlow = Math.min(1, (blackHole.mass - 1) / BALL_COUNT);
+  const massGlow = blackHole ? Math.min(1, (blackHole.mass - 1) / BALL_COUNT) : 0;
   const darkening = 0.06 + massGlow * 0.24;
 
   ctx.save();
@@ -892,20 +896,22 @@ const drawBackground = (
   }
 
   ctx.globalAlpha = alpha;
-  const glow = ctx.createRadialGradient(
-    blackHole.x,
-    blackHole.y,
-    blackHole.radius,
-    blackHole.x,
-    blackHole.y,
-    Math.min(width, height) * (0.34 + massGlow * 0.1),
-  );
-  glow.addColorStop(0, `rgba(125, 249, 255, ${0.09 + massGlow * 0.1})`);
-  glow.addColorStop(0.28, `rgba(96, 165, 250, ${0.045 + massGlow * 0.06})`);
-  glow.addColorStop(0.62, `rgba(168, 85, 247, ${0.02 + massGlow * 0.035})`);
-  glow.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, width, height);
+  if (blackHole) {
+    const glow = ctx.createRadialGradient(
+      blackHole.x,
+      blackHole.y,
+      blackHole.radius,
+      blackHole.x,
+      blackHole.y,
+      Math.min(width, height) * (0.34 + massGlow * 0.1),
+    );
+    glow.addColorStop(0, `rgba(125, 249, 255, ${0.09 + massGlow * 0.1})`);
+    glow.addColorStop(0.28, `rgba(96, 165, 250, ${0.045 + massGlow * 0.06})`);
+    glow.addColorStop(0.62, `rgba(168, 85, 247, ${0.02 + massGlow * 0.035})`);
+    glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, width, height);
+  }
   ctx.fillStyle = `rgba(0, 0, 0, ${darkening * alpha})`;
   ctx.fillRect(0, 0, width, height);
   ctx.restore();
@@ -1187,11 +1193,45 @@ const drawExplosion = (
   ctx.restore();
 };
 
+const drawSpawnRings = (
+  ctx: CanvasRenderingContext2D,
+  rings: ShockwaveRing[],
+  dt: number,
+  visualScale: number,
+) => {
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+
+  for (let i = 0; i < rings.length; i++) {
+    const ring = rings[i];
+    if (!ring.active) continue;
+
+    ring.age += dt;
+    if (ring.age < 0 || ring.duration <= 0 || ring.maxRadius <= 0) continue;
+    if (ring.age >= ring.duration) {
+      ring.active = false;
+      continue;
+    }
+
+    const progress = ring.age / ring.duration;
+    const alpha = (1 - progress) * ring.alpha;
+    const radius = Math.max(0, ring.maxRadius * progress);
+    if (radius <= 0 || alpha <= 0) continue;
+    ctx.strokeStyle = `rgba(125, 249, 255, ${alpha})`;
+    ctx.lineWidth = Math.max(0.8, ring.width * visualScale * (1 - progress));
+    ctx.beginPath();
+    ctx.arc(ring.x, ring.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+};
+
 const drawBall = (
   ctx: CanvasRenderingContext2D,
   ball: GravityBall,
   visualScale: number,
-  blackHole?: BlackHole,
+  blackHole?: BlackHole | null,
 ) => {
   const radius = ball.radius * visualScale;
   const glowAlpha = 0.55 + visualScale * 0.45;
@@ -1312,6 +1352,7 @@ const Circle = () => {
     stage: "Dormant",
   });
   const [showSoundPrompt, setShowSoundPrompt] = useState(true);
+  const [waitingForPlacement, setWaitingForPlacement] = useState(true);
   const gravityWellRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const soundRef = useRef<SoundManager | null>(null);
@@ -1465,15 +1506,58 @@ const Circle = () => {
         shockwavesRef.current[i].active = false;
       }
       spawnOrbitBalls();
-      blackHoleRef.current = createBlackHole(
-        arenaRef.current,
-        ballsRef.current,
-      );
+      blackHoleRef.current = null;
+      setWaitingForPlacement(true);
+      setHudStats({
+        mass: 0,
+        stability: 100,
+        charge: 0,
+        stage: "Dormant",
+      });
       cycleRef.current = {
         phase: "calm",
         phaseStartedAt: performance.now() / 1000,
         shockwaveAt: -Infinity,
       };
+    };
+
+    const placeBlackHole = (clientX: number, clientY: number) => {
+      if (blackHoleRef.current?.active) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      const blackHole = createPlacedBlackHole(arenaRef.current, x, y);
+      const ring = shockwavesRef.current[0];
+
+      blackHoleRef.current = blackHole;
+      cycleRef.current = {
+        phase: "awakening",
+        phaseStartedAt: performance.now() / 1000,
+        shockwaveAt: -Infinity,
+      };
+      setWaitingForPlacement(false);
+
+      ring.active = true;
+      ring.x = blackHole.x;
+      ring.y = blackHole.y;
+      ring.age = 0;
+      ring.duration = 0.72;
+      ring.maxRadius = Math.min(arenaRef.current.width, arenaRef.current.height) * 0.18;
+      ring.width = 5;
+      ring.alpha = 0.42;
+      soundRef.current?.playSpawn();
+    };
+
+    const handlePlacePointer = (event: PointerEvent) => {
+      if (!event.isPrimary) return;
+      placeBlackHole(event.clientX, event.clientY);
+    };
+
+    const handlePlaceTouch = (event: TouchEvent) => {
+      const touch = event.touches[0] ?? event.changedTouches[0];
+      if (!touch) return;
+      placeBlackHole(touch.clientX, touch.clientY);
     };
 
     const absorbBall = (blackHole: BlackHole, ball: GravityBall) => {
@@ -1519,11 +1603,41 @@ const Circle = () => {
       trail.color = "rgba(220, 252, 255, ALPHA)";
     };
 
+    const stepFreeBalls = (dt: number) => {
+      const arena = arenaRef.current;
+      const balls = ballsRef.current;
+
+      for (let i = 0; i < balls.length; i++) {
+        const ball = balls[i];
+        if (!ball.active) continue;
+
+        ball.vx *= 0.998;
+        ball.vy *= 0.998;
+        clampSpeed(ball);
+        ball.x += ball.vx * dt;
+        ball.y += ball.vy * dt;
+        resolveWallCollision(ball, arena);
+        emitTrail(ball);
+      }
+
+      for (let i = 0; i < balls.length; i++) {
+        if (!balls[i].active) continue;
+        for (let j = i + 1; j < balls.length; j++) {
+          if (!balls[j].active) continue;
+          const impact = resolveBallCollision(balls[i], balls[j]);
+          if (impact > 0) soundRef.current?.playCollision(impact);
+        }
+      }
+    };
+
     const stepPhysics = (dt: number, time: number) => {
       const arena = arenaRef.current;
       const blackHole = blackHoleRef.current;
       const cycle = cycleRef.current;
-      if (!blackHole) return;
+      if (!blackHole?.active) {
+        stepFreeBalls(dt);
+        return;
+      }
       const scale = getPhysicsScale(arena);
       const phaseAge = time - cycle.phaseStartedAt;
       const awakeningProgress =
@@ -1567,10 +1681,14 @@ const Circle = () => {
         }
       } else if (cycle.phase === "explosion") {
         if (time - cycle.phaseStartedAt > EXPLOSION_TIME) {
-          blackHoleRef.current = createBlackHole(
-            arenaRef.current,
-            ballsRef.current,
-          );
+          blackHoleRef.current = null;
+          setWaitingForPlacement(true);
+          setHudStats({
+            mass: 0,
+            stability: 100,
+            charge: 0,
+            stage: "Dormant",
+          });
           cycleRef.current = {
             phase: "calm",
             phaseStartedAt: time,
@@ -1853,7 +1971,6 @@ const Circle = () => {
       const arena = arenaRef.current;
       const blackHole = blackHoleRef.current;
       const cycle = cycleRef.current;
-      if (!blackHole) return;
       const renderScale = getPhysicsScale(arena);
 
       const time = timeMs / 1000;
@@ -1880,30 +1997,37 @@ const Circle = () => {
 
       stepPhysics(dt, time);
       updateHud(time);
-      soundRef.current?.updateHum(Math.min(1, (blackHole.mass - 1) / BALL_COUNT));
+      if (blackHole?.active) {
+        soundRef.current?.updateHum(Math.min(1, (blackHole.mass - 1) / BALL_COUNT));
+      }
       drawTrails(ctx, trailParticlesRef.current, dt, renderScale.visualScale);
       for (let i = 0; i < ballsRef.current.length; i++) {
         const ball = ballsRef.current[i];
         if (ball.active) drawBall(ctx, ball, renderScale.visualScale, blackHole);
       }
-      drawBlackHole(
-        ctx,
-        blackHole,
-        time,
-        cycleRef.current,
-        renderScale.blackHoleVisualScale,
-      );
-      drawExplosion(
-        ctx,
-        arena,
-        cycleRef.current,
-        blackHole,
-        explosionParticlesRef.current,
-        shockwavesRef.current,
-        time,
-        dt,
-        renderScale.visualScale,
-      );
+      if (cycle.shockwaveAt <= 0) {
+        drawSpawnRings(ctx, shockwavesRef.current, dt, renderScale.visualScale);
+      }
+      if (blackHole?.active) {
+        drawBlackHole(
+          ctx,
+          blackHole,
+          time,
+          cycleRef.current,
+          renderScale.blackHoleVisualScale,
+        );
+        drawExplosion(
+          ctx,
+          arena,
+          cycleRef.current,
+          blackHole,
+          explosionParticlesRef.current,
+          shockwavesRef.current,
+          time,
+          dt,
+          renderScale.visualScale,
+        );
+      }
 
       animationRef.current = requestAnimationFrame(animate);
     };
@@ -1977,6 +2101,11 @@ const Circle = () => {
     });
     window.addEventListener("click", unlockAudioFromGesture, true);
     window.addEventListener("keydown", unlockAudioFromGesture, true);
+    if (window.PointerEvent) {
+      root?.addEventListener("pointerdown", handlePlacePointer);
+    } else {
+      root?.addEventListener("touchstart", handlePlaceTouch, { passive: true });
+    }
     window.addEventListener("resize", resetArena);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     animationRef.current = requestAnimationFrame(animate);
@@ -1986,6 +2115,8 @@ const Circle = () => {
         cancelAnimationFrame(animationRef.current);
       }
       removeUnlockListeners();
+      root?.removeEventListener("pointerdown", handlePlacePointer);
+      root?.removeEventListener("touchstart", handlePlaceTouch);
       window.removeEventListener("resize", resetArena);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       soundRef.current?.dispose();
@@ -2017,22 +2148,30 @@ const Circle = () => {
           Tap to enable sound
         </div>
       ) : null}
-      <div className="gravity-stats" aria-label="Black hole status">
-        <div>
-          <span>Mass</span>
-          <strong>{hudStats.mass.toString().padStart(2, "0")}</strong>
-        </div>
-        <div>
-          <span>Stability</span>
-          <strong>{hudStats.stability}%</strong>
-        </div>
-        <div>
-          <span>Supernova</span>
-          <strong>{hudStats.charge}%</strong>
-        </div>
-        <p>{hudStats.stage}</p>
+      <div
+        className={`placement-prompt ${waitingForPlacement ? "is-visible" : ""}`}
+        aria-hidden={!waitingForPlacement}
+      >
+        Click anywhere to place black hole
       </div>
-      {mobileStatus ? (
+      {!waitingForPlacement ? (
+        <div className="gravity-stats" aria-label="Black hole status">
+          <div>
+            <span>Mass</span>
+            <strong>{hudStats.mass.toString().padStart(2, "0")}</strong>
+          </div>
+          <div>
+            <span>Stability</span>
+            <strong>{hudStats.stability}%</strong>
+          </div>
+          <div>
+            <span>Supernova</span>
+            <strong>{hudStats.charge}%</strong>
+          </div>
+          <p>{hudStats.stage}</p>
+        </div>
+      ) : null}
+      {mobileStatus && !waitingForPlacement ? (
         <div
           key={mobileStatus}
           className="mobile-gravity-status"
@@ -2048,6 +2187,8 @@ const Circle = () => {
           min-height: 100vh;
           overflow: hidden;
           background: #030712;
+          touch-action: manipulation;
+          user-select: none;
         }
 
         .gravity-canvas {
@@ -2095,6 +2236,32 @@ const Circle = () => {
           margin: 0;
           color: #67e8f9;
           font-size: 0.58rem;
+        }
+
+        .placement-prompt {
+          position: fixed;
+          top: 50%;
+          left: 50%;
+          z-index: 6;
+          transform: translate(-50%, -50%);
+          color: rgba(224, 250, 255, 0.82);
+          font-family: var(--font-geist-mono), monospace;
+          font-size: clamp(0.78rem, 1.8vw, 1.05rem);
+          font-weight: 400;
+          letter-spacing: 0.16em;
+          text-align: center;
+          text-shadow:
+            0 0 12px rgba(103, 232, 249, 0.42),
+            0 0 28px rgba(96, 165, 250, 0.2);
+          text-transform: uppercase;
+          opacity: 0;
+          pointer-events: none;
+          transition: opacity 0.55s ease;
+          animation: placementPulse 2.8s ease-in-out infinite;
+        }
+
+        .placement-prompt.is-visible {
+          opacity: 1;
         }
 
         .mobile-gravity-status {
@@ -2163,6 +2330,18 @@ const Circle = () => {
           100% {
             opacity: 0;
             transform: translateY(-2px);
+          }
+        }
+
+        @keyframes placementPulse {
+          0%,
+          100% {
+            filter: brightness(0.92);
+            transform: translate(-50%, -50%) scale(1);
+          }
+          50% {
+            filter: brightness(1.16);
+            transform: translate(-50%, -50%) scale(1.018);
           }
         }
       `}</style>
