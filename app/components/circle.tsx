@@ -1627,8 +1627,10 @@ const Circle = () => {
         const nx = dx / actualDistance;
         const ny = dy / actualDistance;
         const influenceRadius =
-          blackHole.radius * 7 * scale.gravityScale * gravityMultiplier;
-        const absorbRadius = blackHole.radius + ball.radius * 0.5;
+          blackHole.radius * 8.5 * scale.gravityScale * gravityMultiplier;
+        const stableOrbitRadius = blackHole.radius * 4.2;
+        const plungeRadius = blackHole.radius * 1.95;
+        const absorbRadius = blackHole.radius + ball.radius * 0.35;
 
         if (
           absorptionEnabled &&
@@ -1644,37 +1646,67 @@ const Circle = () => {
             cycle.phase === "active" && cycleAge < scale.minCycleTime
               ? 0.55 + 0.45 * (cycleAge / scale.minCycleTime)
               : 1;
-          const normalizedDistance = Math.min(
-            1,
-            Math.max(0, actualDistance / influenceRadius),
-          );
-          const innerPull = 1 - normalizedDistance;
           const tx = -ny;
           const ty = nx;
-          const mobileOrbitScale = arena.width < 600 ? 0.74 : 1;
-          const baseForce =
+          const mobileForceScale = arena.width < 600 ? 0.72 : 1;
+          const radiusScale = blackHole.radius / BASE_HOLE_RADIUS;
+          const orbitForce =
+            (52 + blackHole.mass * 3.1) *
+            radiusScale *
+            gravityMultiplier *
+            mobileForceScale *
+            earlyCycleDamping;
+          const gravityForce =
             blackHole.strength *
-            (blackHole.radius / BASE_HOLE_RADIUS) *
+            radiusScale *
             scale.gravityScale *
             gravityMultiplier *
-            earlyCycleDamping;
-          const orbitStrength =
-            (42 + blackHole.mass * 2.8) *
-            (0.35 + normalizedDistance * 0.95) *
-            gravityMultiplier *
-            mobileOrbitScale *
-            dt;
-          const inwardStrength =
-            baseForce *
-            (0.08 + innerPull * innerPull * 0.92) *
-            (arena.width < 600 ? 0.72 : 1) *
-            dt *
-            0.0065;
+            mobileForceScale *
+            earlyCycleDamping *
+            0.0038;
+          let radialForce = 0;
+          let tangentialForce = 0;
+          let orbitalDamping = 0.996;
 
-          ball.vx += tx * orbitStrength + nx * inwardStrength;
-          ball.vy += ty * orbitStrength + ny * inwardStrength;
-          ball.vx *= 0.998;
-          ball.vy *= 0.998;
+          if (actualDistance > stableOrbitRadius) {
+            const zoneT =
+              1 -
+              (actualDistance - stableOrbitRadius) /
+                Math.max(1, influenceRadius - stableOrbitRadius);
+            tangentialForce = orbitForce * (0.58 + zoneT * 0.26);
+            radialForce = gravityForce * (0.08 + zoneT * 0.18);
+            orbitalDamping = 0.9975;
+          } else if (actualDistance > plungeRadius) {
+            const zoneT =
+              1 -
+              (actualDistance - plungeRadius) /
+                Math.max(1, stableOrbitRadius - plungeRadius);
+            tangentialForce = orbitForce * (0.86 - zoneT * 0.16);
+            radialForce = gravityForce * (0.24 + zoneT * 0.22);
+            orbitalDamping = 0.9955;
+          } else {
+            const zoneT =
+              1 -
+              (actualDistance - absorbRadius) /
+                Math.max(1, plungeRadius - absorbRadius);
+            const plungeT = Math.min(1, Math.max(0, zoneT));
+            tangentialForce = orbitForce * (0.42 - plungeT * 0.24);
+            radialForce = gravityForce * (0.88 + plungeT * 1.45);
+            orbitalDamping = 0.994;
+          }
+
+          ball.vx += (tx * tangentialForce + nx * radialForce) * dt;
+          ball.vy += (ty * tangentialForce + ny * radialForce) * dt;
+
+          const inwardVelocity = ball.vx * nx + ball.vy * ny;
+          if (inwardVelocity < 0) {
+            const outwardReduction = -inwardVelocity * 0.72;
+            ball.vx += nx * outwardReduction;
+            ball.vy += ny * outwardReduction;
+          }
+
+          ball.vx *= orbitalDamping;
+          ball.vy *= orbitalDamping;
 
           const radialVelocity = ball.vx * nx + ball.vy * ny;
           if (
@@ -1709,7 +1741,15 @@ const Circle = () => {
           }
         }
 
-        enforceMinimumSpeed(ball, blackHole, dt, scale.speedScale);
+        const postMoveDistance = Math.hypot(
+          ball.x - blackHole.x,
+          ball.y - blackHole.y,
+        );
+        if (postMoveDistance >= influenceRadius) {
+          enforceMinimumSpeed(ball, blackHole, dt, scale.speedScale);
+        } else {
+          ball.slowTime = 0;
+        }
         clampSpeed(ball);
 
         if (
@@ -1737,7 +1777,17 @@ const Circle = () => {
       for (let i = 0; i < balls.length; i++) {
         const ball = balls[i];
         if (!ball.active) continue;
-        enforceMinimumSpeed(ball, blackHole, dt, scale.speedScale);
+        const distanceFromBlackHole = Math.hypot(
+          ball.x - blackHole.x,
+          ball.y - blackHole.y,
+        );
+        const influenceRadius =
+          blackHole.radius * 8.5 * scale.gravityScale * gravityMultiplier;
+        if (distanceFromBlackHole >= influenceRadius) {
+          enforceMinimumSpeed(ball, blackHole, dt, scale.speedScale);
+        } else {
+          ball.slowTime = 0;
+        }
         clampSpeed(ball);
       }
 
