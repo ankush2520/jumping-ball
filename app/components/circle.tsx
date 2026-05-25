@@ -59,6 +59,8 @@ type BlackHole = {
   active: boolean;
   x: number;
   y: number;
+  vx: number;
+  vy: number;
   radius: number;
   targetRadius: number;
   strength: number;
@@ -129,6 +131,9 @@ const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
 const DESKTOP_DPR_CAP = 1.5;
 const MOBILE_DPR_CAP = 3;
 const HUD_UPDATE_INTERVAL = 0.18;
+const BINARY_GRAVITY = 82000;
+const BINARY_SOFTENING = 4200;
+const BINARY_DAMPING = 0.9992;
 
 const palette = [
   { color: "#67e8f9", glow: "rgba(103, 232, 249, 0.62)" },
@@ -406,6 +411,31 @@ class SoundManager {
     };
   }
 
+  playMerge() {
+    if (!this.audio || this.audio.state !== "running" || !this.masterGain) {
+      return;
+    }
+    if (this.muted) return;
+
+    const now = this.audio.currentTime;
+    const osc = this.audio.createOscillator();
+    const gain = this.audio.createGain();
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(86, now);
+    osc.frequency.exponentialRampToValueAtTime(34, now + 0.42);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.48);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.5);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+    };
+  }
+
   playCollision(intensity: number) {
     if (!this.audio || !this.masterGain || this.muted || intensity < 0.34) return;
     const now = this.audio.currentTime;
@@ -674,6 +704,8 @@ const createPlacedBlackHole = (arena: Arena, x: number, y: number): BlackHole =>
     active: true,
     x: clamp(x, margin, arena.width - margin),
     y: clamp(y, margin, arena.height - margin),
+    vx: 0,
+    vy: 0,
     radius: initialRadius,
     targetRadius,
     strength: BASE_GRAVITY * 0.05,
@@ -1369,6 +1401,7 @@ const Circle = () => {
     Array.from({ length: MAX_SHOCKWAVES }, createBlankShockwave),
   );
   const blackHoleRef = useRef<BlackHole | null>(null);
+  const secondBlackHoleRef = useRef<BlackHole | null>(null);
   const audioStartingRef = useRef<boolean>(false);
   const arenaRef = useRef<Arena>({ width: 0, height: 0, dpr: 1 });
       const cycleRef = useRef<CycleState>({
@@ -1464,6 +1497,25 @@ const Circle = () => {
       }
     };
 
+    const emitSingleRipple = (
+      x: number,
+      y: number,
+      radius: number,
+      alpha: number,
+      width: number,
+      duration = 0.72,
+    ) => {
+      const ring = shockwavesRef.current[0];
+      ring.active = true;
+      ring.x = x;
+      ring.y = y;
+      ring.age = 0;
+      ring.duration = duration;
+      ring.maxRadius = radius;
+      ring.width = width;
+      ring.alpha = alpha;
+    };
+
     const respawnFromExplosion = (time: number) => {
       const balls = ballsRef.current;
       const scale = getPhysicsScale(arenaRef.current);
@@ -1507,6 +1559,7 @@ const Circle = () => {
       }
       spawnOrbitBalls();
       blackHoleRef.current = null;
+      secondBlackHoleRef.current = null;
       setWaitingForPlacement(true);
       setHudStats({
         mass: 0,
@@ -1522,30 +1575,43 @@ const Circle = () => {
     };
 
     const placeBlackHole = (clientX: number, clientY: number) => {
-      if (blackHoleRef.current?.active) return;
+      if (blackHoleRef.current?.active && secondBlackHoleRef.current?.active) return;
 
       const rect = canvas.getBoundingClientRect();
       const x = clientX - rect.left;
       const y = clientY - rect.top;
       const blackHole = createPlacedBlackHole(arenaRef.current, x, y);
-      const ring = shockwavesRef.current[0];
 
-      blackHoleRef.current = blackHole;
-      cycleRef.current = {
-        phase: "awakening",
-        phaseStartedAt: performance.now() / 1000,
-        shockwaveAt: -Infinity,
-      };
-      setWaitingForPlacement(false);
+      if (!blackHoleRef.current?.active) {
+        blackHoleRef.current = blackHole;
+        cycleRef.current = {
+          phase: "awakening",
+          phaseStartedAt: performance.now() / 1000,
+          shockwaveAt: -Infinity,
+        };
+        setWaitingForPlacement(false);
+      } else {
+        const first = blackHoleRef.current;
+        const dx = blackHole.x - first.x;
+        const dy = blackHole.y - first.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const tx = -dy / dist;
+        const ty = dx / dist;
+        const orbitalKick = arenaRef.current.width < 600 ? 38 : 58;
+        first.vx -= tx * orbitalKick;
+        first.vy -= ty * orbitalKick;
+        blackHole.vx += tx * orbitalKick;
+        blackHole.vy += ty * orbitalKick;
+        secondBlackHoleRef.current = blackHole;
+      }
 
-      ring.active = true;
-      ring.x = blackHole.x;
-      ring.y = blackHole.y;
-      ring.age = 0;
-      ring.duration = 0.72;
-      ring.maxRadius = Math.min(arenaRef.current.width, arenaRef.current.height) * 0.18;
-      ring.width = 5;
-      ring.alpha = 0.42;
+      emitSingleRipple(
+        blackHole.x,
+        blackHole.y,
+        Math.min(arenaRef.current.width, arenaRef.current.height) * 0.18,
+        0.42,
+        5,
+      );
       soundRef.current?.playSpawn();
     };
 
@@ -1568,6 +1634,99 @@ const Circle = () => {
         Math.max(2.2, ball.radius * 0.24) * scale.growthScale;
       blackHole.strength += (19000 + ball.mass * 14) * scale.growthScale;
       soundRef.current?.playAbsorb(Math.min(1, (blackHole.mass - 1) / BALL_COUNT));
+    };
+
+    const pickDominantBlackHole = (ball: GravityBall) => {
+      const first = blackHoleRef.current;
+      const second = secondBlackHoleRef.current;
+      if (!first?.active) return null;
+      if (!second?.active) return first;
+
+      const firstDx = first.x - ball.x;
+      const firstDy = first.y - ball.y;
+      const secondDx = second.x - ball.x;
+      const secondDy = second.y - ball.y;
+      const firstScore =
+        (first.mass + first.radius * 0.35) /
+        (firstDx * firstDx + firstDy * firstDy + BINARY_SOFTENING);
+      const secondScore =
+        (second.mass + second.radius * 0.35) /
+        (secondDx * secondDx + secondDy * secondDy + BINARY_SOFTENING);
+
+      return secondScore > firstScore ? second : first;
+    };
+
+    const mergeBlackHoles = (first: BlackHole, second: BlackHole) => {
+      const totalMass = first.mass + second.mass;
+      const x = (first.x * first.mass + second.x * second.mass) / totalMass;
+      const y = (first.y * first.mass + second.y * second.mass) / totalMass;
+      const mergedRadius = Math.sqrt(
+        first.radius * first.radius + second.radius * second.radius,
+      );
+
+      first.x = x;
+      first.y = y;
+      first.vx = (first.vx * first.mass + second.vx * second.mass) / totalMass;
+      first.vy = (first.vy * first.mass + second.vy * second.mass) / totalMass;
+      first.mass = totalMass;
+      first.radius = mergedRadius;
+      first.targetRadius = Math.max(first.targetRadius, mergedRadius + 4);
+      first.strength += second.strength * 0.82;
+      first.rotationSpeed += 0.16;
+      second.active = false;
+      secondBlackHoleRef.current = null;
+
+      emitSingleRipple(
+        x,
+        y,
+        Math.max(arenaRef.current.width, arenaRef.current.height) * 0.72,
+        0.72,
+        12,
+        0.94,
+      );
+      soundRef.current?.playMerge();
+    };
+
+    const stepBinaryBlackHoles = (dt: number) => {
+      const first = blackHoleRef.current;
+      const second = secondBlackHoleRef.current;
+      if (!first?.active || !second?.active) return;
+
+      const dx = second.x - first.x;
+      const dy = second.y - first.y;
+      const distance = Math.hypot(dx, dy) || 1;
+      const nx = dx / distance;
+      const ny = dy / distance;
+      const firstMass = Math.max(6, first.mass + first.radius * 0.42);
+      const secondMass = Math.max(6, second.mass + second.radius * 0.42);
+      const force =
+        (BINARY_GRAVITY * firstMass * secondMass) /
+        (distance * distance + BINARY_SOFTENING);
+
+      first.vx += (nx * force * dt) / firstMass;
+      first.vy += (ny * force * dt) / firstMass;
+      second.vx -= (nx * force * dt) / secondMass;
+      second.vy -= (ny * force * dt) / secondMass;
+
+      first.vx *= BINARY_DAMPING;
+      first.vy *= BINARY_DAMPING;
+      second.vx *= BINARY_DAMPING;
+      second.vy *= BINARY_DAMPING;
+
+      first.x += first.vx * dt;
+      first.y += first.vy * dt;
+      second.x += second.vx * dt;
+      second.y += second.vy * dt;
+
+      const margin = Math.min(96, Math.max(42, Math.min(arenaRef.current.width, arenaRef.current.height) * 0.18));
+      first.x = clamp(first.x, margin, arenaRef.current.width - margin);
+      first.y = clamp(first.y, margin, arenaRef.current.height - margin);
+      second.x = clamp(second.x, margin, arenaRef.current.width - margin);
+      second.y = clamp(second.y, margin, arenaRef.current.height - margin);
+
+      if (distance < first.radius + second.radius * 0.9) {
+        mergeBlackHoles(first, second);
+      }
     };
 
     const emitTrail = (ball: GravityBall) => {
@@ -1660,6 +1819,24 @@ const Circle = () => {
         (blackHole.rotationAngle + blackHole.rotationSpeed * dt) %
         (Math.PI * 2);
       blackHole.radius += (blackHole.targetRadius - blackHole.radius) * 0.055;
+      const secondBlackHole = secondBlackHoleRef.current;
+      if (secondBlackHole?.active) {
+        secondBlackHole.rotationAngle =
+          (secondBlackHole.rotationAngle + secondBlackHole.rotationSpeed * dt) %
+          (Math.PI * 2);
+        secondBlackHole.radius +=
+          (secondBlackHole.targetRadius - secondBlackHole.radius) * 0.055;
+        if (cycle.phase === "active") {
+          secondBlackHole.targetRadius = Math.max(
+            secondBlackHole.targetRadius,
+            BASE_HOLE_RADIUS * 0.72,
+          );
+          secondBlackHole.strength = Math.max(
+            secondBlackHole.strength,
+            BASE_GRAVITY * scale.gravityScale * 0.72,
+          );
+        }
+      }
 
       if (cycle.phase === "collapse") {
         const collapseAge = time - cycle.phaseStartedAt;
@@ -1682,6 +1859,7 @@ const Circle = () => {
       } else if (cycle.phase === "explosion") {
         if (time - cycle.phaseStartedAt > EXPLOSION_TIME) {
           blackHoleRef.current = null;
+          secondBlackHoleRef.current = null;
           setWaitingForPlacement(true);
           setHudStats({
             mass: 0,
@@ -1735,26 +1913,29 @@ const Circle = () => {
 
       let activeCount = 0;
       const balls = ballsRef.current;
+      stepBinaryBlackHoles(dt);
       for (let i = 0; i < balls.length; i++) {
         const ball = balls[i];
         if (!ball.active) continue;
+        const dominantBlackHole = pickDominantBlackHole(ball);
+        if (!dominantBlackHole) continue;
 
-        const dx = blackHole.x - ball.x;
-        const dy = blackHole.y - ball.y;
+        const dx = dominantBlackHole.x - ball.x;
+        const dy = dominantBlackHole.y - ball.y;
         const actualDistance = Math.hypot(dx, dy) || 1;
         const nx = dx / actualDistance;
         const ny = dy / actualDistance;
         const influenceRadius =
-          blackHole.radius * 8.5 * scale.gravityScale * gravityMultiplier;
-        const stableOrbitRadius = blackHole.radius * 4.2;
-        const plungeRadius = blackHole.radius * 1.95;
-        const absorbRadius = blackHole.radius + ball.radius * 0.35;
+          dominantBlackHole.radius * 8.5 * scale.gravityScale * gravityMultiplier;
+        const stableOrbitRadius = dominantBlackHole.radius * 4.2;
+        const plungeRadius = dominantBlackHole.radius * 1.95;
+        const absorbRadius = dominantBlackHole.radius + ball.radius * 0.35;
 
         if (
           absorptionEnabled &&
           actualDistance < absorbRadius
         ) {
-          absorbBall(blackHole, ball);
+          absorbBall(dominantBlackHole, ball);
           continue;
         }
 
@@ -1767,15 +1948,15 @@ const Circle = () => {
           const tx = -ny;
           const ty = nx;
           const mobileForceScale = arena.width < 600 ? 0.72 : 1;
-          const radiusScale = blackHole.radius / BASE_HOLE_RADIUS;
+          const radiusScale = dominantBlackHole.radius / BASE_HOLE_RADIUS;
           const orbitForce =
-            (52 + blackHole.mass * 3.1) *
+            (52 + dominantBlackHole.mass * 3.1) *
             radiusScale *
             gravityMultiplier *
             mobileForceScale *
             earlyCycleDamping;
           const gravityForce =
-            blackHole.strength *
+            dominantBlackHole.strength *
             radiusScale *
             scale.gravityScale *
             gravityMultiplier *
@@ -1850,21 +2031,21 @@ const Circle = () => {
 
         if (absorptionEnabled) {
           const postMoveDistance = Math.hypot(
-            ball.x - blackHole.x,
-            ball.y - blackHole.y,
+            ball.x - dominantBlackHole.x,
+            ball.y - dominantBlackHole.y,
           );
           if (postMoveDistance < absorbRadius) {
-            absorbBall(blackHole, ball);
+            absorbBall(dominantBlackHole, ball);
             continue;
           }
         }
 
         const postMoveDistance = Math.hypot(
-          ball.x - blackHole.x,
-          ball.y - blackHole.y,
+          ball.x - dominantBlackHole.x,
+          ball.y - dominantBlackHole.y,
         );
         if (postMoveDistance >= influenceRadius) {
-          enforceMinimumSpeed(ball, blackHole, dt, scale.speedScale);
+          enforceMinimumSpeed(ball, dominantBlackHole, dt, scale.speedScale);
         } else {
           ball.slowTime = 0;
         }
@@ -1872,10 +2053,10 @@ const Circle = () => {
 
         if (
           absorptionEnabled &&
-          Math.hypot(ball.x - blackHole.x, ball.y - blackHole.y) <
+          Math.hypot(ball.x - dominantBlackHole.x, ball.y - dominantBlackHole.y) <
             absorbRadius
         ) {
-          absorbBall(blackHole, ball);
+          absorbBall(dominantBlackHole, ball);
           continue;
         }
 
@@ -1895,14 +2076,16 @@ const Circle = () => {
       for (let i = 0; i < balls.length; i++) {
         const ball = balls[i];
         if (!ball.active) continue;
+        const dominantBlackHole = pickDominantBlackHole(ball);
+        if (!dominantBlackHole) continue;
         const distanceFromBlackHole = Math.hypot(
-          ball.x - blackHole.x,
-          ball.y - blackHole.y,
+          ball.x - dominantBlackHole.x,
+          ball.y - dominantBlackHole.y,
         );
         const influenceRadius =
-          blackHole.radius * 8.5 * scale.gravityScale * gravityMultiplier;
+          dominantBlackHole.radius * 8.5 * scale.gravityScale * gravityMultiplier;
         if (distanceFromBlackHole >= influenceRadius) {
-          enforceMinimumSpeed(ball, blackHole, dt, scale.speedScale);
+          enforceMinimumSpeed(ball, dominantBlackHole, dt, scale.speedScale);
         } else {
           ball.slowTime = 0;
         }
@@ -1923,13 +2106,21 @@ const Circle = () => {
 
     const updateHud = (time: number) => {
       const blackHole = blackHoleRef.current;
+      const secondBlackHole = secondBlackHoleRef.current;
       const cycle = cycleRef.current;
       if (!blackHole || time - lastHudUpdateRef.current < HUD_UPDATE_INTERVAL) {
         return;
       }
 
       lastHudUpdateRef.current = time;
-      const absorbedCount = Math.max(0, Math.round(blackHole.mass - 1));
+      const absorbedCount = Math.max(
+        0,
+        Math.round(
+          blackHole.mass +
+            (secondBlackHole?.active ? secondBlackHole.mass : 0) -
+            (secondBlackHole?.active ? 2 : 1),
+        ),
+      );
       const stability =
         cycle.phase === "collapse"
           ? Math.max(
@@ -1970,6 +2161,7 @@ const Circle = () => {
 
       const arena = arenaRef.current;
       const blackHole = blackHoleRef.current;
+      const secondBlackHole = secondBlackHoleRef.current;
       const cycle = cycleRef.current;
       const renderScale = getPhysicsScale(arena);
 
@@ -1998,12 +2190,17 @@ const Circle = () => {
       stepPhysics(dt, time);
       updateHud(time);
       if (blackHole?.active) {
-        soundRef.current?.updateHum(Math.min(1, (blackHole.mass - 1) / BALL_COUNT));
+        const totalMass =
+          blackHole.mass +
+          (secondBlackHole?.active ? secondBlackHole.mass - 1 : 0);
+        soundRef.current?.updateHum(Math.min(1, (totalMass - 1) / BALL_COUNT));
       }
       drawTrails(ctx, trailParticlesRef.current, dt, renderScale.visualScale);
       for (let i = 0; i < ballsRef.current.length; i++) {
         const ball = ballsRef.current[i];
-        if (ball.active) drawBall(ctx, ball, renderScale.visualScale, blackHole);
+        if (ball.active) {
+          drawBall(ctx, ball, renderScale.visualScale, pickDominantBlackHole(ball));
+        }
       }
       if (cycle.shockwaveAt <= 0) {
         drawSpawnRings(ctx, shockwavesRef.current, dt, renderScale.visualScale);
@@ -2016,6 +2213,15 @@ const Circle = () => {
           cycleRef.current,
           renderScale.blackHoleVisualScale,
         );
+        if (secondBlackHole?.active) {
+          drawBlackHole(
+            ctx,
+            secondBlackHole,
+            time,
+            cycleRef.current,
+            renderScale.blackHoleVisualScale,
+          );
+        }
         drawExplosion(
           ctx,
           arena,
