@@ -350,10 +350,18 @@ class SoundManager {
     const time = this.audio.currentTime;
     this.humGain.gain.setTargetAtTime(0.036 + massRatio * 0.05, time, 0.18);
     if (this.humOscillators[0]) {
-      this.humOscillators[0].frequency.setTargetAtTime(38 + massRatio * 18, time, 0.24);
+      this.humOscillators[0].frequency.setTargetAtTime(
+        38 + massRatio * 18,
+        time,
+        0.24,
+      );
     }
     if (this.humOscillators[1]) {
-      this.humOscillators[1].frequency.setTargetAtTime(78 + massRatio * 24, time, 0.24);
+      this.humOscillators[1].frequency.setTargetAtTime(
+        78 + massRatio * 24,
+        time,
+        0.24,
+      );
     }
   }
 
@@ -437,7 +445,8 @@ class SoundManager {
   }
 
   playCollision(intensity: number) {
-    if (!this.audio || !this.masterGain || this.muted || intensity < 0.34) return;
+    if (!this.audio || !this.masterGain || this.muted || intensity < 0.34)
+      return;
     const now = this.audio.currentTime;
     if (now - this.lastCollisionAt < 0.075) return;
     this.lastCollisionAt = now;
@@ -447,7 +456,10 @@ class SoundManager {
     osc.type = "triangle";
     osc.frequency.value = 420 + intensity * 360;
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.012 + intensity * 0.018, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(
+      0.012 + intensity * 0.018,
+      now + 0.01,
+    );
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
     osc.connect(gain);
     gain.connect(this.masterGain);
@@ -563,22 +575,13 @@ class SoundManager {
 
     this.musicGain.gain.setTargetAtTime(0.13, time, 1.6);
     for (let i = 0; i < this.musicOscillators.length; i++) {
-      this.musicOscillators[i].frequency.setTargetAtTime(
-        chord[i],
-        time,
-        2.4,
-      );
+      this.musicOscillators[i].frequency.setTargetAtTime(chord[i], time, 2.4);
     }
     this.musicStep += 1;
   }
 
   private playTestBeep() {
-    if (
-      !this.audio ||
-      !this.masterGain ||
-      this.muted ||
-      this.testBeepPlayed
-    ) {
+    if (!this.audio || !this.masterGain || this.muted || this.testBeepPlayed) {
       return;
     }
 
@@ -691,7 +694,11 @@ const enforceMinimumSpeed = (
   }
 };
 
-const createPlacedBlackHole = (arena: Arena, x: number, y: number): BlackHole => {
+const createPlacedBlackHole = (
+  arena: Arena,
+  x: number,
+  y: number,
+): BlackHole => {
   const isMobile = arena.width < 600;
   const margin = Math.min(
     120,
@@ -766,11 +773,11 @@ const resetExplosionBall = (
   ball.x = originX + Math.cos(angle) * (BASE_HOLE_RADIUS + radius + 4);
   ball.y = originY + Math.sin(angle) * (BASE_HOLE_RADIUS + radius + 4);
   ball.vx =
-      (Math.cos(angle) * speed + randomBetween(-70, 70)) *
-      BALL_SPEED_SCALE *
-      EXPLOSION_LAUNCH_SCALE *
-      speedScale *
-      explosionScale;
+    (Math.cos(angle) * speed + randomBetween(-70, 70)) *
+    BALL_SPEED_SCALE *
+    EXPLOSION_LAUNCH_SCALE *
+    speedScale *
+    explosionScale;
   ball.vy =
     (Math.sin(angle) * speed + randomBetween(-70, 70)) *
     BALL_SPEED_SCALE *
@@ -800,6 +807,14 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   canvas.height = Math.floor(height * dpr);
   if (ctx) {
     ctx.imageSmoothingEnabled = true;
+    try {
+      // prefer high quality smoothing when available
+      // @ts-ignore
+      if (ctx.imageSmoothingQuality !== undefined)
+        ctx.imageSmoothingQuality = "high";
+    } catch (e) {
+      // ignore
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
@@ -890,7 +905,9 @@ const drawBackground = (
   alpha = 1,
 ) => {
   const { width, height } = arena;
-  const massGlow = blackHole ? Math.min(1, (blackHole.mass - 1) / BALL_COUNT) : 0;
+  const massGlow = blackHole
+    ? Math.min(1, (blackHole.mass - 1) / BALL_COUNT)
+    : 0;
   const darkening = 0.06 + massGlow * 0.24;
 
   ctx.save();
@@ -1037,10 +1054,23 @@ const drawBlackHole = (
   ctx.fill();
   ctx.restore();
 
-  const distortion = ctx.createRadialGradient(0, 0, coreRadius * 0.95, 0, 0, coreRadius * 3.35);
+  const distortion = ctx.createRadialGradient(
+    0,
+    0,
+    coreRadius * 0.95,
+    0,
+    0,
+    coreRadius * 3.35,
+  );
   distortion.addColorStop(0, "rgba(0, 0, 0, 0)");
-  distortion.addColorStop(0.48, `rgba(255, 255, 255, ${0.065 + massRatio * 0.06})`);
-  distortion.addColorStop(0.54, `rgba(125, 249, 255, ${0.028 + massRatio * 0.04})`);
+  distortion.addColorStop(
+    0.48,
+    `rgba(255, 255, 255, ${0.065 + massRatio * 0.06})`,
+  );
+  distortion.addColorStop(
+    0.54,
+    `rgba(125, 249, 255, ${0.028 + massRatio * 0.04})`,
+  );
   distortion.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = distortion;
   ctx.beginPath();
@@ -1059,7 +1089,13 @@ const drawBlackHole = (
         ? `rgba(125, 249, 255, ${alpha})`
         : `rgba(167, 139, 250, ${alpha * 0.8})`;
     ctx.beginPath();
-    ctx.arc(Math.cos(angle) * radius, Math.sin(angle) * radius, size, 0, Math.PI * 2);
+    ctx.arc(
+      Math.cos(angle) * radius,
+      Math.sin(angle) * radius,
+      size,
+      0,
+      Math.PI * 2,
+    );
     ctx.fill();
   }
 
@@ -1125,13 +1161,7 @@ const drawExplosion = (
       ctx.strokeStyle = `rgba(125, 249, 255, ${alpha})`;
       ctx.lineWidth = 1 + ring.width * visualScale * (1 - progress);
       ctx.beginPath();
-      ctx.arc(
-        ring.x,
-        ring.y,
-        ring.maxRadius * progress,
-        0,
-        Math.PI * 2,
-      );
+      ctx.arc(ring.x, ring.y, ring.maxRadius * progress, 0, Math.PI * 2);
       ctx.stroke();
     }
   }
@@ -1177,9 +1207,7 @@ const drawExplosion = (
     );
     radialGlow.addColorStop(
       1,
-      isRedMood
-        ? "rgba(255, 60, 90, 0)"
-        : "rgba(90, 240, 255, 0)",
+      isRedMood ? "rgba(255, 60, 90, 0)" : "rgba(90, 240, 255, 0)",
     );
     ctx.fillStyle = radialGlow;
     ctx.fillRect(0, 0, arena.width, arena.height);
@@ -1296,11 +1324,17 @@ const drawBall = (
   if (!performanceMode || ball.radius > 14) {
     ctx.shadowColor = ball.glow;
     ctx.shadowBlur =
-      radius * (performanceMode ? 0.52 : 1.2) * glowAlpha * (1 + stretchT * 0.7);
+      radius *
+      (performanceMode ? 0.52 : 1.2) *
+      glowAlpha *
+      (1 + stretchT * 0.7);
   }
 
   if (stretchT > 0.45) {
-    ctx.strokeStyle = ball.glow.replace(/[\d.]+\)$/, `${0.22 + stretchT * 0.22})`);
+    ctx.strokeStyle = ball.glow.replace(
+      /[\d.]+\)$/,
+      `${0.22 + stretchT * 0.22})`,
+    );
     ctx.lineWidth = Math.max(0.7, radius * (0.18 + stretchT * 0.18));
     ctx.beginPath();
     ctx.moveTo(-radius * (1.3 + stretchT * 2.7), 0);
@@ -1331,7 +1365,9 @@ const drawBall = (
   ctx.fill();
 
   ctx.shadowBlur =
-    !performanceMode || ball.radius > 14 ? radius * (0.26 + stretchT * 0.18) : 0;
+    !performanceMode || ball.radius > 14
+      ? radius * (0.26 + stretchT * 0.18)
+      : 0;
   ctx.strokeStyle = ball.glow;
   ctx.lineWidth = Math.max(0.7, 1.15 * visualScale);
   ctx.stroke();
@@ -1392,7 +1428,10 @@ const Circle = () => {
     Array.from({ length: MAX_BALLS }, createBlankBall),
   );
   const explosionParticlesRef = useRef<ExplosionParticle[]>(
-    Array.from({ length: MAX_EXPLOSION_PARTICLES }, createBlankExplosionParticle),
+    Array.from(
+      { length: MAX_EXPLOSION_PARTICLES },
+      createBlankExplosionParticle,
+    ),
   );
   const trailParticlesRef = useRef<TrailParticle[]>(
     Array.from({ length: MAX_TRAIL_PARTICLES }, createBlankTrailParticle),
@@ -1404,7 +1443,7 @@ const Circle = () => {
   const secondBlackHoleRef = useRef<BlackHole | null>(null);
   const audioStartingRef = useRef<boolean>(false);
   const arenaRef = useRef<Arena>({ width: 0, height: 0, dpr: 1 });
-      const cycleRef = useRef<CycleState>({
+  const cycleRef = useRef<CycleState>({
     phase: "calm",
     phaseStartedAt: 0,
     shockwaveAt: -Infinity,
@@ -1444,7 +1483,9 @@ const Circle = () => {
       const originX = blackHole?.x ?? arena.width / 2;
       const originY = blackHole?.y ?? arena.height / 2;
       const particleCount =
-        arena.width < 600 ? MOBILE_EXPLOSION_PARTICLE_COUNT : EXPLOSION_PARTICLE_COUNT;
+        arena.width < 600
+          ? MOBILE_EXPLOSION_PARTICLE_COUNT
+          : EXPLOSION_PARTICLE_COUNT;
 
       for (let i = 0; i < particles.length; i++) {
         const particle = particles[i];
@@ -1477,7 +1518,10 @@ const Circle = () => {
     const emitShockwaves = () => {
       const shockwaves = shockwavesRef.current;
       const blackHole = blackHoleRef.current;
-      const maxDimension = Math.max(arenaRef.current.width, arenaRef.current.height);
+      const maxDimension = Math.max(
+        arenaRef.current.width,
+        arenaRef.current.height,
+      );
       const ringCount = 2;
       for (let i = 0; i < shockwaves.length; i++) {
         const ring = shockwaves[i];
@@ -1575,7 +1619,8 @@ const Circle = () => {
     };
 
     const placeBlackHole = (clientX: number, clientY: number) => {
-      if (blackHoleRef.current?.active && secondBlackHoleRef.current?.active) return;
+      if (blackHoleRef.current?.active && secondBlackHoleRef.current?.active)
+        return;
 
       const rect = canvas.getBoundingClientRect();
       const x = clientX - rect.left;
@@ -1633,7 +1678,9 @@ const Circle = () => {
       blackHole.targetRadius +=
         Math.max(2.2, ball.radius * 0.24) * scale.growthScale;
       blackHole.strength += (19000 + ball.mass * 14) * scale.growthScale;
-      soundRef.current?.playAbsorb(Math.min(1, (blackHole.mass - 1) / BALL_COUNT));
+      soundRef.current?.playAbsorb(
+        Math.min(1, (blackHole.mass - 1) / BALL_COUNT),
+      );
     };
 
     const pickDominantBlackHole = (ball: GravityBall) => {
@@ -1718,7 +1765,13 @@ const Circle = () => {
       second.x += second.vx * dt;
       second.y += second.vy * dt;
 
-      const margin = Math.min(96, Math.max(42, Math.min(arenaRef.current.width, arenaRef.current.height) * 0.18));
+      const margin = Math.min(
+        96,
+        Math.max(
+          42,
+          Math.min(arenaRef.current.width, arenaRef.current.height) * 0.18,
+        ),
+      );
       first.x = clamp(first.x, margin, arenaRef.current.width - margin);
       first.y = clamp(first.y, margin, arenaRef.current.height - margin);
       second.x = clamp(second.x, margin, arenaRef.current.width - margin);
@@ -1926,15 +1979,15 @@ const Circle = () => {
         const nx = dx / actualDistance;
         const ny = dy / actualDistance;
         const influenceRadius =
-          dominantBlackHole.radius * 8.5 * scale.gravityScale * gravityMultiplier;
+          dominantBlackHole.radius *
+          8.5 *
+          scale.gravityScale *
+          gravityMultiplier;
         const stableOrbitRadius = dominantBlackHole.radius * 4.2;
         const plungeRadius = dominantBlackHole.radius * 1.95;
         const absorbRadius = dominantBlackHole.radius + ball.radius * 0.35;
 
-        if (
-          absorptionEnabled &&
-          actualDistance < absorbRadius
-        ) {
+        if (absorptionEnabled && actualDistance < absorbRadius) {
           absorbBall(dominantBlackHole, ball);
           continue;
         }
@@ -2053,8 +2106,10 @@ const Circle = () => {
 
         if (
           absorptionEnabled &&
-          Math.hypot(ball.x - dominantBlackHole.x, ball.y - dominantBlackHole.y) <
-            absorbRadius
+          Math.hypot(
+            ball.x - dominantBlackHole.x,
+            ball.y - dominantBlackHole.y,
+          ) < absorbRadius
         ) {
           absorbBall(dominantBlackHole, ball);
           continue;
@@ -2083,7 +2138,10 @@ const Circle = () => {
           ball.y - dominantBlackHole.y,
         );
         const influenceRadius =
-          dominantBlackHole.radius * 8.5 * scale.gravityScale * gravityMultiplier;
+          dominantBlackHole.radius *
+          8.5 *
+          scale.gravityScale *
+          gravityMultiplier;
         if (distanceFromBlackHole >= influenceRadius) {
           enforceMinimumSpeed(ball, dominantBlackHole, dt, scale.speedScale);
         } else {
@@ -2092,10 +2150,7 @@ const Circle = () => {
         clampSpeed(ball);
       }
 
-      if (
-        cycle.phase === "active" &&
-        activeCount === 0
-      ) {
+      if (cycle.phase === "active" && activeCount === 0) {
         cycleRef.current = {
           phase: "collapse",
           phaseStartedAt: time,
@@ -2199,7 +2254,12 @@ const Circle = () => {
       for (let i = 0; i < ballsRef.current.length; i++) {
         const ball = ballsRef.current[i];
         if (ball.active) {
-          drawBall(ctx, ball, renderScale.visualScale, pickDominantBlackHole(ball));
+          drawBall(
+            ctx,
+            ball,
+            renderScale.visualScale,
+            pickDominantBlackHole(ball),
+          );
         }
       }
       if (cycle.shockwaveAt <= 0) {
@@ -2344,10 +2404,7 @@ const Circle = () => {
             ? `SUPERNOVA ${roundedMobileCharge}%`
             : "";
   return (
-    <div
-      ref={gravityWellRef}
-      className="gravity-well"
-    >
+    <div ref={gravityWellRef} className="gravity-well">
       <canvas ref={canvasRef} className="gravity-canvas" />
       {showSoundPrompt ? (
         <div className="sound-prompt" aria-hidden="true">
@@ -2520,7 +2577,6 @@ const Circle = () => {
             pointer-events: none;
             animation: mobileStatusFade 2.4s ease-out forwards;
           }
-
         }
 
         @keyframes mobileStatusFade {
