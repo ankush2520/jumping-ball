@@ -1,11 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import GravityWell from "./components/games/gravity-well/GravityWell";
 import MenuScreen from "./components/shared/MenuScreen";
+import { getSimulationById, simulations } from "./data/simulations";
 
 export default function Home() {
-  const [showSimulation, setShowSimulation] = useState(false);
+  const [activeSimulationId, setActiveSimulationId] = useState<string | null>(
+    null,
+  );
+  const activeSimulation = activeSimulationId
+    ? getSimulationById(activeSimulationId)
+    : null;
+  const ActiveSimulation = activeSimulation?.component ?? null;
 
   return (
     <div
@@ -18,11 +24,11 @@ export default function Home() {
         overflowY: "visible",
       }}
     >
-      {showSimulation ? (
+      {ActiveSimulation ? (
         <>
           <button
             type="button"
-            onClick={() => setShowSimulation(false)}
+            onClick={() => setActiveSimulationId(null)}
             style={{
               position: "fixed",
               left: 16,
@@ -41,10 +47,13 @@ export default function Home() {
           >
             ← Back to menu
           </button>
-          <GravityWell />
+          <ActiveSimulation />
         </>
       ) : (
-        <MenuScreen onLaunch={() => setShowSimulation(true)} />
+        <MenuScreen
+          simulations={simulations}
+          onLaunch={setActiveSimulationId}
+        />
       )}
     </div>
   );

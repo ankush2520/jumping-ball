@@ -1,179 +1,157 @@
 "use client";
 
 import React, { useState } from "react";
+import type { Simulation } from "../../data/simulations";
 
 interface Props {
-  onLaunch: () => void;
+  simulations: Simulation[];
+  onLaunch: (id: string) => void;
 }
 
-const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
+const renderSimulationIcon = (icon: Simulation["icon"]) => {
+  if (icon === "gravity-well") {
+    return (
+      <svg
+        viewBox="0 0 64 64"
+        width="48"
+        height="48"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      >
+        <circle cx="32" cy="32" r="24" opacity="0.4" />
+        <circle cx="32" cy="32" r="16" />
+        <circle cx="32" cy="32" r="6" fill="currentColor" />
+        <circle cx="48" cy="20" r="3" fill="currentColor" opacity="0.6" />
+        <circle cx="20" cy="44" r="4" fill="currentColor" opacity="0.5" />
+      </svg>
+    );
+  }
+
+  if (icon === "plasma-bounce") {
+    return (
+      <svg
+        viewBox="0 0 64 64"
+        width="48"
+        height="48"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      >
+        <path d="M16 36c7-15 13 15 20 0s12-12 18 0" />
+        <path d="M12 24c8-10 16 10 24 0s12-8 16 0" opacity="0.55" />
+        <circle cx="22" cy="42" r="4" fill="currentColor" opacity="0.5" />
+        <circle cx="46" cy="20" r="5" fill="currentColor" opacity="0.35" />
+      </svg>
+    );
+  }
+
+  if (icon === "neon-particles") {
+    return (
+      <svg
+        viewBox="0 0 64 64"
+        width="48"
+        height="48"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      >
+        <path d="M16 48 32 16l16 32" />
+        <circle cx="32" cy="16" r="4" fill="currentColor" />
+        <circle cx="16" cy="48" r="5" opacity="0.65" />
+        <circle cx="48" cy="48" r="5" opacity="0.65" />
+        <circle cx="32" cy="36" r="3" fill="currentColor" opacity="0.5" />
+      </svg>
+    );
+  }
+
+  if (icon === "orbital-chaos") {
+    return (
+      <svg
+        viewBox="0 0 64 64"
+        width="48"
+        height="48"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      >
+        <circle cx="32" cy="32" r="6" fill="currentColor" />
+        <ellipse cx="32" cy="32" rx="24" ry="10" />
+        <ellipse
+          cx="32"
+          cy="32"
+          rx="24"
+          ry="10"
+          transform="rotate(60 32 32)"
+        />
+        <ellipse
+          cx="32"
+          cy="32"
+          rx="24"
+          ry="10"
+          transform="rotate(120 32 32)"
+        />
+        <circle cx="52" cy="32" r="3" fill="currentColor" opacity="0.65" />
+      </svg>
+    );
+  }
+
+  if (icon === "quantum-wave") {
+    return (
+      <svg
+        viewBox="0 0 64 64"
+        width="48"
+        height="48"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      >
+        <path d="M8 34c6-18 12 18 18 0s12-18 18 0 12 18 18 0" />
+        <path
+          d="M8 44c6-10 12 10 18 0s12-10 18 0 12 10 18 0"
+          opacity="0.45"
+        />
+        <path d="M12 22h40" opacity="0.35" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg
+      viewBox="0 0 64 64"
+      width="48"
+      height="48"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="12" y="12" width="40" height="40" rx="10" opacity="0.55" />
+      <path d="M20 32h24M32 20v24" opacity="0.45" />
+      <circle cx="23" cy="24" r="5" fill="currentColor" opacity="0.55" />
+      <circle cx="42" cy="40" r="6" />
+      <path d="m28 28 8 8" />
+    </svg>
+  );
+};
+
+const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
   const [comingSoonTitle, setComingSoonTitle] = useState<string | null>(null);
 
-  const menuItems = [
-    {
-      title: "Gravity Well",
-      subtitle: "Singularity Field",
-      description: "Bend momentum through a luminous gravity core.",
-      icon: (
-        <svg
-          viewBox="0 0 64 64"
-          width="48"
-          height="48"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        >
-          <circle cx="32" cy="32" r="24" opacity="0.4" />
-          <circle cx="32" cy="32" r="16" />
-          <circle cx="32" cy="32" r="6" fill="currentColor" />
-          <circle cx="48" cy="20" r="3" fill="currentColor" opacity="0.6" />
-          <circle cx="20" cy="44" r="4" fill="currentColor" opacity="0.5" />
-        </svg>
-      ),
-      action: onLaunch,
-      glow: "card-cyan",
-      available: true,
-    },
-    {
-      title: "Plasma Bounce",
-      subtitle: "Ionized Rebound",
-      description: "Launch charged motion inside a reactive plasma shell.",
-      icon: (
-        <svg
-          viewBox="0 0 64 64"
-          width="48"
-          height="48"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        >
-          <path d="M16 36c7-15 13 15 20 0s12-12 18 0" />
-          <path d="M12 24c8-10 16 10 24 0s12-8 16 0" opacity="0.55" />
-          <circle cx="22" cy="42" r="4" fill="currentColor" opacity="0.5" />
-          <circle cx="46" cy="20" r="5" fill="currentColor" opacity="0.35" />
-        </svg>
-      ),
-      action: () => setComingSoonTitle("Plasma Bounce"),
-      glow: "card-violet",
-      available: false,
-    },
-    {
-      title: "Neon Particles",
-      subtitle: "Photon Swarm",
-      description: "Trace sparkling paths through an electric particle field.",
-      icon: (
-        <svg
-          viewBox="0 0 64 64"
-          width="48"
-          height="48"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        >
-          <path d="M16 48 32 16l16 32" />
-          <circle cx="32" cy="16" r="4" fill="currentColor" />
-          <circle cx="16" cy="48" r="5" opacity="0.65" />
-          <circle cx="48" cy="48" r="5" opacity="0.65" />
-          <circle cx="32" cy="36" r="3" fill="currentColor" opacity="0.5" />
-        </svg>
-      ),
-      action: () => setComingSoonTitle("Neon Particles"),
-      glow: "card-emerald",
-      available: false,
-    },
-    {
-      title: "Orbital Chaos",
-      subtitle: "Unstable System",
-      description: "Explore cascading paths and volatile orbital drift.",
-      icon: (
-        <svg
-          viewBox="0 0 64 64"
-          width="48"
-          height="48"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        >
-          <circle cx="32" cy="32" r="6" fill="currentColor" />
-          <ellipse cx="32" cy="32" rx="24" ry="10" />
-          <ellipse
-            cx="32"
-            cy="32"
-            rx="24"
-            ry="10"
-            transform="rotate(60 32 32)"
-          />
-          <ellipse
-            cx="32"
-            cy="32"
-            rx="24"
-            ry="10"
-            transform="rotate(120 32 32)"
-          />
-          <circle cx="52" cy="32" r="3" fill="currentColor" opacity="0.65" />
-        </svg>
-      ),
-      action: () => setComingSoonTitle("Orbital Chaos"),
-      glow: "card-amber",
-      available: false,
-    },
-    {
-      title: "Quantum Wave",
-      subtitle: "Probability Drift",
-      description: "Watch waveforms shimmer through a synthetic chamber.",
-      icon: (
-        <svg
-          viewBox="0 0 64 64"
-          width="48"
-          height="48"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-        >
-          <path d="M8 34c6-18 12 18 18 0s12-18 18 0 12 18 18 0" />
-          <path
-            d="M8 44c6-10 12 10 18 0s12-10 18 0 12 10 18 0"
-            opacity="0.45"
-          />
-          <path d="M12 22h40" opacity="0.35" />
-        </svg>
-      ),
-      action: () => setComingSoonTitle("Quantum Wave"),
-      glow: "card-blue",
-      available: false,
-    },
-    {
-      title: "Collision Lab",
-      subtitle: "Impact Matrix",
-      description: "Test kinetic response inside a precision collision grid.",
-      icon: (
-        <svg
-          viewBox="0 0 64 64"
-          width="48"
-          height="48"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <rect x="12" y="12" width="40" height="40" rx="10" opacity="0.55" />
-          <path d="M20 32h24M32 20v24" opacity="0.45" />
-          <circle cx="23" cy="24" r="5" fill="currentColor" opacity="0.55" />
-          <circle cx="42" cy="40" r="6" />
-          <path d="m28 28 8 8" />
-        </svg>
-      ),
-      action: () => setComingSoonTitle("Collision Lab"),
-      glow: "card-rose",
-      available: false,
-    },
-  ];
+  const handleLaunch = (simulation: Simulation) => {
+    if (simulation.status === "coming-soon" || !simulation.component) {
+      setComingSoonTitle(simulation.title);
+      return;
+    }
+
+    onLaunch(simulation.id);
+  };
 
   return (
     <div className="menu-root">
@@ -195,22 +173,28 @@ const MenuScreen: React.FC<Props> = ({ onLaunch }) => {
 
         {/* Simulation Grid */}
         <div className="buttons-section">
-          {menuItems.map((item) => (
+          {simulations.map((simulation) => (
             <button
-              key={item.title}
-              onClick={item.action}
-              className={`launch-button ${item.glow}`}
+              key={simulation.id}
+              onClick={() => handleLaunch(simulation)}
+              className={`launch-button ${simulation.glow}`}
             >
               <div className="button-content">
-                <div className="button-icon">{item.icon}</div>
+                <div className="button-icon">
+                  {renderSimulationIcon(simulation.icon)}
+                </div>
                 <div className="button-text">
-                  <div className="button-title">{item.title}</div>
-                  <div className="button-subtitle">{item.subtitle}</div>
-                  <div className="button-description">{item.description}</div>
+                  <div className="button-title">{simulation.title}</div>
+                  <div className="button-subtitle">{simulation.subtitle}</div>
+                  <div className="button-description">
+                    {simulation.description}
+                  </div>
                 </div>
               </div>
               <div className="button-arrow">
-                <span>{item.available ? "Launch" : "Soon"}</span>
+                <span>
+                  {simulation.status === "coming-soon" ? "Soon" : "Launch"}
+                </span>
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
