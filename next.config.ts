@@ -7,6 +7,7 @@ const nextConfig: NextConfig = {
   output: "export",
   basePath: isGithubPages ? repoPath : "",
   assetPrefix: isGithubPages ? repoPath : undefined,
+  devIndicators: false,
 };
 
 export default nextConfig;

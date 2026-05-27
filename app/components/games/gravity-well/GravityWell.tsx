@@ -1108,7 +1108,7 @@ const GravityWell = () => {
         .gravity-stats {
           position: fixed;
           left: 16px;
-          bottom: 16px;
+          bottom: 42px;
           z-index: 5;
           display: grid;
           grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -29,7 +29,7 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
-  if (icon === "plasma-bounce") {
+  if (icon === "ecosystem-arena") {
     return (
       <svg
         viewBox="0 0 64 64"
@@ -40,105 +40,17 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
         strokeWidth="2"
         strokeLinecap="round"
       >
-        <path d="M16 36c7-15 13 15 20 0s12-12 18 0" />
-        <path d="M12 24c8-10 16 10 24 0s12-8 16 0" opacity="0.55" />
-        <circle cx="22" cy="42" r="4" fill="currentColor" opacity="0.5" />
-        <circle cx="46" cy="20" r="5" fill="currentColor" opacity="0.35" />
+        <circle cx="20" cy="25" r="6" fill="currentColor" opacity="0.8" />
+        <circle cx="42" cy="20" r="5" fill="currentColor" opacity="0.55" />
+        <circle cx="36" cy="43" r="7" fill="currentColor" opacity="0.35" />
+        <circle cx="48" cy="40" r="8" opacity="0.7" />
+        <path d="M24 28c5 7 9 10 18 10" opacity="0.55" />
+        <path d="M38 22c-8 1-13 4-17 12" opacity="0.45" />
       </svg>
     );
   }
 
-  if (icon === "neon-particles") {
-    return (
-      <svg
-        viewBox="0 0 64 64"
-        width="48"
-        height="48"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      >
-        <path d="M16 48 32 16l16 32" />
-        <circle cx="32" cy="16" r="4" fill="currentColor" />
-        <circle cx="16" cy="48" r="5" opacity="0.65" />
-        <circle cx="48" cy="48" r="5" opacity="0.65" />
-        <circle cx="32" cy="36" r="3" fill="currentColor" opacity="0.5" />
-      </svg>
-    );
-  }
-
-  if (icon === "orbital-chaos") {
-    return (
-      <svg
-        viewBox="0 0 64 64"
-        width="48"
-        height="48"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      >
-        <circle cx="32" cy="32" r="6" fill="currentColor" />
-        <ellipse cx="32" cy="32" rx="24" ry="10" />
-        <ellipse
-          cx="32"
-          cy="32"
-          rx="24"
-          ry="10"
-          transform="rotate(60 32 32)"
-        />
-        <ellipse
-          cx="32"
-          cy="32"
-          rx="24"
-          ry="10"
-          transform="rotate(120 32 32)"
-        />
-        <circle cx="52" cy="32" r="3" fill="currentColor" opacity="0.65" />
-      </svg>
-    );
-  }
-
-  if (icon === "quantum-wave") {
-    return (
-      <svg
-        viewBox="0 0 64 64"
-        width="48"
-        height="48"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      >
-        <path d="M8 34c6-18 12 18 18 0s12-18 18 0 12 18 18 0" />
-        <path
-          d="M8 44c6-10 12 10 18 0s12-10 18 0 12 10 18 0"
-          opacity="0.45"
-        />
-        <path d="M12 22h40" opacity="0.35" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg
-      viewBox="0 0 64 64"
-      width="48"
-      height="48"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect x="12" y="12" width="40" height="40" rx="10" opacity="0.55" />
-      <path d="M20 32h24M32 20v24" opacity="0.45" />
-      <circle cx="23" cy="24" r="5" fill="currentColor" opacity="0.55" />
-      <circle cx="42" cy="40" r="6" />
-      <path d="m28 28 8 8" />
-    </svg>
-  );
+  return null;
 };
 
 const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
@@ -184,7 +96,12 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
                   {renderSimulationIcon(simulation.icon)}
                 </div>
                 <div className="button-text">
-                  <div className="button-title">{simulation.title}</div>
+                  <div className="button-title">
+                    {simulation.title}
+                    {simulation.id === "ecosystem-arena" ? (
+                      <span className="simulation-badge">NEW</span>
+                    ) : null}
+                  </div>
                   <div className="button-subtitle">{simulation.subtitle}</div>
                   <div className="button-description">
                     {simulation.description}
@@ -456,9 +373,12 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
         .buttons-section {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 18px;
+          gap: 28px;
+          align-items: stretch;
+          justify-content: center;
+          width: min(880px, 100%);
           padding: 0 34px 10px;
-          margin-top: 0;
+          margin: 0 auto;
         }
 
         .launch-button {
@@ -636,6 +556,9 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
         }
 
         .button-title {
+          display: flex;
+          align-items: center;
+          gap: 9px;
           font-size: 1.14rem;
           font-weight: 800;
           margin-bottom: 6px;
@@ -643,6 +566,22 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
           text-shadow:
             0 0 18px rgba(125, 249, 255, 0.28),
             0 2px 18px rgba(2, 8, 23, 0.7);
+        }
+
+        .simulation-badge {
+          display: inline-flex;
+          align-items: center;
+          min-height: 18px;
+          padding: 0 7px;
+          border: 1px solid rgba(var(--card-rgb), 0.42);
+          border-radius: 999px;
+          background: rgba(var(--card-rgb), 0.13);
+          color: rgb(var(--card-rgb));
+          font-size: 0.55rem;
+          font-weight: 900;
+          letter-spacing: 0.12em;
+          line-height: 1;
+          text-shadow: none;
         }
 
         .button-subtitle {
@@ -851,7 +790,7 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
             width: 100%;
             margin: 0 auto;
             grid-template-columns: 1fr;
-            gap: 14px;
+            gap: 20px;
             padding: 0;
           }
 
@@ -873,6 +812,7 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
           }
 
           .button-title {
+            justify-content: center;
             font-size: 1.2rem;
           }
 
