@@ -1,795 +1,14 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-
-type GravityBall = {
-  active: boolean;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  radius: number;
-  mass: number;
-  color: string;
-  glow: string;
-  slowTime: number;
-};
-
-type ExplosionParticle = {
-  active: boolean;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  life: number;
-  maxLife: number;
-  radius: number;
-  color: string;
-};
-
-type TrailParticle = {
-  active: boolean;
-  x: number;
-  y: number;
-  life: number;
-  maxLife: number;
-  radius: number;
-  color: string;
-};
-
-type ShockwaveRing = {
-  active: boolean;
-  x: number;
-  y: number;
-  age: number;
-  duration: number;
-  maxRadius: number;
-  width: number;
-  alpha: number;
-};
-
-type HudStats = {
-  mass: number;
-  stability: number;
-  charge: number;
-  stage: string;
-};
-
-type BlackHole = {
-  active: boolean;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  radius: number;
-  targetRadius: number;
-  strength: number;
-  mass: number;
-  rotationAngle: number;
-  rotationSpeed: number;
-};
-
-type Arena = {
-  width: number;
-  height: number;
-  dpr: number;
-};
-
-type PhysicsScale = {
-  mobileScale: number;
-  speedScale: number;
-  gravityScale: number;
-  growthScale: number;
-  visualScale: number;
-  blackHoleVisualScale: number;
-  explosionScale: number;
-  calmDuration: number;
-  awakeningDuration: number;
-  minCycleTime: number;
-};
-
-type CycleState = {
-  phase: "calm" | "awakening" | "active" | "collapse" | "explosion";
-  phaseStartedAt: number;
-  shockwaveAt: number;
-};
-
-const performanceMode = true;
-const MAX_BALLS = 40;
-const MAX_EXPLOSION_PARTICLES = 70;
-const MAX_TRAIL_PARTICLES = 120;
-const MAX_SHOCKWAVES = 3;
-const BALL_COUNT = Math.min(26, MAX_BALLS);
-const BALL_SPEED_SCALE = 0.6;
-const MIN_RADIUS = 7;
-const MAX_RADIUS = 19;
-const BASE_HOLE_RADIUS = 18;
-const BASE_GRAVITY = 52000;
-const WALL_RESTITUTION = 0.94;
-const BALL_RESTITUTION = 0.9;
-const MAX_SPEED = 880;
-const MIN_SPEED = 70;
-const SUPERNOVA_COLLAPSE_STAGE = 0.5;
-const SUPERNOVA_IGNITION_STAGE = 0.12;
-const SUPERNOVA_BLOOM_FADE_STAGE = 0.9;
-const SUPERNOVA_RETURN_STAGE = 0.4;
-const COLLAPSE_PAUSE = SUPERNOVA_COLLAPSE_STAGE;
-const EXPLOSION_TIME =
-  SUPERNOVA_IGNITION_STAGE +
-  SUPERNOVA_BLOOM_FADE_STAGE +
-  SUPERNOVA_RETURN_STAGE;
-const DESKTOP_CALM_PHASE = 3.5;
-const DESKTOP_AWAKENING_PHASE = 4.5;
-const MOBILE_CALM_PHASE = 5;
-const MOBILE_AWAKENING_PHASE = 6.5;
-const EXPLOSION_PARTICLE_COUNT = performanceMode ? 58 : 70;
-const MOBILE_EXPLOSION_PARTICLE_COUNT = 35;
-const EXPLOSION_LAUNCH_SCALE = 1.85;
-const SHAKE_DURATION = 0.3;
-const TARGET_FPS = performanceMode ? 45 : 60;
-const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
-const DESKTOP_DPR_CAP = 1.5;
-const MOBILE_DPR_CAP = 3;
-const HUD_UPDATE_INTERVAL = 0.18;
-const BINARY_GRAVITY = 82000;
-const BINARY_SOFTENING = 4200;
-const BINARY_DAMPING = 0.9992;
-
-const palette = [
-  { color: "#67e8f9", glow: "rgba(103, 232, 249, 0.62)" },
-  { color: "#60a5fa", glow: "rgba(96, 165, 250, 0.58)" },
-  { color: "#a78bfa", glow: "rgba(167, 139, 250, 0.58)" },
-  { color: "#22d3ee", glow: "rgba(34, 211, 238, 0.56)" },
-  { color: "#f0abfc", glow: "rgba(240, 171, 252, 0.5)" },
-];
-
-const getHungerStage = (absorbedCount: number) => {
-  if (absorbedCount >= 20) return "Critical";
-  if (absorbedCount >= 14) return "Voracious";
-  if (absorbedCount >= 8) return "Hungry";
-  if (absorbedCount >= 3) return "Awake";
-  return "Dormant";
-};
-
-const randomBetween = (min: number, max: number) =>
-  min + Math.random() * (max - min);
-
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(max, Math.max(min, value));
-
-class SoundManager {
-  private audio: AudioContext | null = null;
-  private masterGain: GainNode | null = null;
-  private humGain: GainNode | null = null;
-  private musicGain: GainNode | null = null;
-  private humOscillators: OscillatorNode[] = [];
-  private musicOscillators: OscillatorNode[] = [];
-  private musicTimer: number | null = null;
-  private musicStep = 0;
-  private muted = false;
-  private unlocked = false;
-  private testBeepPlayed = false;
-  private lastAbsorbAt = 0;
-  private lastCollisionAt = 0;
-
-  async initAudio() {
-    try {
-      if (this.audio?.state === "closed") {
-        this.audio = null;
-        this.masterGain = null;
-        this.unlocked = false;
-      }
-
-      if (!this.audio) {
-        const audioWindow = window as Window &
-          typeof globalThis & {
-            webkitAudioContext?: typeof AudioContext;
-          };
-        const AudioContextClass =
-          audioWindow.AudioContext || audioWindow.webkitAudioContext;
-        if (!AudioContextClass) {
-          console.warn("Web Audio API unavailable");
-          return "unavailable";
-        }
-        this.audio = new AudioContextClass();
-        console.log("AudioContext created");
-        this.masterGain = this.audio.createGain();
-        this.masterGain.gain.value = this.muted ? 0 : 0.55;
-        this.masterGain.connect(this.audio.destination);
-      }
-
-      if (this.audio.state !== "running") {
-        await this.audio.resume();
-      }
-
-      console.log("AudioContext resumed");
-      this.unlocked = this.audio.state === "running";
-      if (this.unlocked) {
-        this.muted = false;
-        if (this.masterGain) {
-          this.masterGain.gain.setTargetAtTime(
-            0.55,
-            this.audio.currentTime,
-            0.02,
-          );
-        }
-        this.playTestBeep();
-        this.startHum();
-        this.startMusic();
-      } else {
-        console.warn("Audio did not start:", this.audio.state);
-      }
-      return this.audio.state;
-    } catch (error) {
-      console.error("Audio init failed", error);
-      this.unlocked = false;
-      return "interrupted";
-    }
-  }
-
-  isUnlocked() {
-    return this.unlocked;
-  }
-
-  isMuted() {
-    return this.muted;
-  }
-
-  isRunning() {
-    return this.unlocked && this.audio?.state === "running";
-  }
-
-  getAudioState() {
-    return this.audio?.state ?? "closed";
-  }
-
-  startHum() {
-    if (
-      !this.audio ||
-      this.audio.state !== "running" ||
-      !this.masterGain ||
-      this.muted ||
-      this.humOscillators.length
-    ) {
-      return;
-    }
-
-    this.humGain = this.audio.createGain();
-    this.humGain.gain.value = this.muted ? 0 : 0.04;
-    this.humGain.connect(this.masterGain);
-
-    const low = this.audio.createOscillator();
-    low.type = "sine";
-    low.frequency.value = 42;
-    low.connect(this.humGain);
-    low.start();
-
-    const air = this.audio.createOscillator();
-    air.type = "triangle";
-    air.frequency.value = 84;
-    air.connect(this.humGain);
-    air.start();
-
-    this.humOscillators = [low, air];
-    console.log("Ambient hum started");
-  }
-
-  stopHum() {
-    for (let i = 0; i < this.humOscillators.length; i++) {
-      this.humOscillators[i].stop();
-      this.humOscillators[i].disconnect();
-    }
-    this.humOscillators = [];
-    this.humGain?.disconnect();
-    this.humGain = null;
-  }
-
-  startMusic() {
-    if (
-      !this.audio ||
-      this.audio.state !== "running" ||
-      !this.masterGain ||
-      this.muted ||
-      this.musicOscillators.length
-    ) {
-      return;
-    }
-
-    this.musicGain = this.audio.createGain();
-    this.musicGain.gain.value = this.muted ? 0 : 0.11;
-    this.musicGain.connect(this.masterGain);
-
-    for (let i = 0; i < 5; i++) {
-      const osc = this.audio.createOscillator();
-      osc.type = i % 2 === 0 ? "sine" : "triangle";
-      osc.frequency.value = 55;
-      osc.detune.value = (i - 2) * 3;
-      osc.connect(this.musicGain);
-      osc.start();
-      this.musicOscillators.push(osc);
-    }
-
-    this.scheduleMusicChord();
-    this.musicTimer = window.setInterval(() => {
-      this.scheduleMusicChord();
-    }, 7800);
-    console.log("Background music started");
-  }
-
-  stopMusic() {
-    if (this.musicTimer !== null) {
-      window.clearInterval(this.musicTimer);
-      this.musicTimer = null;
-    }
-    for (let i = 0; i < this.musicOscillators.length; i++) {
-      this.musicOscillators[i].stop();
-      this.musicOscillators[i].disconnect();
-    }
-    this.musicOscillators = [];
-    this.musicGain?.disconnect();
-    this.musicGain = null;
-  }
-
-  setMuted(value: boolean) {
-    this.muted = value;
-    if (this.masterGain && this.audio) {
-      const gain = value ? 0 : 0.55;
-      this.masterGain.gain.setTargetAtTime(gain, this.audio.currentTime, 0.04);
-    }
-    if (value) {
-      this.stopHum();
-      this.stopMusic();
-    } else if (this.unlocked && this.audio?.state === "running") {
-      this.startHum();
-      this.startMusic();
-    }
-  }
-
-  updateHum(massRatio: number) {
-    if (!this.audio || !this.humGain || this.muted) return;
-    const time = this.audio.currentTime;
-    this.humGain.gain.setTargetAtTime(0.036 + massRatio * 0.05, time, 0.18);
-    if (this.humOscillators[0]) {
-      this.humOscillators[0].frequency.setTargetAtTime(
-        38 + massRatio * 18,
-        time,
-        0.24,
-      );
-    }
-    if (this.humOscillators[1]) {
-      this.humOscillators[1].frequency.setTargetAtTime(
-        78 + massRatio * 24,
-        time,
-        0.24,
-      );
-    }
-  }
-
-  playAbsorb(massRatio: number) {
-    if (!this.audio || this.audio.state !== "running" || !this.masterGain) {
-      console.log("Absorb sound blocked because audio is locked");
-      return;
-    }
-    if (this.muted) return;
-    const now = this.audio.currentTime;
-    if (now - this.lastAbsorbAt < 0.045) return;
-    this.lastAbsorbAt = now;
-    console.log("Playing absorb sound");
-
-    const osc = this.audio.createOscillator();
-    const gain = this.audio.createGain();
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(240 + massRatio * 140, now);
-    osc.frequency.exponentialRampToValueAtTime(54 + massRatio * 42, now + 0.3);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.018);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.36);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  playSpawn() {
-    if (!this.audio || this.audio.state !== "running" || !this.masterGain) {
-      return;
-    }
-    if (this.muted) return;
-
-    const now = this.audio.currentTime;
-    const osc = this.audio.createOscillator();
-    const gain = this.audio.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(140, now);
-    osc.frequency.exponentialRampToValueAtTime(320, now + 0.22);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.09, now + 0.025);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.3);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  playMerge() {
-    if (!this.audio || this.audio.state !== "running" || !this.masterGain) {
-      return;
-    }
-    if (this.muted) return;
-
-    const now = this.audio.currentTime;
-    const osc = this.audio.createOscillator();
-    const gain = this.audio.createGain();
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(86, now);
-    osc.frequency.exponentialRampToValueAtTime(34, now + 0.42);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.025);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.48);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.5);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  playCollision(intensity: number) {
-    if (!this.audio || !this.masterGain || this.muted || intensity < 0.34)
-      return;
-    const now = this.audio.currentTime;
-    if (now - this.lastCollisionAt < 0.075) return;
-    this.lastCollisionAt = now;
-
-    const osc = this.audio.createOscillator();
-    const gain = this.audio.createGain();
-    osc.type = "triangle";
-    osc.frequency.value = 420 + intensity * 360;
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(
-      0.012 + intensity * 0.018,
-      now + 0.01,
-    );
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.09);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  playSupernova() {
-    if (
-      !this.audio ||
-      this.audio.state !== "running" ||
-      !this.masterGain ||
-      this.muted
-    ) {
-      return;
-    }
-    const now = this.audio.currentTime;
-    console.log("Playing supernova sound");
-
-    const bass = this.audio.createOscillator();
-    const bassGain = this.audio.createGain();
-    bass.type = "triangle";
-    bass.frequency.setValueAtTime(55, now);
-    bass.frequency.exponentialRampToValueAtTime(28, now + 0.6);
-    bassGain.gain.setValueAtTime(0.0001, now);
-    bassGain.gain.exponentialRampToValueAtTime(0.42, now + 0.025);
-    bassGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.62);
-    bass.connect(bassGain);
-    bassGain.connect(this.masterGain);
-    bass.start(now);
-    bass.stop(now + 0.65);
-
-    const crack = this.audio.createOscillator();
-    const crackGain = this.audio.createGain();
-    crack.type = "sawtooth";
-    crack.frequency.setValueAtTime(620, now);
-    crack.frequency.exponentialRampToValueAtTime(1200, now + 0.12);
-    crackGain.gain.setValueAtTime(0.0001, now);
-    crackGain.gain.exponentialRampToValueAtTime(0.09, now + 0.012);
-    crackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
-    crack.connect(crackGain);
-    crackGain.connect(this.masterGain);
-    crack.start(now);
-    crack.stop(now + 0.13);
-
-    const noiseLength = Math.max(1, Math.floor(this.audio.sampleRate * 0.8));
-    const noiseBuffer = this.audio.createBuffer(
-      1,
-      noiseLength,
-      this.audio.sampleRate,
-    );
-    const channel = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < noiseLength; i++) {
-      channel[i] = Math.random() * 2 - 1;
-    }
-    const noise = this.audio.createBufferSource();
-    const noiseFilter = this.audio.createBiquadFilter();
-    const noiseGain = this.audio.createGain();
-    noise.buffer = noiseBuffer;
-    noiseFilter.type = "lowpass";
-    noiseFilter.frequency.setValueAtTime(980, now);
-    noiseFilter.frequency.exponentialRampToValueAtTime(180, now + 0.8);
-    noiseGain.gain.setValueAtTime(0.0001, now);
-    noiseGain.gain.exponentialRampToValueAtTime(0.24, now + 0.04);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
-    noise.connect(noiseFilter);
-    noiseFilter.connect(noiseGain);
-    noiseGain.connect(this.masterGain);
-    noise.start(now);
-    noise.stop(now + 0.82);
-
-    bass.onended = () => {
-      bass.disconnect();
-      bassGain.disconnect();
-    };
-    crack.onended = () => {
-      crack.disconnect();
-      crackGain.disconnect();
-    };
-    noise.onended = () => {
-      noise.disconnect();
-      noiseFilter.disconnect();
-      noiseGain.disconnect();
-    };
-  }
-
-  dispose() {
-    this.stopHum();
-    this.stopMusic();
-    void this.audio?.close();
-    this.audio = null;
-    this.masterGain = null;
-    this.unlocked = false;
-  }
-
-  private scheduleMusicChord() {
-    if (!this.audio || !this.musicGain || this.musicOscillators.length === 0) {
-      return;
-    }
-
-    const chords = [
-      [55, 82.41, 110, 164.81, 220],
-      [49, 73.42, 98, 146.83, 196],
-      [41.2, 61.74, 82.41, 123.47, 164.81],
-      [46.25, 69.3, 92.5, 138.59, 185],
-    ];
-    const chord = chords[this.musicStep % chords.length];
-    const time = this.audio.currentTime;
-
-    this.musicGain.gain.setTargetAtTime(0.13, time, 1.6);
-    for (let i = 0; i < this.musicOscillators.length; i++) {
-      this.musicOscillators[i].frequency.setTargetAtTime(chord[i], time, 2.4);
-    }
-    this.musicStep += 1;
-  }
-
-  private playTestBeep() {
-    if (!this.audio || !this.masterGain || this.muted || this.testBeepPlayed) {
-      return;
-    }
-
-    this.testBeepPlayed = true;
-    const now = this.audio.currentTime;
-    const osc = this.audio.createOscillator();
-    const gain = this.audio.createGain();
-    osc.type = "sine";
-    osc.frequency.value = 660;
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.08, now + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.12);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-}
-
-const createBlankBall = (): GravityBall => ({
-  active: false,
-  x: 0,
-  y: 0,
-  vx: 0,
-  vy: 0,
-  radius: MIN_RADIUS,
-  mass: MIN_RADIUS * MIN_RADIUS,
-  color: palette[0].color,
-  glow: palette[0].glow,
-  slowTime: 0,
-});
-
-const createBlankExplosionParticle = (): ExplosionParticle => ({
-  active: false,
-  x: 0,
-  y: 0,
-  vx: 0,
-  vy: 0,
-  life: 0,
-  maxLife: 1,
-  radius: 1,
-  color: "rgba(125, 249, 255, ALPHA)",
-});
-
-const createBlankTrailParticle = (): TrailParticle => ({
-  active: false,
-  x: 0,
-  y: 0,
-  life: 0,
-  maxLife: 1,
-  radius: 1,
-  color: "rgba(125, 249, 255, ALPHA)",
-});
-
-const createBlankShockwave = (): ShockwaveRing => ({
-  active: false,
-  x: 0,
-  y: 0,
-  age: 0,
-  duration: 0.68,
-  maxRadius: 0,
-  width: 8,
-  alpha: 0.5,
-});
-
-const clampSpeed = (ball: GravityBall) => {
-  const speed = Math.hypot(ball.vx, ball.vy);
-  if (speed <= MAX_SPEED) return;
-  const scale = MAX_SPEED / speed;
-  ball.vx *= scale;
-  ball.vy *= scale;
-};
-
-const enforceMinimumSpeed = (
-  ball: GravityBall,
-  blackHole: BlackHole,
-  dt: number,
-  minSpeedScale = 1,
-) => {
-  const minSpeed = MIN_SPEED * minSpeedScale;
-  const speed = Math.hypot(ball.vx, ball.vy);
-  if (speed >= minSpeed) {
-    ball.slowTime = 0;
-    return;
-  }
-
-  const dx = blackHole.x - ball.x;
-  const dy = blackHole.y - ball.y;
-  const distance = Math.hypot(dx, dy) || 1;
-  const nx = dx / distance;
-  const ny = dy / distance;
-  const directionX = speed > 0.001 ? ball.vx / speed : -ny;
-  const directionY = speed > 0.001 ? ball.vy / speed : nx;
-  const boostScale = minSpeed / Math.max(speed, 1);
-
-  ball.vx = directionX * speed * boostScale;
-  ball.vy = directionY * speed * boostScale;
-  ball.slowTime += dt;
-
-  if (ball.slowTime > 0.5) {
-    const impulse = minSpeed * 0.42;
-    const massScale = blackHole.radius / BASE_HOLE_RADIUS;
-    ball.vx += (-ny * 0.75 - nx * 0.25) * impulse * massScale;
-    ball.vy += (nx * 0.75 - ny * 0.25) * impulse * massScale;
-    ball.slowTime = 0;
-  }
-};
-
-const createPlacedBlackHole = (
-  arena: Arena,
-  x: number,
-  y: number,
-): BlackHole => {
-  const isMobile = arena.width < 600;
-  const margin = Math.min(
-    120,
-    Math.max(48, Math.min(arena.width, arena.height) * 0.28),
-  );
-  const initialRadius = isMobile ? 2.2 : 3;
-  const targetRadius = isMobile ? 5.8 : 9;
-
-  return {
-    active: true,
-    x: clamp(x, margin, arena.width - margin),
-    y: clamp(y, margin, arena.height - margin),
-    vx: 0,
-    vy: 0,
-    radius: initialRadius,
-    targetRadius,
-    strength: BASE_GRAVITY * 0.05,
-    mass: 1,
-    rotationAngle: randomBetween(0, Math.PI * 2),
-    rotationSpeed: randomBetween(0.42, 0.52),
-  };
-};
-
-const resetOrbitBall = (
-  ball: GravityBall,
-  arena: Arena,
-  index: number,
-  speedScale: number,
-) => {
-  const radius = randomBetween(MIN_RADIUS, MAX_RADIUS);
-  const angle = randomBetween(0, Math.PI * 2);
-  const orbitRadius = randomBetween(
-    Math.min(arena.width, arena.height) * 0.22,
-    Math.min(arena.width, arena.height) * 0.45,
-  );
-  const speed = randomBetween(120, 285);
-  const tone = palette[index % palette.length];
-
-  ball.active = true;
-  ball.x = arena.width / 2 + Math.cos(angle) * orbitRadius;
-  ball.y = arena.height / 2 + Math.sin(angle) * orbitRadius;
-  ball.vx =
-    (Math.cos(angle + Math.PI / 2) * speed + randomBetween(-90, 90)) *
-    BALL_SPEED_SCALE *
-    speedScale;
-  ball.vy =
-    (Math.sin(angle + Math.PI / 2) * speed + randomBetween(-90, 90)) *
-    BALL_SPEED_SCALE *
-    speedScale;
-  ball.radius = radius;
-  ball.mass = radius * radius;
-  ball.color = tone.color;
-  ball.glow = tone.glow;
-  ball.slowTime = 0;
-};
-
-const resetExplosionBall = (
-  ball: GravityBall,
-  arena: Arena,
-  index: number,
-  speedScale: number,
-  explosionScale: number,
-  originX = arena.width / 2,
-  originY = arena.height / 2,
-) => {
-  const radius = randomBetween(MIN_RADIUS, MAX_RADIUS);
-  const angle = (index / BALL_COUNT) * Math.PI * 2 + randomBetween(-0.16, 0.16);
-  const speed = randomBetween(430, 760);
-  const tone = palette[index % palette.length];
-
-  ball.active = true;
-  ball.x = originX + Math.cos(angle) * (BASE_HOLE_RADIUS + radius + 4);
-  ball.y = originY + Math.sin(angle) * (BASE_HOLE_RADIUS + radius + 4);
-  ball.vx =
-    (Math.cos(angle) * speed + randomBetween(-70, 70)) *
-    BALL_SPEED_SCALE *
-    EXPLOSION_LAUNCH_SCALE *
-    speedScale *
-    explosionScale;
-  ball.vy =
-    (Math.sin(angle) * speed + randomBetween(-70, 70)) *
-    BALL_SPEED_SCALE *
-    EXPLOSION_LAUNCH_SCALE *
-    speedScale *
-    explosionScale;
-  ball.radius = radius;
-  ball.mass = radius * radius;
-  ball.color = tone.color;
-  ball.glow = tone.glow;
-  ball.slowTime = 0;
-};
+import { BALL_COUNT, BASE_GRAVITY, BASE_HOLE_RADIUS, COLLAPSE_PAUSE, CRITICAL_MAX_DURATION, CRITICAL_MIN_DURATION, CRITICAL_SLOW_MAX, CRITICAL_SLOW_MIN, CRITICAL_TRIGGER_RATIO, CRITICAL_ZOOM, DESKTOP_AWAKENING_PHASE, DESKTOP_CALM_PHASE, DESKTOP_DPR_CAP, EXPLOSION_PARTICLE_COUNT, EXPLOSION_TIME, FRAME_INTERVAL_MS, HUD_UPDATE_INTERVAL, MAX_BALLS, MAX_EXPLOSION_PARTICLES, MAX_SHOCKWAVES, MAX_SPEED, MAX_TRAIL_PARTICLES, MOBILE_AWAKENING_PHASE, MOBILE_CALM_PHASE, MOBILE_DPR_CAP, MOBILE_EXPLOSION_PARTICLE_COUNT, SHAKE_DURATION, SUPERNOVA_COLLAPSE_STAGE, performanceMode } from "./gravity-well/constants";
+import type { Arena, BlackHole, CycleState, ExplosionParticle, GravityBall, HudStats, PhysicsScale, ShockwaveRing, TrailParticle } from "./gravity-well/types";
+import { createBlankExplosionParticle, createBlankShockwave, createBlankTrailParticle } from "./gravity-well/effects/pools";
+import { createPlacedBlackHole, getAbsorbedCount, getHungerStage, mergeBlackHolePair, pickDominantBlackHole as pickDominantBlackHoleFromPair, randomBetween, stepBinaryBlackHolePair } from "./gravity-well/physics/blackHole";
+import { createBlankBall, resetExplosionBall, resetOrbitBall } from "./gravity-well/physics/balls";
+import { clampSpeed, enforceMinimumSpeed, resolveBallCollision, resolveWallCollision } from "./gravity-well/physics/collision";
+import { drawBackground, drawBall, drawBlackHole, drawCriticalOverlay, drawExplosion, drawSpawnRings, drawTrails } from "./gravity-well/render";
+import { SoundManager } from "./gravity-well/sound/SoundManager";
 
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const isMobile = window.innerWidth < 600;
@@ -809,10 +28,12 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
     ctx.imageSmoothingEnabled = true;
     try {
       // prefer high quality smoothing when available
-      // @ts-ignore
-      if (ctx.imageSmoothingQuality !== undefined)
-        ctx.imageSmoothingQuality = "high";
-    } catch (e) {
+      const smoothingContext = ctx as CanvasRenderingContext2D & {
+        imageSmoothingQuality?: ImageSmoothingQuality;
+      };
+      if (smoothingContext.imageSmoothingQuality !== undefined)
+        smoothingContext.imageSmoothingQuality = "high";
+    } catch {
       // ignore
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -838,578 +59,6 @@ const getPhysicsScale = (arena: Arena): PhysicsScale => {
       : DESKTOP_AWAKENING_PHASE,
     minCycleTime: isMobile ? 10 : 6,
   };
-};
-
-const resolveWallCollision = (ball: GravityBall, arena: Arena) => {
-  if (ball.x - ball.radius < 0) {
-    ball.x = ball.radius;
-    ball.vx = Math.abs(ball.vx) * WALL_RESTITUTION;
-  } else if (ball.x + ball.radius > arena.width) {
-    ball.x = arena.width - ball.radius;
-    ball.vx = -Math.abs(ball.vx) * WALL_RESTITUTION;
-  }
-
-  if (ball.y - ball.radius < 0) {
-    ball.y = ball.radius;
-    ball.vy = Math.abs(ball.vy) * WALL_RESTITUTION;
-  } else if (ball.y + ball.radius > arena.height) {
-    ball.y = arena.height - ball.radius;
-    ball.vy = -Math.abs(ball.vy) * WALL_RESTITUTION;
-  }
-};
-
-const resolveBallCollision = (ballA: GravityBall, ballB: GravityBall) => {
-  const dx = ballB.x - ballA.x;
-  const dy = ballB.y - ballA.y;
-  const distance = Math.hypot(dx, dy) || 1;
-  const minDistance = ballA.radius + ballB.radius;
-
-  if (distance >= minDistance) return 0;
-
-  const nx = dx / distance;
-  const ny = dy / distance;
-  const overlap = minDistance - distance;
-  const totalMass = ballA.mass + ballB.mass;
-
-  ballA.x -= nx * overlap * (ballB.mass / totalMass);
-  ballA.y -= ny * overlap * (ballB.mass / totalMass);
-  ballB.x += nx * overlap * (ballA.mass / totalMass);
-  ballB.y += ny * overlap * (ballA.mass / totalMass);
-
-  const relativeVx = ballB.vx - ballA.vx;
-  const relativeVy = ballB.vy - ballA.vy;
-  const velocityAlongNormal = relativeVx * nx + relativeVy * ny;
-
-  if (velocityAlongNormal > 0) return 0;
-  const impact = Math.min(1, Math.abs(velocityAlongNormal) / 260);
-
-  const impulse =
-    (-(1 + BALL_RESTITUTION) * velocityAlongNormal) /
-    (1 / ballA.mass + 1 / ballB.mass);
-
-  ballA.vx -= (impulse * nx) / ballA.mass;
-  ballA.vy -= (impulse * ny) / ballA.mass;
-  ballB.vx += (impulse * nx) / ballB.mass;
-  ballB.vy += (impulse * ny) / ballB.mass;
-
-  clampSpeed(ballA);
-  clampSpeed(ballB);
-  return impact;
-};
-
-const drawBackground = (
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  time: number,
-  blackHole: BlackHole | null,
-  alpha = 1,
-) => {
-  const { width, height } = arena;
-  const massGlow = blackHole
-    ? Math.min(1, (blackHole.mass - 1) / BALL_COUNT)
-    : 0;
-  const darkening = 0.06 + massGlow * 0.24;
-
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  if (performanceMode) {
-    const darkness = Math.max(4, Math.round(8 - massGlow * 5));
-    ctx.fillStyle = `rgb(3, ${darkness}, ${Math.round(18 - massGlow * 8)})`;
-  } else {
-    const gradient = ctx.createLinearGradient(0, 0, width, height);
-    gradient.addColorStop(0, "#030712");
-    gradient.addColorStop(0.5, "#06091d");
-    gradient.addColorStop(1, "#020b12");
-    ctx.fillStyle = gradient;
-  }
-  ctx.fillRect(0, 0, width, height);
-
-  if (!performanceMode) {
-    ctx.globalAlpha = 0.12;
-    ctx.strokeStyle = "rgba(125, 249, 255, 0.06)";
-    ctx.lineWidth = 1;
-    const grid = 82;
-    const offset = (time * (7 + massGlow * 12)) % grid;
-    for (let x = -grid + offset; x < width + grid; x += grid) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, height);
-      ctx.stroke();
-    }
-    for (let y = -grid + offset; y < height + grid; y += grid) {
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(width, y);
-      ctx.stroke();
-    }
-  }
-
-  ctx.globalAlpha = alpha;
-  if (blackHole) {
-    const glow = ctx.createRadialGradient(
-      blackHole.x,
-      blackHole.y,
-      blackHole.radius,
-      blackHole.x,
-      blackHole.y,
-      Math.min(width, height) * (0.34 + massGlow * 0.1),
-    );
-    glow.addColorStop(0, `rgba(125, 249, 255, ${0.09 + massGlow * 0.1})`);
-    glow.addColorStop(0.28, `rgba(96, 165, 250, ${0.045 + massGlow * 0.06})`);
-    glow.addColorStop(0.62, `rgba(168, 85, 247, ${0.02 + massGlow * 0.035})`);
-    glow.addColorStop(1, "rgba(0, 0, 0, 0)");
-    ctx.fillStyle = glow;
-    ctx.fillRect(0, 0, width, height);
-  }
-  ctx.fillStyle = `rgba(0, 0, 0, ${darkening * alpha})`;
-  ctx.fillRect(0, 0, width, height);
-  ctx.restore();
-};
-
-const drawBlackHole = (
-  ctx: CanvasRenderingContext2D,
-  blackHole: BlackHole,
-  time: number,
-  cycle: CycleState,
-  visualScale: number,
-) => {
-  const massRatio = Math.min(1, (blackHole.mass - 1) / BALL_COUNT);
-  const pulse = Math.sin(time * (2.1 + massRatio)) * 0.5 + 0.5;
-  const explosionAge = time - cycle.shockwaveAt;
-  const explosionPulse =
-    explosionAge >= 0 ? Math.max(0, 1 - explosionAge / 0.5) : 0;
-  const awakeningPulse = cycle.phase === "awakening" ? pulse * 0.18 : 0;
-  const coreRadius = blackHole.radius * visualScale;
-  const ringRadius = coreRadius * (1.82 + pulse * 0.06);
-  const glowScale = 0.72 + visualScale * 0.28 + awakeningPulse;
-  const collapseBoost =
-    (cycle.phase === "collapse" ? 1.35 : 1) + explosionPulse * 1.25;
-
-  ctx.save();
-  ctx.translate(blackHole.x, blackHole.y);
-  ctx.globalCompositeOperation = "lighter";
-
-  const haloScale = visualScale < 1 ? 0.78 : 1;
-  const halo = ctx.createRadialGradient(
-    0,
-    0,
-    coreRadius,
-    0,
-    0,
-    coreRadius * (5.1 + explosionPulse * 2.8) * glowScale * haloScale,
-  );
-  halo.addColorStop(
-    0,
-    `rgba(255, 255, 255, ${0.1 + massRatio * 0.06 + explosionPulse * 0.14})`,
-  );
-  halo.addColorStop(
-    0.1,
-    `rgba(125, 249, 255, ${0.14 + massRatio * 0.12 + explosionPulse * 0.18})`,
-  );
-  halo.addColorStop(
-    0.36,
-    `rgba(96, 165, 250, ${0.05 + massRatio * 0.08 + explosionPulse * 0.1})`,
-  );
-  halo.addColorStop(
-    0.66,
-    `rgba(168, 85, 247, ${0.025 + massRatio * 0.045 + explosionPulse * 0.07})`,
-  );
-  halo.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = halo;
-  ctx.fillRect(
-    -coreRadius * 6,
-    -coreRadius * 6,
-    coreRadius * 12,
-    coreRadius * 12,
-  );
-
-  ctx.save();
-  ctx.rotate(blackHole.rotationAngle);
-  const accretion = ctx.createRadialGradient(
-    0,
-    0,
-    coreRadius,
-    0,
-    0,
-    ringRadius * 1.38,
-  );
-  accretion.addColorStop(0, "rgba(0, 0, 0, 0)");
-  accretion.addColorStop(
-    0.36,
-    `rgba(255, 255, 255, ${0.2 * collapseBoost * glowScale})`,
-  );
-  accretion.addColorStop(
-    0.45,
-    `rgba(125, 249, 255, ${0.25 * collapseBoost * glowScale})`,
-  );
-  accretion.addColorStop(
-    0.54,
-    `rgba(167, 139, 250, ${0.13 * collapseBoost * glowScale})`,
-  );
-  accretion.addColorStop(0.72, "rgba(0, 0, 0, 0)");
-  ctx.scale(1.45, 0.38);
-  ctx.fillStyle = accretion;
-  ctx.beginPath();
-  ctx.arc(0, 0, ringRadius * 1.38, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  const distortion = ctx.createRadialGradient(
-    0,
-    0,
-    coreRadius * 0.95,
-    0,
-    0,
-    coreRadius * 3.35,
-  );
-  distortion.addColorStop(0, "rgba(0, 0, 0, 0)");
-  distortion.addColorStop(
-    0.48,
-    `rgba(255, 255, 255, ${0.065 + massRatio * 0.06})`,
-  );
-  distortion.addColorStop(
-    0.54,
-    `rgba(125, 249, 255, ${0.028 + massRatio * 0.04})`,
-  );
-  distortion.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = distortion;
-  ctx.beginPath();
-  ctx.arc(0, 0, coreRadius * 3.35, 0, Math.PI * 2);
-  ctx.fill();
-
-  for (let i = 0; i < 28; i++) {
-    const lane = i % 5;
-    const angle = -blackHole.rotationAngle * (2.4 + lane * 0.28) + i * 0.84;
-    const radius =
-      coreRadius * (1.5 + lane * 0.32) + Math.sin(time * 2 + i) * 4;
-    const size = (0.85 + lane * 0.18) * visualScale;
-    const alpha = (0.18 + massRatio * 0.16 + (4 - lane) * 0.022) * glowScale;
-    ctx.fillStyle =
-      i % 2 === 0
-        ? `rgba(125, 249, 255, ${alpha})`
-        : `rgba(167, 139, 250, ${alpha * 0.8})`;
-    ctx.beginPath();
-    ctx.arc(
-      Math.cos(angle) * radius,
-      Math.sin(angle) * radius,
-      size,
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-  }
-
-  ctx.globalCompositeOperation = "source-over";
-  const core = ctx.createRadialGradient(0, 0, 0, 0, 0, coreRadius * 1.45);
-  core.addColorStop(0, "rgba(0, 0, 0, 1)");
-  core.addColorStop(0.68, "rgba(0, 0, 0, 1)");
-  core.addColorStop(0.78, `rgba(6, 182, 212, ${0.3 + massRatio * 0.2})`);
-  core.addColorStop(0.86, "rgba(0, 0, 0, 0.92)");
-  core.addColorStop(1, "rgba(0, 0, 0, 0)");
-  ctx.fillStyle = core;
-  ctx.beginPath();
-  ctx.arc(0, 0, coreRadius * 1.45, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-};
-
-const drawExplosion = (
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  cycle: CycleState,
-  blackHole: BlackHole,
-  particles: ExplosionParticle[],
-  shockwaves: ShockwaveRing[],
-  time: number,
-  dt: number,
-  visualScale: number,
-) => {
-  if (cycle.phase === "collapse") {
-    const collapseAge = time - cycle.phaseStartedAt;
-    const tension = Math.min(1, collapseAge / SUPERNOVA_COLLAPSE_STAGE);
-    ctx.save();
-    ctx.fillStyle = `rgba(0, 0, 0, ${0.28 + tension * 0.34})`;
-    ctx.fillRect(0, 0, arena.width, arena.height);
-    ctx.restore();
-  }
-
-  if (cycle.shockwaveAt <= 0) return;
-  const age = time - cycle.shockwaveAt;
-  if (age < 0) return;
-  const massRatio = Math.min(1, (blackHole.mass - 1) / BALL_COUNT);
-  const isRedMood = massRatio > 0.88;
-  const originX = shockwaves[0]?.x ?? blackHole.x;
-  const originY = shockwaves[0]?.y ?? blackHole.y;
-
-  ctx.save();
-  ctx.globalCompositeOperation = "lighter";
-
-  for (let i = 0; i < shockwaves.length; i++) {
-    const ring = shockwaves[i];
-    if (!ring.active) continue;
-
-    ring.age += dt;
-    if (ring.age < 0) continue;
-    if (ring.age >= ring.duration) {
-      ring.active = false;
-      continue;
-    }
-
-    const progress = ring.age / ring.duration;
-    const alpha = (1 - progress) * ring.alpha;
-    if (alpha > 0) {
-      ctx.strokeStyle = `rgba(125, 249, 255, ${alpha})`;
-      ctx.lineWidth = 1 + ring.width * visualScale * (1 - progress);
-      ctx.beginPath();
-      ctx.arc(ring.x, ring.y, ring.maxRadius * progress, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
-
-  if (age < SUPERNOVA_IGNITION_STAGE) {
-    const alpha = isRedMood ? 0.92 : 0.88;
-    ctx.fillStyle = isRedMood
-      ? `rgba(255, 60, 90, ${alpha})`
-      : `rgba(90, 240, 255, ${alpha})`;
-    ctx.fillRect(0, 0, arena.width, arena.height);
-    ctx.fillStyle = isRedMood
-      ? `rgba(255, 90, 180, ${alpha * 0.45})`
-      : `rgba(160, 230, 255, ${alpha * 0.45})`;
-    ctx.fillRect(0, 0, arena.width, arena.height);
-  } else if (age < SUPERNOVA_IGNITION_STAGE + SUPERNOVA_BLOOM_FADE_STAGE) {
-    const bloomAge = age - SUPERNOVA_IGNITION_STAGE;
-    const fade = 1 - bloomAge / SUPERNOVA_BLOOM_FADE_STAGE;
-    const alpha = Math.max(0, fade) * 0.9;
-    ctx.fillStyle = isRedMood
-      ? `rgba(255, 60, 90, ${alpha * 0.62})`
-      : `rgba(90, 240, 255, ${alpha * 0.62})`;
-    ctx.fillRect(0, 0, arena.width, arena.height);
-
-    const radialGlow = ctx.createRadialGradient(
-      originX,
-      originY,
-      0,
-      originX,
-      originY,
-      Math.max(arena.width, arena.height) * (0.42 + bloomAge * 0.24),
-    );
-    radialGlow.addColorStop(
-      0,
-      isRedMood
-        ? `rgba(255, 160, 220, ${alpha})`
-        : `rgba(210, 255, 255, ${alpha})`,
-    );
-    radialGlow.addColorStop(
-      0.34,
-      isRedMood
-        ? `rgba(255, 60, 90, ${alpha * 0.52})`
-        : `rgba(90, 240, 255, ${alpha * 0.5})`,
-    );
-    radialGlow.addColorStop(
-      1,
-      isRedMood ? "rgba(255, 60, 90, 0)" : "rgba(90, 240, 255, 0)",
-    );
-    ctx.fillStyle = radialGlow;
-    ctx.fillRect(0, 0, arena.width, arena.height);
-  }
-
-  for (let i = 0; i < particles.length; i++) {
-    const particle = particles[i];
-    if (!particle.active) continue;
-
-    particle.life -= dt;
-    if (particle.life <= 0) {
-      particle.active = false;
-      continue;
-    }
-
-    particle.x += particle.vx * dt;
-    particle.y += particle.vy * dt;
-    particle.vx *= 0.992;
-    particle.vy *= 0.992;
-
-    const alpha = particle.life / particle.maxLife;
-    const tailX = particle.x - particle.vx * 0.018;
-    const tailY = particle.y - particle.vy * 0.018;
-    ctx.strokeStyle = particle.color.replace("ALPHA", `${0.62 * alpha}`);
-    ctx.lineWidth = Math.max(0.8, particle.radius * visualScale);
-    ctx.beginPath();
-    ctx.moveTo(tailX - particle.vx * 0.01, tailY - particle.vy * 0.01);
-    ctx.lineTo(particle.x, particle.y);
-    ctx.stroke();
-
-    ctx.fillStyle = particle.color.replace("ALPHA", `${0.52 * alpha}`);
-    ctx.beginPath();
-    ctx.arc(
-      particle.x,
-      particle.y,
-      particle.radius * visualScale,
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-  }
-
-  ctx.restore();
-};
-
-const drawSpawnRings = (
-  ctx: CanvasRenderingContext2D,
-  rings: ShockwaveRing[],
-  dt: number,
-  visualScale: number,
-) => {
-  ctx.save();
-  ctx.globalCompositeOperation = "lighter";
-
-  for (let i = 0; i < rings.length; i++) {
-    const ring = rings[i];
-    if (!ring.active) continue;
-
-    ring.age += dt;
-    if (ring.age < 0 || ring.duration <= 0 || ring.maxRadius <= 0) continue;
-    if (ring.age >= ring.duration) {
-      ring.active = false;
-      continue;
-    }
-
-    const progress = ring.age / ring.duration;
-    const alpha = (1 - progress) * ring.alpha;
-    const radius = Math.max(0, ring.maxRadius * progress);
-    if (radius <= 0 || alpha <= 0) continue;
-    ctx.strokeStyle = `rgba(125, 249, 255, ${alpha})`;
-    ctx.lineWidth = Math.max(0.8, ring.width * visualScale * (1 - progress));
-    ctx.beginPath();
-    ctx.arc(ring.x, ring.y, radius, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  ctx.restore();
-};
-
-const drawBall = (
-  ctx: CanvasRenderingContext2D,
-  ball: GravityBall,
-  visualScale: number,
-  blackHole?: BlackHole | null,
-) => {
-  const radius = ball.radius * visualScale;
-  const glowAlpha = 0.55 + visualScale * 0.45;
-  let drawX = ball.x;
-  let drawY = ball.y;
-  let stretchT = 0;
-
-  ctx.save();
-  if (blackHole) {
-    const dx = blackHole.x - ball.x;
-    const dy = blackHole.y - ball.y;
-    const dist = Math.hypot(dx, dy);
-    const spaghettiRadius = blackHole.radius * 3;
-
-    if (dist < spaghettiRadius) {
-      stretchT = Math.min(1, Math.max(0, 1 - dist / spaghettiRadius));
-      const stretchX = 1 + stretchT * 2.5;
-      const stretchY = Math.max(0.35, 1 - stretchT * 0.45);
-      const angle = Math.atan2(dy, dx);
-
-      ctx.translate(ball.x, ball.y);
-      ctx.rotate(angle);
-      ctx.scale(stretchX, stretchY);
-      drawX = 0;
-      drawY = 0;
-    }
-  }
-
-  ctx.globalCompositeOperation = "lighter";
-  if (!performanceMode || ball.radius > 14) {
-    ctx.shadowColor = ball.glow;
-    ctx.shadowBlur =
-      radius *
-      (performanceMode ? 0.52 : 1.2) *
-      glowAlpha *
-      (1 + stretchT * 0.7);
-  }
-
-  if (stretchT > 0.45) {
-    ctx.strokeStyle = ball.glow.replace(
-      /[\d.]+\)$/,
-      `${0.22 + stretchT * 0.22})`,
-    );
-    ctx.lineWidth = Math.max(0.7, radius * (0.18 + stretchT * 0.18));
-    ctx.beginPath();
-    ctx.moveTo(-radius * (1.3 + stretchT * 2.7), 0);
-    ctx.lineTo(radius * (0.35 + stretchT * 0.8), 0);
-    ctx.stroke();
-  }
-
-  if (performanceMode && ball.radius <= 14) {
-    ctx.fillStyle = ball.color;
-  } else {
-    const body = ctx.createRadialGradient(
-      drawX - radius * 0.34,
-      drawY - radius * 0.42,
-      radius * 0.1,
-      drawX,
-      drawY,
-      radius,
-    );
-    body.addColorStop(0, "rgba(255, 255, 255, 1)");
-    body.addColorStop(0.14, "rgba(224, 250, 255, 0.92)");
-    body.addColorStop(0.34, ball.color);
-    body.addColorStop(1, "rgba(2, 6, 23, 0.9)");
-    ctx.fillStyle = body;
-  }
-
-  ctx.beginPath();
-  ctx.arc(drawX, drawY, radius, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.shadowBlur =
-    !performanceMode || ball.radius > 14
-      ? radius * (0.26 + stretchT * 0.18)
-      : 0;
-  ctx.strokeStyle = ball.glow;
-  ctx.lineWidth = Math.max(0.7, 1.15 * visualScale);
-  ctx.stroke();
-  ctx.restore();
-};
-
-const drawTrails = (
-  ctx: CanvasRenderingContext2D,
-  trails: TrailParticle[],
-  dt: number,
-  visualScale: number,
-) => {
-  ctx.save();
-  ctx.globalCompositeOperation = "lighter";
-
-  for (let i = 0; i < trails.length; i++) {
-    const trail = trails[i];
-    if (!trail.active) continue;
-
-    trail.life -= dt;
-    if (trail.life <= 0) {
-      trail.active = false;
-      continue;
-    }
-
-    const alpha = trail.life / trail.maxLife;
-    ctx.fillStyle = trail.color.replace(
-      "ALPHA",
-      `${0.095 * alpha * (0.78 + visualScale * 0.22)}`,
-    );
-    ctx.beginPath();
-    ctx.arc(
-      trail.x,
-      trail.y,
-      trail.radius * visualScale * (0.48 + alpha * 0.58),
-      0,
-      Math.PI * 2,
-    );
-    ctx.fill();
-  }
-
-  ctx.restore();
 };
 
 const Circle = () => {
@@ -1683,44 +332,15 @@ const Circle = () => {
       );
     };
 
-    const pickDominantBlackHole = (ball: GravityBall) => {
-      const first = blackHoleRef.current;
-      const second = secondBlackHoleRef.current;
-      if (!first?.active) return null;
-      if (!second?.active) return first;
-
-      const firstDx = first.x - ball.x;
-      const firstDy = first.y - ball.y;
-      const secondDx = second.x - ball.x;
-      const secondDy = second.y - ball.y;
-      const firstScore =
-        (first.mass + first.radius * 0.35) /
-        (firstDx * firstDx + firstDy * firstDy + BINARY_SOFTENING);
-      const secondScore =
-        (second.mass + second.radius * 0.35) /
-        (secondDx * secondDx + secondDy * secondDy + BINARY_SOFTENING);
-
-      return secondScore > firstScore ? second : first;
-    };
-
-    const mergeBlackHoles = (first: BlackHole, second: BlackHole) => {
-      const totalMass = first.mass + second.mass;
-      const x = (first.x * first.mass + second.x * second.mass) / totalMass;
-      const y = (first.y * first.mass + second.y * second.mass) / totalMass;
-      const mergedRadius = Math.sqrt(
-        first.radius * first.radius + second.radius * second.radius,
+    const pickDominantBlackHole = (ball: GravityBall) =>
+      pickDominantBlackHoleFromPair(
+        blackHoleRef.current,
+        secondBlackHoleRef.current,
+        ball,
       );
 
-      first.x = x;
-      first.y = y;
-      first.vx = (first.vx * first.mass + second.vx * second.mass) / totalMass;
-      first.vy = (first.vy * first.mass + second.vy * second.mass) / totalMass;
-      first.mass = totalMass;
-      first.radius = mergedRadius;
-      first.targetRadius = Math.max(first.targetRadius, mergedRadius + 4);
-      first.strength += second.strength * 0.82;
-      first.rotationSpeed += 0.16;
-      second.active = false;
+    const mergeBlackHoles = (first: BlackHole, second: BlackHole) => {
+      const { x, y } = mergeBlackHolePair(first, second);
       secondBlackHoleRef.current = null;
 
       emitSingleRipple(
@@ -1739,45 +359,7 @@ const Circle = () => {
       const second = secondBlackHoleRef.current;
       if (!first?.active || !second?.active) return;
 
-      const dx = second.x - first.x;
-      const dy = second.y - first.y;
-      const distance = Math.hypot(dx, dy) || 1;
-      const nx = dx / distance;
-      const ny = dy / distance;
-      const firstMass = Math.max(6, first.mass + first.radius * 0.42);
-      const secondMass = Math.max(6, second.mass + second.radius * 0.42);
-      const force =
-        (BINARY_GRAVITY * firstMass * secondMass) /
-        (distance * distance + BINARY_SOFTENING);
-
-      first.vx += (nx * force * dt) / firstMass;
-      first.vy += (ny * force * dt) / firstMass;
-      second.vx -= (nx * force * dt) / secondMass;
-      second.vy -= (ny * force * dt) / secondMass;
-
-      first.vx *= BINARY_DAMPING;
-      first.vy *= BINARY_DAMPING;
-      second.vx *= BINARY_DAMPING;
-      second.vy *= BINARY_DAMPING;
-
-      first.x += first.vx * dt;
-      first.y += first.vy * dt;
-      second.x += second.vx * dt;
-      second.y += second.vy * dt;
-
-      const margin = Math.min(
-        96,
-        Math.max(
-          42,
-          Math.min(arenaRef.current.width, arenaRef.current.height) * 0.18,
-        ),
-      );
-      first.x = clamp(first.x, margin, arenaRef.current.width - margin);
-      first.y = clamp(first.y, margin, arenaRef.current.height - margin);
-      second.x = clamp(second.x, margin, arenaRef.current.width - margin);
-      second.y = clamp(second.y, margin, arenaRef.current.height - margin);
-
-      if (distance < first.radius + second.radius * 0.9) {
+      if (stepBinaryBlackHolePair(first, second, arenaRef.current, dt)) {
         mergeBlackHoles(first, second);
       }
     };
@@ -1852,10 +434,16 @@ const Circle = () => {
       }
       const scale = getPhysicsScale(arena);
       const phaseAge = time - cycle.phaseStartedAt;
+      const isCritical = cycle.phase === "critical";
+      const criticalProgress = isCritical
+        ? Math.min(1, phaseAge / (cycle.phaseDuration ?? CRITICAL_MAX_DURATION))
+        : 0;
       const awakeningProgress =
         cycle.phase === "awakening"
           ? Math.min(1, phaseAge / scale.awakeningDuration)
-          : cycle.phase === "active" || cycle.phase === "collapse"
+          : cycle.phase === "active" ||
+              cycle.phase === "collapse" ||
+              cycle.phase === "critical"
             ? 1
             : 0;
       const gravityMultiplier =
@@ -1864,18 +452,29 @@ const Circle = () => {
           : cycle.phase === "awakening"
             ? 0.05 + awakeningProgress * 0.4
             : 1;
+      const criticalGravity = isCritical
+        ? gravityMultiplier * 1.24
+        : gravityMultiplier;
       const absorptionEnabled =
         cycle.phase === "active" ||
+        cycle.phase === "critical" ||
         (cycle.phase === "awakening" && awakeningProgress >= 0.7);
+      const physicsDt = isCritical
+        ? dt *
+          (CRITICAL_SLOW_MIN +
+            criticalProgress * (CRITICAL_SLOW_MAX - CRITICAL_SLOW_MIN))
+        : dt;
+      const rotationDt = dt * (isCritical ? 1.9 : 1);
 
       blackHole.rotationAngle =
-        (blackHole.rotationAngle + blackHole.rotationSpeed * dt) %
+        (blackHole.rotationAngle + blackHole.rotationSpeed * rotationDt) %
         (Math.PI * 2);
       blackHole.radius += (blackHole.targetRadius - blackHole.radius) * 0.055;
       const secondBlackHole = secondBlackHoleRef.current;
       if (secondBlackHole?.active) {
         secondBlackHole.rotationAngle =
-          (secondBlackHole.rotationAngle + secondBlackHole.rotationSpeed * dt) %
+          (secondBlackHole.rotationAngle +
+            secondBlackHole.rotationSpeed * rotationDt) %
           (Math.PI * 2);
         secondBlackHole.radius +=
           (secondBlackHole.targetRadius - secondBlackHole.radius) * 0.055;
@@ -1891,7 +490,23 @@ const Circle = () => {
         }
       }
 
-      if (cycle.phase === "collapse") {
+      if (cycle.phase === "critical") {
+        blackHole.targetRadius = Math.max(
+          blackHole.targetRadius,
+          BASE_HOLE_RADIUS * 1.18,
+        );
+        blackHole.strength = Math.max(
+          blackHole.strength,
+          BASE_GRAVITY * 1.12 * scale.gravityScale,
+        );
+        if (phaseAge >= (cycle.phaseDuration ?? CRITICAL_MAX_DURATION)) {
+          cycleRef.current = {
+            phase: "collapse",
+            phaseStartedAt: time,
+            shockwaveAt: cycle.shockwaveAt,
+          };
+        }
+      } else if (cycle.phase === "collapse") {
         const collapseAge = time - cycle.phaseStartedAt;
         const contractionProgress = Math.min(
           1,
@@ -1966,7 +581,7 @@ const Circle = () => {
 
       let activeCount = 0;
       const balls = ballsRef.current;
-      stepBinaryBlackHoles(dt);
+      stepBinaryBlackHoles(physicsDt);
       for (let i = 0; i < balls.length; i++) {
         const ball = balls[i];
         if (!ball.active) continue;
@@ -1979,10 +594,7 @@ const Circle = () => {
         const nx = dx / actualDistance;
         const ny = dy / actualDistance;
         const influenceRadius =
-          dominantBlackHole.radius *
-          8.5 *
-          scale.gravityScale *
-          gravityMultiplier;
+          dominantBlackHole.radius * 8.5 * scale.gravityScale * criticalGravity;
         const stableOrbitRadius = dominantBlackHole.radius * 4.2;
         const plungeRadius = dominantBlackHole.radius * 1.95;
         const absorbRadius = dominantBlackHole.radius + ball.radius * 0.35;
@@ -2005,14 +617,14 @@ const Circle = () => {
           const orbitForce =
             (52 + dominantBlackHole.mass * 3.1) *
             radiusScale *
-            gravityMultiplier *
+            criticalGravity *
             mobileForceScale *
             earlyCycleDamping;
           const gravityForce =
             dominantBlackHole.strength *
             radiusScale *
             scale.gravityScale *
-            gravityMultiplier *
+            criticalGravity *
             mobileForceScale *
             earlyCycleDamping *
             0.0038;
@@ -2047,8 +659,8 @@ const Circle = () => {
             orbitalDamping = 0.994;
           }
 
-          ball.vx += (tx * tangentialForce + nx * radialForce) * dt;
-          ball.vy += (ty * tangentialForce + ny * radialForce) * dt;
+          ball.vx += (tx * tangentialForce + nx * radialForce) * physicsDt;
+          ball.vy += (ty * tangentialForce + ny * radialForce) * physicsDt;
 
           const inwardVelocity = ball.vx * nx + ball.vy * ny;
           if (inwardVelocity < 0) {
@@ -2078,8 +690,8 @@ const Circle = () => {
         ball.vy *= damping;
         clampSpeed(ball);
 
-        ball.x += ball.vx * dt;
-        ball.y += ball.vy * dt;
+        ball.x += ball.vx * physicsDt;
+        ball.y += ball.vy * physicsDt;
         resolveWallCollision(ball, arena);
 
         if (absorptionEnabled) {
@@ -2138,10 +750,7 @@ const Circle = () => {
           ball.y - dominantBlackHole.y,
         );
         const influenceRadius =
-          dominantBlackHole.radius *
-          8.5 *
-          scale.gravityScale *
-          gravityMultiplier;
+          dominantBlackHole.radius * 8.5 * scale.gravityScale * criticalGravity;
         if (distanceFromBlackHole >= influenceRadius) {
           enforceMinimumSpeed(ball, dominantBlackHole, dt, scale.speedScale);
         } else {
@@ -2150,12 +759,30 @@ const Circle = () => {
         clampSpeed(ball);
       }
 
-      if (cycle.phase === "active" && activeCount === 0) {
+      const absorbedCount = getAbsorbedCount(blackHole, secondBlackHole);
+      if (
+        cycle.phase === "active" &&
+        activeCount > 0 &&
+        absorbedCount >= BALL_COUNT * CRITICAL_TRIGGER_RATIO
+      ) {
+        cycleRef.current = {
+          phase: "critical",
+          phaseStartedAt: time,
+          shockwaveAt: cycle.shockwaveAt,
+          phaseDuration: randomBetween(
+            CRITICAL_MIN_DURATION,
+            CRITICAL_MAX_DURATION,
+          ),
+        };
+      } else if (cycle.phase === "active" && activeCount === 0) {
         cycleRef.current = {
           phase: "collapse",
           phaseStartedAt: time,
           shockwaveAt: cycle.shockwaveAt,
         };
+      }
+      if (cycle.phase === "critical") {
+        soundRef.current?.playCriticalPulse();
       }
     };
 
@@ -2168,14 +795,7 @@ const Circle = () => {
       }
 
       lastHudUpdateRef.current = time;
-      const absorbedCount = Math.max(
-        0,
-        Math.round(
-          blackHole.mass +
-            (secondBlackHole?.active ? secondBlackHole.mass : 0) -
-            (secondBlackHole?.active ? 2 : 1),
-        ),
-      );
+      const absorbedCount = getAbsorbedCount(blackHole, secondBlackHole);
       const stability =
         cycle.phase === "collapse"
           ? Math.max(
@@ -2194,12 +814,16 @@ const Circle = () => {
               ),
             )
           : Math.min(100, Math.round((absorbedCount / BALL_COUNT) * 100));
+      const stage =
+        cycle.phase === "critical"
+          ? "Critical Mass"
+          : getHungerStage(absorbedCount);
 
       setHudStats({
         mass: absorbedCount,
         stability,
         charge,
-        stage: getHungerStage(absorbedCount),
+        stage,
       });
     };
 
@@ -2229,18 +853,36 @@ const Circle = () => {
         cycle.phase === "collapse" ? time - cycle.phaseStartedAt : 0;
       const explosionAge = time - cycle.shockwaveAt;
       const isMobile = arena.width < 600;
+      const criticalProgress =
+        cycle.phase === "critical"
+          ? Math.min(
+              1,
+              Math.max(
+                0,
+                (time - cycle.phaseStartedAt) /
+                  (cycle.phaseDuration ?? CRITICAL_MAX_DURATION),
+              ),
+            )
+          : 0;
       const shake =
         Math.max(0, 1 - collapseAge / COLLAPSE_PAUSE) *
           (cycle.phase === "collapse" ? (isMobile ? 2.5 : 4.5) : 0) +
-        Math.max(0, 1 - explosionAge / SHAKE_DURATION) * (isMobile ? 4 : 8);
+        Math.max(0, 1 - explosionAge / SHAKE_DURATION) * (isMobile ? 4 : 8) +
+        criticalProgress * (isMobile ? 1.3 : 2.2);
       const shakeX = shake ? randomBetween(-shake, shake) : 0;
       const shakeY = shake ? randomBetween(-shake, shake) : 0;
+      const zoom = 1 + criticalProgress * (CRITICAL_ZOOM - 1);
+      const centerX = arena.width * 0.5 * arena.dpr;
+      const centerY = arena.height * 0.5 * arena.dpr;
+      const dx = centerX * (1 - zoom) + shakeX * arena.dpr;
+      const dy = centerY * (1 - zoom) + shakeY * arena.dpr;
 
-      ctx.setTransform(arena.dpr, 0, 0, arena.dpr, shakeX, shakeY);
+      ctx.setTransform(arena.dpr * zoom, 0, 0, arena.dpr * zoom, dx, dy);
       ctx.imageSmoothingEnabled = true;
       ctx.fillStyle = "rgba(3, 7, 18, 0.18)";
       ctx.fillRect(-shakeX, -shakeY, arena.width + 24, arena.height + 24);
       drawBackground(ctx, arena, time, blackHole, 0.24);
+      drawCriticalOverlay(ctx, arena, time, cycle);
 
       stepPhysics(dt, time);
       updateHud(time);
@@ -2248,7 +890,10 @@ const Circle = () => {
         const totalMass =
           blackHole.mass +
           (secondBlackHole?.active ? secondBlackHole.mass - 1 : 0);
-        soundRef.current?.updateHum(Math.min(1, (totalMass - 1) / BALL_COUNT));
+        soundRef.current?.updateHum(
+          Math.min(1, (totalMass - 1) / BALL_COUNT),
+          cycle.phase === "critical",
+        );
       }
       drawTrails(ctx, trailParticlesRef.current, dt, renderScale.visualScale);
       for (let i = 0; i < ballsRef.current.length; i++) {
@@ -2398,7 +1043,7 @@ const Circle = () => {
       ? "SUPERNOVA READY"
       : hudStats.stability <= 18
         ? "COLLAPSE IMMINENT"
-        : hudStats.stage === "Critical" || hudStats.charge >= 76
+        : hudStats.stage.includes("Critical") || hudStats.charge >= 76
           ? "CRITICAL MASS"
           : hudStats.charge >= 60
             ? `SUPERNOVA ${roundedMobileCharge}%`
