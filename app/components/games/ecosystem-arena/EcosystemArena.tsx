@@ -51,6 +51,8 @@ const MAX_SPEED = 95;
 const WALL_RESTITUTION = 0.92;
 const COUNTER_UPDATE_INTERVAL = 0.22;
 const SIMULATION_SPEED = 2;
+const PREY_DANGER_RADIUS = 120;
+const PREDATOR_HUNT_RADIUS = 210;
 
 const defaultSetup: SetupConfig = {
   prey: 30,
@@ -349,9 +351,9 @@ const EcosystemArena = () => {
       return nearest;
     };
 
-    const nearestPrey = (predator: Entity) => {
+    const nearestPrey = (predator: Entity, maxDistance: number) => {
       let nearest: Entity | null = null;
-      let nearestDistanceSq = Infinity;
+      let nearestDistanceSq = maxDistance * maxDistance;
       const entities = entitiesRef.current;
       for (let i = 0; i < entities.length; i++) {
         const prey = entities[i];
@@ -379,22 +381,46 @@ const EcosystemArena = () => {
       entity.vy += (nx * turn + ny * strength * 0.16) * dt;
     };
 
+    const addSteeringNoise = (
+      entity: Entity,
+      dt: number,
+      strength: number,
+      frequency: number,
+    ) => {
+      const drift =
+        Math.sin(entity.age * frequency + entity.id * 4.73) * strength +
+        (random() - 0.5) * strength * 0.45;
+      entity.vx += Math.cos(entity.angle + Math.PI / 2) * drift * dt;
+      entity.vy += Math.sin(entity.angle + Math.PI / 2) * drift * dt;
+      if (random() < 0.7 * dt) {
+        entity.angle += randomBetween(-0.22, 0.22);
+      }
+    };
+
     const stepPredator = (entity: Entity, dt: number) => {
-      const prey = nearestPrey(entity);
-      if (prey) {
+      wander(entity, dt, 14);
+      addSteeringNoise(entity, dt, 26, 1.1);
+
+      const hunting = random() > 0.018;
+      const prey = hunting ? nearestPrey(entity, PREDATOR_HUNT_RADIUS) : null;
+      if (prey && random() > 0.08) {
         const dx = prey.x - entity.x;
         const dy = prey.y - entity.y;
         const distance = Math.hypot(dx, dy) || 1;
-        entity.angle = Math.atan2(dy, dx);
-        entity.vx += (dx / distance) * 42 * dt;
-        entity.vy += (dy / distance) * 42 * dt;
+        const targetAngle =
+          Math.atan2(dy, dx) + Math.sin(entity.age * 2.1 + entity.id) * 0.35;
+        entity.angle +=
+          Math.atan2(
+            Math.sin(targetAngle - entity.angle),
+            Math.cos(targetAngle - entity.angle),
+          ) * 0.08;
+        entity.vx += (Math.cos(targetAngle) * 36 + (random() - 0.5) * 18) * dt;
+        entity.vy += (Math.sin(targetAngle) * 36 + (random() - 0.5) * 18) * dt;
 
         if (distance < entity.radius + prey.radius && !isInsideSafeZone(prey)) {
           prey.alive = false;
           entity.energy = Math.min(130, entity.energy + 30);
         }
-      } else {
-        wander(entity, dt, 22);
       }
 
       entity.energy -= 2.8 * dt;
@@ -402,15 +428,27 @@ const EcosystemArena = () => {
     };
 
     const stepPrey = (entity: Entity, dt: number) => {
-      wander(entity, dt, 34);
-      const threat = nearestPredator(entity, 130);
+      wander(entity, dt, isInsideSafeZone(entity) ? 28 : 38);
+      addSteeringNoise(entity, dt, 34, 1.8);
+
+      const threat = nearestPredator(entity, PREY_DANGER_RADIUS);
       const zone = threat ? nearestSafeZone(entity) : null;
-      if (zone) {
+      const willSeekZone = zone && random() < 0.52;
+      if (threat && willSeekZone) {
         const dx = zone.x - entity.x;
         const dy = zone.y - entity.y;
+        const offset = Math.sin(entity.age * 3.2 + entity.id) * 0.42;
+        const targetAngle = Math.atan2(dy, dx) + offset;
+        entity.vx += Math.cos(targetAngle) * 44 * dt;
+        entity.vy += Math.sin(targetAngle) * 44 * dt;
+      } else if (threat && random() < 0.45) {
+        const dx = entity.x - threat.x;
+        const dy = entity.y - threat.y;
         const distance = Math.hypot(dx, dy) || 1;
-        entity.vx += (dx / distance) * 58 * dt;
-        entity.vy += (dy / distance) * 58 * dt;
+        entity.vx += (dx / distance) * randomBetween(20, 48) * dt;
+        entity.vy += (dy / distance) * randomBetween(20, 48) * dt;
+      } else if (isInsideSafeZone(entity) && random() < 0.35) {
+        wander(entity, dt, 46);
       }
       entity.energy += 2.4 * dt;
 
