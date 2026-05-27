@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
-type Species = "predator" | "prey" | "healer" | "void";
+type Species = "predator" | "prey" | "void";
 
 type Entity = {
   id: number;
@@ -15,6 +15,7 @@ type Entity = {
   species: Species;
   alive: boolean;
   age: number;
+  angle: number;
 };
 
 type Arena = {
@@ -23,16 +24,29 @@ type Arena = {
   dpr: number;
 };
 
-type SpeciesCounts = Record<Species, number>;
+type SafeZone = {
+  id: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  active: boolean;
+};
+
+type PopulationCounts = Record<Species, number> & {
+  safeZone: number;
+};
 
 type SetupConfig = {
   prey: number;
   predator: number;
-  healer: number;
   void: number;
+  safeZone: number;
 };
 
 const MAX_ENTITIES = 180;
+const MAX_SAFE_ZONES = 6;
 const MAX_SPEED = 95;
 const WALL_RESTITUTION = 0.92;
 const COUNTER_UPDATE_INTERVAL = 0.22;
@@ -41,8 +55,8 @@ const SIMULATION_SPEED = 2;
 const defaultSetup: SetupConfig = {
   prey: 30,
   predator: 5,
-  healer: 7,
   void: 2,
+  safeZone: 3,
 };
 
 const setupLimits: Record<
@@ -51,30 +65,29 @@ const setupLimits: Record<
 > = {
   prey: { label: "Prey", min: 5, max: 80 },
   predator: { label: "Predators", min: 0, max: 20 },
-  healer: { label: "Healers", min: 0, max: 20 },
   void: { label: "Voids", min: 0, max: 8 },
+  safeZone: { label: "Safe Zones", min: 0, max: 6 },
 };
 
 const presets: Array<{ label: string; config: SetupConfig }> = [
   { label: "Balanced", config: defaultSetup },
   {
     label: "Predator Chaos",
-    config: { prey: 32, predator: 14, healer: 4, void: 1 },
+    config: { prey: 32, predator: 14, void: 1, safeZone: 2 },
   },
   {
     label: "Prey Explosion",
-    config: { prey: 70, predator: 3, healer: 8, void: 1 },
+    config: { prey: 70, predator: 3, void: 1, safeZone: 5 },
   },
   {
     label: "Void Apocalypse",
-    config: { prey: 40, predator: 5, healer: 5, void: 6 },
+    config: { prey: 40, predator: 5, void: 6, safeZone: 1 },
   },
 ];
 
 const speciesColors: Record<Species, string> = {
   predator: "#ef4444",
   prey: "#3b82f6",
-  healer: "#22c55e",
   void: "#050505",
 };
 
@@ -89,6 +102,17 @@ const createBlankEntity = (id: number): Entity => ({
   species: "prey",
   alive: false,
   age: 0,
+  angle: 0,
+});
+
+const createBlankSafeZone = (id: number): SafeZone => ({
+  id,
+  x: 0,
+  y: 0,
+  vx: 0,
+  vy: 0,
+  radius: 0,
+  active: false,
 });
 
 const clampSpeed = (entity: Entity, maxSpeed = MAX_SPEED) => {
@@ -122,6 +146,9 @@ const EcosystemArena = () => {
   const entitiesRef = useRef<Entity[]>(
     Array.from({ length: MAX_ENTITIES }, (_, id) => createBlankEntity(id)),
   );
+  const safeZonesRef = useRef<SafeZone[]>(
+    Array.from({ length: MAX_SAFE_ZONES }, (_, id) => createBlankSafeZone(id)),
+  );
   const arenaRef = useRef<Arena>({ width: 0, height: 0, dpr: 1 });
   const animationRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
@@ -133,11 +160,11 @@ const EcosystemArena = () => {
   const renderArenaRef = useRef<(() => void) | null>(null);
   const [setupOpen, setSetupOpen] = useState(true);
   const [setupConfig, setSetupConfig] = useState<SetupConfig>(defaultSetup);
-  const [counts, setCounts] = useState<SpeciesCounts>({
+  const [counts, setCounts] = useState<PopulationCounts>({
     predator: 0,
     prey: 0,
-    healer: 0,
     void: 0,
+    safeZone: 0,
   });
 
   useEffect(() => {
@@ -152,6 +179,32 @@ const EcosystemArena = () => {
 
     const randomBetween = (min: number, max: number) =>
       min + random() * (max - min);
+
+    const getSpawnRadius = (species: Species) => {
+      const isMobile = arenaRef.current.width < 640;
+      if (species === "prey") {
+        return randomBetween(isMobile ? 4 : 5, isMobile ? 5 : 6);
+      }
+      if (species === "predator") {
+        return randomBetween(isMobile ? 7 : 9, isMobile ? 9 : 11);
+      }
+      return randomBetween(isMobile ? 6 : 7, isMobile ? 8 : 9);
+    };
+
+    const getPreyBaseRadius = () => (arenaRef.current.width < 640 ? 4.5 : 5.5);
+
+    const spawnSafeZone = (index: number) => {
+      const zone = safeZonesRef.current[index];
+      const radius = getPreyBaseRadius() * 6;
+      const angle = randomBetween(0, Math.PI * 2);
+      const speed = randomBetween(8, 15);
+      zone.active = true;
+      zone.radius = radius;
+      zone.x = randomBetween(radius + 12, arenaRef.current.width - radius - 12);
+      zone.y = randomBetween(radius + 12, arenaRef.current.height - radius - 12);
+      zone.vx = Math.cos(angle) * speed;
+      zone.vy = Math.sin(angle) * speed;
+    };
 
     const spawnEntity = (
       species: Species,
@@ -175,13 +228,13 @@ const EcosystemArena = () => {
         entity.y = y;
         entity.vx = Math.cos(angle) * speed;
         entity.vy = Math.sin(angle) * speed;
-        entity.radius =
-          species === "void" ? 13 : species === "predator" ? 8 : 6;
+        entity.radius = getSpawnRadius(species);
         entity.energy =
           species === "void" ? 120 : species === "predator" ? 90 : 62;
         entity.species = species;
         entity.alive = true;
         entity.age = 0;
+        entity.angle = angle;
         return entity;
       }
 
@@ -189,17 +242,21 @@ const EcosystemArena = () => {
     };
 
     const countSpecies = () => {
-      const nextCounts: SpeciesCounts = {
+      const nextCounts: PopulationCounts = {
         predator: 0,
         prey: 0,
-        healer: 0,
         void: 0,
+        safeZone: 0,
       };
       const entities = entitiesRef.current;
       for (let i = 0; i < entities.length; i++) {
         const entity = entities[i];
         if (!entity.alive) continue;
         nextCounts[entity.species] += 1;
+      }
+      const safeZones = safeZonesRef.current;
+      for (let i = 0; i < safeZones.length; i++) {
+        if (safeZones[i].active) nextCounts.safeZone += 1;
       }
       return nextCounts;
     };
@@ -225,13 +282,65 @@ const EcosystemArena = () => {
       for (let i = 0; i < entities.length; i++) {
         entities[i].alive = false;
       }
+      const safeZones = safeZonesRef.current;
+      for (let i = 0; i < safeZones.length; i++) {
+        safeZones[i].active = false;
+      }
 
       const config = setupConfigRef.current;
       for (let i = 0; i < config.prey; i++) spawnEntity("prey");
       for (let i = 0; i < config.predator; i++) spawnEntity("predator");
-      for (let i = 0; i < config.healer; i++) spawnEntity("healer");
       for (let i = 0; i < config.void; i++) spawnEntity("void");
+      for (let i = 0; i < config.safeZone; i++) spawnSafeZone(i);
       setCounts(countSpecies());
+    };
+
+    const isInsideSafeZone = (entity: Entity) => {
+      const safeZones = safeZonesRef.current;
+      for (let i = 0; i < safeZones.length; i++) {
+        const zone = safeZones[i];
+        if (!zone.active) continue;
+        const dx = entity.x - zone.x;
+        const dy = entity.y - zone.y;
+        if (dx * dx + dy * dy < zone.radius * zone.radius) return true;
+      }
+      return false;
+    };
+
+    const nearestSafeZone = (entity: Entity) => {
+      let nearest: SafeZone | null = null;
+      let nearestDistanceSq = Infinity;
+      const safeZones = safeZonesRef.current;
+      for (let i = 0; i < safeZones.length; i++) {
+        const zone = safeZones[i];
+        if (!zone.active) continue;
+        const dx = zone.x - entity.x;
+        const dy = zone.y - entity.y;
+        const distanceSq = dx * dx + dy * dy;
+        if (distanceSq < nearestDistanceSq) {
+          nearestDistanceSq = distanceSq;
+          nearest = zone;
+        }
+      }
+      return nearest;
+    };
+
+    const nearestPredator = (entity: Entity, maxDistance: number) => {
+      let nearest: Entity | null = null;
+      let nearestDistanceSq = maxDistance * maxDistance;
+      const entities = entitiesRef.current;
+      for (let i = 0; i < entities.length; i++) {
+        const predator = entities[i];
+        if (!predator.alive || predator.species !== "predator") continue;
+        const dx = predator.x - entity.x;
+        const dy = predator.y - entity.y;
+        const distanceSq = dx * dx + dy * dy;
+        if (distanceSq < nearestDistanceSq) {
+          nearestDistanceSq = distanceSq;
+          nearest = predator;
+        }
+      }
+      return nearest;
     };
 
     const nearestPrey = (predator: Entity) => {
@@ -241,6 +350,7 @@ const EcosystemArena = () => {
       for (let i = 0; i < entities.length; i++) {
         const prey = entities[i];
         if (!prey.alive || prey.species !== "prey") continue;
+        if (isInsideSafeZone(prey)) continue;
         const dx = prey.x - predator.x;
         const dy = prey.y - predator.y;
         const distanceSq = dx * dx + dy * dy;
@@ -269,10 +379,11 @@ const EcosystemArena = () => {
         const dx = prey.x - entity.x;
         const dy = prey.y - entity.y;
         const distance = Math.hypot(dx, dy) || 1;
+        entity.angle = Math.atan2(dy, dx);
         entity.vx += (dx / distance) * 42 * dt;
         entity.vy += (dy / distance) * 42 * dt;
 
-        if (distance < entity.radius + prey.radius) {
+        if (distance < entity.radius + prey.radius && !isInsideSafeZone(prey)) {
           prey.alive = false;
           entity.energy = Math.min(130, entity.energy + 30);
         }
@@ -286,6 +397,15 @@ const EcosystemArena = () => {
 
     const stepPrey = (entity: Entity, dt: number) => {
       wander(entity, dt, 34);
+      const threat = nearestPredator(entity, 130);
+      const zone = threat ? nearestSafeZone(entity) : null;
+      if (zone) {
+        const dx = zone.x - entity.x;
+        const dy = zone.y - entity.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        entity.vx += (dx / distance) * 58 * dt;
+        entity.vy += (dy / distance) * 58 * dt;
+      }
       entity.energy += 2.4 * dt;
 
       if (
@@ -301,20 +421,6 @@ const EcosystemArena = () => {
         if (child) {
           child.energy = 44;
           entity.energy *= 0.55;
-        }
-      }
-    };
-
-    const stepHealer = (entity: Entity, dt: number) => {
-      wander(entity, dt, 24);
-      const entities = entitiesRef.current;
-      for (let i = 0; i < entities.length; i++) {
-        const predator = entities[i];
-        if (!predator.alive || predator.species !== "predator") continue;
-        const dx = predator.x - entity.x;
-        const dy = predator.y - entity.y;
-        if (dx * dx + dy * dy < 76 * 76) {
-          predator.energy -= 5.5 * dt;
         }
       }
     };
@@ -336,9 +442,63 @@ const EcosystemArena = () => {
       }
     };
 
+    const stepSafeZones = (dt: number) => {
+      const arena = arenaRef.current;
+      const safeZones = safeZonesRef.current;
+      for (let i = 0; i < safeZones.length; i++) {
+        const zone = safeZones[i];
+        if (!zone.active) continue;
+
+        zone.x += zone.vx * dt;
+        zone.y += zone.vy * dt;
+
+        if (zone.x - zone.radius < 0) {
+          zone.x = zone.radius;
+          zone.vx = Math.abs(zone.vx) * WALL_RESTITUTION;
+        } else if (zone.x + zone.radius > arena.width) {
+          zone.x = arena.width - zone.radius;
+          zone.vx = -Math.abs(zone.vx) * WALL_RESTITUTION;
+        }
+
+        if (zone.y - zone.radius < 0) {
+          zone.y = zone.radius;
+          zone.vy = Math.abs(zone.vy) * WALL_RESTITUTION;
+        } else if (zone.y + zone.radius > arena.height) {
+          zone.y = arena.height - zone.radius;
+          zone.vy = -Math.abs(zone.vy) * WALL_RESTITUTION;
+        }
+      }
+    };
+
+    const repelPredatorFromSafeZones = (predator: Entity) => {
+      const safeZones = safeZonesRef.current;
+      for (let i = 0; i < safeZones.length; i++) {
+        const zone = safeZones[i];
+        if (!zone.active) continue;
+        const dx = predator.x - zone.x;
+        const dy = predator.y - zone.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const minDist = zone.radius + predator.radius;
+
+        if (dist < minDist) {
+          predator.x = zone.x + nx * minDist;
+          predator.y = zone.y + ny * minDist;
+
+          const dot = predator.vx * nx + predator.vy * ny;
+          if (dot < 0) {
+            predator.vx -= 2 * dot * nx;
+            predator.vy -= 2 * dot * ny;
+          }
+        }
+      }
+    };
+
     const stepSimulation = (dt: number) => {
       const arena = arenaRef.current;
       const entities = entitiesRef.current;
+      stepSafeZones(dt);
       for (let i = 0; i < entities.length; i++) {
         const entity = entities[i];
         if (!entity.alive) continue;
@@ -348,8 +508,6 @@ const EcosystemArena = () => {
           stepPredator(entity, dt);
         } else if (entity.species === "prey") {
           stepPrey(entity, dt);
-        } else if (entity.species === "healer") {
-          stepHealer(entity, dt);
         } else {
           stepVoid(entity, dt);
         }
@@ -358,10 +516,87 @@ const EcosystemArena = () => {
         entity.vx *= 0.995;
         entity.vy *= 0.995;
         clampSpeed(entity, entity.species === "void" ? 34 : MAX_SPEED);
+        if (entity.species === "predator") {
+          entity.angle = Math.atan2(entity.vy, entity.vx);
+        } else if (entity.species === "void") {
+          entity.angle += 0.28 * dt;
+        }
         entity.x += entity.vx * dt;
         entity.y += entity.vy * dt;
+        if (entity.species === "predator") {
+          repelPredatorFromSafeZones(entity);
+        }
         bounceWalls(entity, arena);
       }
+    };
+
+    const drawRegularPolygon = (
+      entity: Entity,
+      sides: number,
+      rotationOffset = 0,
+      radiusScale = 1,
+    ) => {
+      const radius = entity.radius * radiusScale;
+      ctx.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const angle = entity.angle + rotationOffset + (i / sides) * Math.PI * 2;
+        const x = entity.x + Math.cos(angle) * radius;
+        const y = entity.y + Math.sin(angle) * radius;
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.closePath();
+      ctx.fill();
+    };
+
+    const drawEntity = (entity: Entity) => {
+      ctx.fillStyle = speciesColors[entity.species];
+
+      if (entity.species === "prey") {
+        ctx.beginPath();
+        ctx.arc(entity.x, entity.y, entity.radius, 0, Math.PI * 2);
+        ctx.fill();
+        return;
+      }
+
+      if (entity.species === "predator") {
+        drawRegularPolygon(entity, 3, 0, 1.18);
+        return;
+      }
+
+      const pulse = 1 + Math.sin(entity.age * 2.2) * 0.04;
+      const radius = entity.radius * pulse;
+      const ringRadius = radius * 1.75;
+      ctx.save();
+      ctx.translate(entity.x, entity.y);
+      ctx.rotate(entity.angle);
+      ctx.strokeStyle = "rgba(129, 140, 248, 0.45)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, ringRadius, ringRadius * 0.38, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.fillStyle = "#030106";
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "rgba(196, 181, 253, 0.42)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.restore();
+    };
+
+    const drawSafeZone = (zone: SafeZone) => {
+      ctx.fillStyle = "rgba(56, 189, 248, 0.045)";
+      ctx.strokeStyle = "rgba(125, 211, 252, 0.38)";
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     };
 
     const render = () => {
@@ -370,19 +605,17 @@ const EcosystemArena = () => {
       ctx.fillStyle = "#071018";
       ctx.fillRect(0, 0, arena.width, arena.height);
 
+      const safeZones = safeZonesRef.current;
+      for (let i = 0; i < safeZones.length; i++) {
+        const zone = safeZones[i];
+        if (zone.active) drawSafeZone(zone);
+      }
+
       const entities = entitiesRef.current;
       for (let i = 0; i < entities.length; i++) {
         const entity = entities[i];
         if (!entity.alive) continue;
-        ctx.fillStyle = speciesColors[entity.species];
-        ctx.beginPath();
-        ctx.arc(entity.x, entity.y, entity.radius, 0, Math.PI * 2);
-        ctx.fill();
-        if (entity.species === "void") {
-          ctx.strokeStyle = "#334155";
-          ctx.lineWidth = 1;
-          ctx.stroke();
-        }
+        drawEntity(entity);
       }
     };
 
@@ -463,7 +696,7 @@ const EcosystemArena = () => {
       <canvas ref={canvasRef} className="ecosystem-canvas" />
       <div className="ecosystem-counters" aria-label="Ecosystem population">
         <div>
-          <span>Predator</span>
+          <span>Predators</span>
           <strong>{counts.predator}</strong>
         </div>
         <div>
@@ -471,17 +704,17 @@ const EcosystemArena = () => {
           <strong>{counts.prey}</strong>
         </div>
         <div>
-          <span>Healer</span>
-          <strong>{counts.healer}</strong>
-        </div>
-        <div>
-          <span>Void</span>
+          <span>Voids</span>
           <strong>{counts.void}</strong>
         </div>
-        <button type="button" className="ecosystem-reset" onClick={reopenSetup}>
-          Reset
-        </button>
+        <div>
+          <span>Safe Zones</span>
+          <strong>{counts.safeZone}</strong>
+        </div>
       </div>
+      <button type="button" className="ecosystem-reset" onClick={reopenSetup}>
+        Reset
+      </button>
       {setupOpen ? (
         <div className="setup-overlay" role="dialog" aria-modal="true">
           <div className="setup-panel">
@@ -569,47 +802,67 @@ const EcosystemArena = () => {
           left: 16px;
           bottom: 42px;
           z-index: 5;
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
-          gap: 10px;
-          min-width: min(520px, calc(100vw - 32px));
-          padding: 10px 12px;
-          border: 1px solid rgba(226, 232, 240, 0.12);
-          border-radius: 12px;
-          background: rgba(2, 6, 23, 0.52);
-          color: rgba(226, 232, 240, 0.72);
+          display: flex;
+          align-items: flex-end;
+          gap: 16px;
+          color: rgba(248, 250, 252, 0.48);
           font-family: var(--font-geist-mono), monospace;
           text-transform: uppercase;
-          backdrop-filter: blur(6px);
+          pointer-events: none;
+          text-shadow:
+            0 0 8px rgba(255, 255, 255, 0.18),
+            0 1px 6px rgba(0, 0, 0, 0.65);
         }
 
         .ecosystem-counters div {
           display: grid;
-          gap: 4px;
+          gap: 2px;
         }
 
         .ecosystem-counters span {
-          font-size: 0.55rem;
+          color: rgba(248, 250, 252, 0.42);
+          font-size: 0.54rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
         }
 
         .ecosystem-counters strong {
-          color: #f8fafc;
-          font-size: 0.86rem;
+          color: rgba(248, 250, 252, 0.82);
+          font-size: 0.84rem;
+          font-weight: 800;
+          line-height: 1;
         }
 
         .ecosystem-reset {
-          align-self: center;
-          min-height: 34px;
-          padding: 0 12px;
-          border: 1px solid rgba(226, 232, 240, 0.16);
-          border-radius: 10px;
-          background: rgba(15, 23, 42, 0.72);
-          color: rgba(248, 250, 252, 0.86);
+          position: fixed;
+          right: 16px;
+          bottom: 38px;
+          z-index: 5;
+          min-height: 32px;
+          padding: 0 13px;
+          border: 1px solid rgba(248, 250, 252, 0.12);
+          border-radius: 999px;
+          background: transparent;
+          color: rgba(248, 250, 252, 0.52);
           font-family: var(--font-geist-mono), monospace;
-          font-size: 0.64rem;
+          font-size: 0.62rem;
           font-weight: 800;
+          letter-spacing: 0.08em;
           text-transform: uppercase;
           cursor: pointer;
+          opacity: 0.58;
+          text-shadow: 0 0 8px rgba(255, 255, 255, 0.18);
+          transition:
+            opacity 0.2s ease,
+            color 0.2s ease,
+            border-color 0.2s ease;
+        }
+
+        .ecosystem-reset:hover,
+        .ecosystem-reset:focus-visible {
+          border-color: rgba(248, 250, 252, 0.28);
+          color: rgba(248, 250, 252, 0.86);
+          opacity: 1;
         }
 
         .setup-overlay {
@@ -713,25 +966,25 @@ const EcosystemArena = () => {
 
         @media (max-width: 640px) {
           .ecosystem-counters {
-            left: 10px;
-            right: 10px;
+            left: 12px;
             bottom: 32px;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            min-width: 0;
-            padding: 9px 10px;
+            gap: 11px;
           }
 
           .ecosystem-reset {
-            grid-column: 1 / -1;
-            min-height: 40px;
+            right: 12px;
+            bottom: 28px;
+            min-height: 32px;
+            padding: 0 11px;
+            font-size: 0.58rem;
           }
 
           .ecosystem-counters span {
-            font-size: 0.48rem;
+            font-size: 0.43rem;
           }
 
           .ecosystem-counters strong {
-            font-size: 0.78rem;
+            font-size: 0.72rem;
           }
 
           .setup-overlay {
