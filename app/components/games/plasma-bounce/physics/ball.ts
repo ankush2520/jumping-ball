@@ -96,7 +96,6 @@ export const reflectBoundary = (ball: Ball, params: PhysicsParams) => {
     tangentialImpulse,
     restitution,
     maxSpeed,
-    drag,
   } = params;
   const dx = ball.x - centerX;
   const dy = ball.y - centerY;
@@ -120,8 +119,8 @@ export const reflectBoundary = (ball: Ball, params: PhysicsParams) => {
   const tangential = randomInRange(-0.5, 0.5) * tangentialImpulse;
 
   // apply restitution to reflected velocity and add tangential component
-  let vx = reflectX * e + tx * tangential;
-  let vy = reflectY * e + ty * tangential;
+  const vx = reflectX * e + tx * tangential;
+  const vy = reflectY * e + ty * tangential;
 
   const finalSpeed = Math.min(bounceSpeed, maxSpeed);
   const { x: nrmX, y: nrmY } = normalize(vx, vy);

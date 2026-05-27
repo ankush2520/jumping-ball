@@ -2,9 +2,16 @@ let audioCtx: AudioContext | null = null;
 
 const getAudioCtx = () => {
   if (!audioCtx) {
-    audioCtx = new (
-      window.AudioContext || (window as any).webkitAudioContext
-    )();
+    const audioWindow = window as Window &
+      typeof globalThis & {
+        webkitAudioContext?: typeof AudioContext;
+      };
+    const AudioContextClass =
+      audioWindow.AudioContext || audioWindow.webkitAudioContext;
+    if (!AudioContextClass) {
+      throw new Error("Web Audio API unavailable");
+    }
+    audioCtx = new AudioContextClass();
   }
   return audioCtx;
 };

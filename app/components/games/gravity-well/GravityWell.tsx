@@ -1,14 +1,14 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { BALL_COUNT, BASE_GRAVITY, BASE_HOLE_RADIUS, COLLAPSE_PAUSE, CRITICAL_MAX_DURATION, CRITICAL_MIN_DURATION, CRITICAL_SLOW_MAX, CRITICAL_SLOW_MIN, CRITICAL_TRIGGER_RATIO, CRITICAL_ZOOM, DESKTOP_AWAKENING_PHASE, DESKTOP_CALM_PHASE, DESKTOP_DPR_CAP, EXPLOSION_PARTICLE_COUNT, EXPLOSION_TIME, FRAME_INTERVAL_MS, HUD_UPDATE_INTERVAL, MAX_BALLS, MAX_EXPLOSION_PARTICLES, MAX_SHOCKWAVES, MAX_SPEED, MAX_TRAIL_PARTICLES, MOBILE_AWAKENING_PHASE, MOBILE_CALM_PHASE, MOBILE_DPR_CAP, MOBILE_EXPLOSION_PARTICLE_COUNT, SHAKE_DURATION, SUPERNOVA_COLLAPSE_STAGE, performanceMode } from "./gravity-well/constants";
-import type { Arena, BlackHole, CycleState, ExplosionParticle, GravityBall, HudStats, PhysicsScale, ShockwaveRing, TrailParticle } from "./gravity-well/types";
-import { createBlankExplosionParticle, createBlankShockwave, createBlankTrailParticle } from "./gravity-well/effects/pools";
-import { createPlacedBlackHole, getAbsorbedCount, getHungerStage, mergeBlackHolePair, pickDominantBlackHole as pickDominantBlackHoleFromPair, randomBetween, stepBinaryBlackHolePair } from "./gravity-well/physics/blackHole";
-import { createBlankBall, resetExplosionBall, resetOrbitBall } from "./gravity-well/physics/balls";
-import { clampSpeed, enforceMinimumSpeed, resolveBallCollision, resolveWallCollision } from "./gravity-well/physics/collision";
-import { drawBackground, drawBall, drawBlackHole, drawCriticalOverlay, drawExplosion, drawSpawnRings, drawTrails } from "./gravity-well/render";
-import { SoundManager } from "./gravity-well/sound/SoundManager";
+import { BALL_COUNT, BASE_GRAVITY, BASE_HOLE_RADIUS, COLLAPSE_PAUSE, CRITICAL_MAX_DURATION, CRITICAL_MIN_DURATION, CRITICAL_SLOW_MAX, CRITICAL_SLOW_MIN, CRITICAL_TRIGGER_RATIO, CRITICAL_ZOOM, DESKTOP_AWAKENING_PHASE, DESKTOP_CALM_PHASE, DESKTOP_DPR_CAP, EXPLOSION_PARTICLE_COUNT, EXPLOSION_TIME, FRAME_INTERVAL_MS, HUD_UPDATE_INTERVAL, MAX_BALLS, MAX_EXPLOSION_PARTICLES, MAX_SHOCKWAVES, MAX_SPEED, MAX_TRAIL_PARTICLES, MOBILE_AWAKENING_PHASE, MOBILE_CALM_PHASE, MOBILE_DPR_CAP, MOBILE_EXPLOSION_PARTICLE_COUNT, SHAKE_DURATION, SUPERNOVA_COLLAPSE_STAGE, performanceMode } from "./constants";
+import type { Arena, BlackHole, CycleState, ExplosionParticle, GravityBall, HudStats, PhysicsScale, ShockwaveRing, TrailParticle } from "./types";
+import { createBlankExplosionParticle, createBlankShockwave, createBlankTrailParticle } from "./effects/pools";
+import { createPlacedBlackHole, getAbsorbedCount, getHungerStage, mergeBlackHolePair, pickDominantBlackHole as pickDominantBlackHoleFromPair, randomBetween, stepBinaryBlackHolePair } from "./physics/blackHole";
+import { createBlankBall, resetExplosionBall, resetOrbitBall } from "./physics/balls";
+import { clampSpeed, enforceMinimumSpeed, resolveBallCollision, resolveWallCollision } from "./physics/collision";
+import { drawBackground, drawBall, drawBlackHole, drawCriticalOverlay, drawExplosion, drawSpawnRings, drawTrails } from "./render";
+import { SoundManager } from "./sound/SoundManager";
 
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const isMobile = window.innerWidth < 600;
@@ -61,7 +61,7 @@ const getPhysicsScale = (arena: Arena): PhysicsScale => {
   };
 };
 
-const Circle = () => {
+const GravityWell = () => {
   const [hudStats, setHudStats] = useState<HudStats>({
     mass: 1,
     stability: 100,
@@ -1256,4 +1256,4 @@ const Circle = () => {
   );
 };
 
-export default Circle;
+export default GravityWell;

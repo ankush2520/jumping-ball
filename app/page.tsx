@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import Circle from "./components/circle";
-import MenuScreen from "./components/MenuScreen";
+import GravityWell from "./components/games/gravity-well/GravityWell";
+import MenuScreen from "./components/shared/MenuScreen";
 
 export default function Home() {
   const [showSimulation, setShowSimulation] = useState(false);
@@ -41,7 +41,7 @@ export default function Home() {
           >
             ← Back to menu
           </button>
-          <Circle />
+          <GravityWell />
         </>
       ) : (
         <MenuScreen onLaunch={() => setShowSimulation(true)} />

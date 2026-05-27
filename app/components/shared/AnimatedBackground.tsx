@@ -58,8 +58,6 @@ export default function AnimatedBackground(): React.ReactElement {
       }
     };
 
-    let lastT = performance.now();
-
     function drawGradient() {
       const g = ctx.createLinearGradient(0, 0, width, height);
       g.addColorStop(0, "#07102a");
@@ -85,15 +83,11 @@ export default function AnimatedBackground(): React.ReactElement {
       ctx.fillRect(0, 0, width, height);
     }
 
-    function updateAndRender(t: number) {
-      const now = t;
-      const dt = Math.min(48, now - lastT) / 16.6667;
-      lastT = now;
-
+    function updateAndRender() {
       drawGradient();
 
       ctx.globalCompositeOperation = "screen";
-      for (let p of particles) {
+      for (const p of particles) {
         p.x += p.vx * 0.5;
         p.y += p.vy * 0.5;
 
@@ -114,10 +108,7 @@ export default function AnimatedBackground(): React.ReactElement {
     }
 
     resize();
-    raf = requestAnimationFrame((t) => {
-      lastT = t;
-      updateAndRender(t);
-    });
+    raf = requestAnimationFrame(updateAndRender);
 
     window.addEventListener("resize", resize);
 
