@@ -180,6 +180,12 @@ const EcosystemArena = () => {
     const randomBetween = (min: number, max: number) =>
       min + random() * (max - min);
 
+    const applyCanvasScale = () => {
+      const { dpr } = arenaRef.current;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(dpr, dpr);
+    };
+
     const getSpawnRadius = (species: Species) => {
       const isMobile = arenaRef.current.width < 640;
       if (species === "prey") {
@@ -271,8 +277,8 @@ const EcosystemArena = () => {
       canvas.style.height = `${height}px`;
       canvas.width = Math.floor(width * dpr);
       canvas.height = Math.floor(height * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       arenaRef.current = { width, height, dpr };
+      applyCanvasScale();
     };
 
     const resetArena = () => {
@@ -601,7 +607,7 @@ const EcosystemArena = () => {
 
     const render = () => {
       const arena = arenaRef.current;
-      ctx.setTransform(arena.dpr, 0, 0, arena.dpr, 0, 0);
+      applyCanvasScale();
       ctx.fillStyle = "#071018";
       ctx.fillRect(0, 0, arena.width, arena.height);
 
@@ -793,8 +799,11 @@ const EcosystemArena = () => {
 
         .ecosystem-canvas {
           display: block;
-          width: 100%;
-          height: 100%;
+          width: 100vw;
+          height: 100vh;
+          min-height: 0;
+          transform: none;
+          -webkit-transform: none;
         }
 
         .ecosystem-counters {
