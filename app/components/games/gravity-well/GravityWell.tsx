@@ -36,7 +36,8 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
     } catch {
       // ignore
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.scale(dpr, dpr);
   }
 
   return { width, height, dpr };
@@ -877,7 +878,9 @@ const GravityWell = () => {
       const dx = centerX * (1 - zoom) + shakeX * arena.dpr;
       const dy = centerY * (1 - zoom) + shakeY * arena.dpr;
 
-      ctx.setTransform(arena.dpr * zoom, 0, 0, arena.dpr * zoom, dx, dy);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.translate(dx, dy);
+      ctx.scale(arena.dpr * zoom, arena.dpr * zoom);
       ctx.imageSmoothingEnabled = true;
       ctx.fillStyle = "rgba(3, 7, 18, 0.18)";
       ctx.fillRect(-shakeX, -shakeY, arena.width + 24, arena.height + 24);
@@ -1101,8 +1104,11 @@ const GravityWell = () => {
 
         .gravity-canvas {
           display: block;
-          width: 100%;
-          height: 100%;
+          width: 100vw;
+          height: 100vh;
+          min-height: 0;
+          transform: none;
+          -webkit-transform: none;
         }
 
         .gravity-stats {
