@@ -28,6 +28,7 @@ export class SoundManager {
   private collisionWindowStart = 0;
   private collisionCount = 0;
   private lastCriticalPulseAt = 0;
+  private unlockImpulsePlayed = false;
 
   async initAudio() {
     return this.unlockAudio();
@@ -37,6 +38,15 @@ export class SoundManager {
     try {
       this.ensureAudio();
       if (!this.audio) return "unavailable";
+
+      if (this.masterGain) {
+        this.masterGain.gain.setTargetAtTime(
+          this.muted ? 0 : 0.68,
+          this.audio.currentTime,
+          0.04,
+        );
+      }
+      this.playUnlockImpulse();
 
       if (this.audio.state !== "running") {
         await this.audio.resume();
@@ -470,6 +480,7 @@ export class SoundManager {
     this.audio = null;
     this.masterGain = null;
     this.unlocked = false;
+    this.unlockImpulsePlayed = false;
   }
 
   private ensureAudio() {
@@ -492,6 +503,35 @@ export class SoundManager {
     this.masterGain = this.audio.createGain();
     this.masterGain.gain.value = this.muted ? 0 : 0.68;
     this.masterGain.connect(this.audio.destination);
+  }
+
+  private playUnlockImpulse() {
+    if (
+      !this.audio ||
+      !this.masterGain ||
+      this.muted ||
+      this.unlockImpulsePlayed
+    ) {
+      return;
+    }
+
+    this.unlockImpulsePlayed = true;
+    const now = this.audio.currentTime;
+    const osc = this.audio.createOscillator();
+    const gain = this.audio.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(880, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.035, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+    osc.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    osc.stop(now + 0.11);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+    };
   }
 
   private isPlayable(): this is this & {

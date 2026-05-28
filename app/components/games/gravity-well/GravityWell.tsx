@@ -1106,9 +1106,9 @@ const GravityWell = () => {
       if (audioStartingRef.current || soundRef.current?.isRunning()) return;
       audioStartingRef.current = true;
       void soundRef.current
-        ?.initAudio()
+        ?.unlockAudio()
         .then((state) => {
-          if (state === "running") {
+          if (state === "running" || soundRef.current?.isUnlocked()) {
             setShowSoundPrompt(false);
             removeUnlockListeners();
           }
@@ -1116,15 +1116,20 @@ const GravityWell = () => {
         .finally(() => {
           audioStartingRef.current = false;
         });
+      window.setTimeout(() => {
+        audioStartingRef.current = false;
+      }, 600);
     };
 
     const removeUnlockListeners = () => {
       const root = gravityWellRef.current;
       root?.removeEventListener("pointerdown", unlockAudioFromGesture, true);
       root?.removeEventListener("touchstart", unlockAudioFromGesture, true);
+      root?.removeEventListener("touchend", unlockAudioFromGesture, true);
       root?.removeEventListener("click", unlockAudioFromGesture, true);
       window.removeEventListener("pointerdown", unlockAudioFromGesture, true);
       window.removeEventListener("touchstart", unlockAudioFromGesture, true);
+      window.removeEventListener("touchend", unlockAudioFromGesture, true);
       window.removeEventListener("click", unlockAudioFromGesture, true);
       window.removeEventListener("keydown", unlockAudioFromGesture, true);
     };
@@ -1154,9 +1159,17 @@ const GravityWell = () => {
       capture: true,
       passive: true,
     });
+    root?.addEventListener("touchend", unlockAudioFromGesture, {
+      capture: true,
+      passive: true,
+    });
     root?.addEventListener("click", unlockAudioFromGesture, true);
     window.addEventListener("pointerdown", unlockAudioFromGesture, true);
     window.addEventListener("touchstart", unlockAudioFromGesture, {
+      capture: true,
+      passive: true,
+    });
+    window.addEventListener("touchend", unlockAudioFromGesture, {
       capture: true,
       passive: true,
     });

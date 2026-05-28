@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
-type Species = "predator" | "prey" | "void";
+type Species = "predator" | "prey";
 
 type Entity = {
   id: number;
@@ -11,6 +11,7 @@ type Entity = {
   vx: number;
   vy: number;
   radius: number;
+  mass: number;
   energy: number;
   species: Species;
   alive: boolean;
@@ -41,8 +42,18 @@ type PopulationCounts = Record<Species, number> & {
 type SetupConfig = {
   prey: number;
   predator: number;
-  void: number;
   safeZone: number;
+};
+
+type Result = "predator" | "prey" | null;
+
+type EcosystemAudio = {
+  initAudio: () => Promise<AudioContextState | "unavailable" | "interrupted">;
+  unlockAudio: () => Promise<AudioContextState | "unavailable" | "interrupted">;
+  startAmbience: () => void;
+  stopAmbience: () => void;
+  playCollision: (intensity: number, size: number) => void;
+  setMuted: (value: boolean) => void;
 };
 
 const MAX_ENTITIES = 180;
@@ -51,13 +62,18 @@ const MAX_SPEED = 95;
 const WALL_RESTITUTION = 0.92;
 const COUNTER_UPDATE_INTERVAL = 0.22;
 const SIMULATION_SPEED = 2;
-const PREY_DANGER_RADIUS = 120;
-const PREDATOR_HUNT_RADIUS = 210;
+const SURVIVAL_SECONDS = 60;
+const PREY_PANIC_RADIUS = 58;
+const PREDATOR_ATTRACTION_RADIUS = 135;
+const COLLISION_RESTITUTION = 0.95;
+const PREDATOR_SPEED_MULTIPLIER = 3;
+const PREY_SPEED_MULTIPLIER = 2;
+
+let ecosystemAudioContext: AudioContext | null = null;
 
 const defaultSetup: SetupConfig = {
   prey: 30,
   predator: 5,
-  void: 2,
   safeZone: 3,
 };
 
@@ -66,31 +82,13 @@ const setupLimits: Record<
   { label: string; min: number; max: number }
 > = {
   prey: { label: "Prey", min: 5, max: 80 },
-  predator: { label: "Predators", min: 0, max: 20 },
-  void: { label: "Voids", min: 0, max: 8 },
-  safeZone: { label: "Safe Zones", min: 0, max: 6 },
+  predator: { label: "Predators", min: 1, max: 20 },
+  safeZone: { label: "Safe Zones", min: 1, max: 6 },
 };
-
-const presets: Array<{ label: string; config: SetupConfig }> = [
-  { label: "Balanced", config: defaultSetup },
-  {
-    label: "Predator Chaos",
-    config: { prey: 32, predator: 14, void: 1, safeZone: 2 },
-  },
-  {
-    label: "Prey Explosion",
-    config: { prey: 70, predator: 3, void: 1, safeZone: 5 },
-  },
-  {
-    label: "Void Apocalypse",
-    config: { prey: 40, predator: 5, void: 6, safeZone: 1 },
-  },
-];
 
 const speciesColors: Record<Species, string> = {
   predator: "#ef4444",
   prey: "#3b82f6",
-  void: "#050505",
 };
 
 const createBlankEntity = (id: number): Entity => ({
@@ -100,6 +98,7 @@ const createBlankEntity = (id: number): Entity => ({
   vx: 0,
   vy: 0,
   radius: 6,
+  mass: 1,
   energy: 0,
   species: "prey",
   alive: false,
@@ -125,26 +124,290 @@ const clampSpeed = (entity: Entity, maxSpeed = MAX_SPEED) => {
   entity.vy *= scale;
 };
 
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
+
+const createEcosystemAudio = (): EcosystemAudio => {
+  let audio: AudioContext | null = null;
+  let masterGain: GainNode | null = null;
+  let ambienceGain: GainNode | null = null;
+  let ambienceFilter: BiquadFilterNode | null = null;
+  let noiseSource: AudioBufferSourceNode | null = null;
+  let noiseGain: GainNode | null = null;
+  let noiseFilter: BiquadFilterNode | null = null;
+  let lfo: OscillatorNode | null = null;
+  let lfoGain: GainNode | null = null;
+  let muted = false;
+  let unlocked = false;
+  let lastCollisionAt = 0;
+  let collisionWindowStart = 0;
+  let collisionCount = 0;
+  const oscillators: OscillatorNode[] = [];
+
+  const ensureAudio = () => {
+    if (audio) return audio;
+    const audioWindow = window as Window &
+      typeof globalThis & {
+        webkitAudioContext?: typeof AudioContext;
+      };
+    const AudioContextClass =
+      audioWindow.AudioContext || audioWindow.webkitAudioContext;
+    if (!AudioContextClass) return null;
+
+    ecosystemAudioContext = ecosystemAudioContext || new AudioContextClass();
+    audio = ecosystemAudioContext;
+    masterGain = audio.createGain();
+    masterGain.gain.value = muted ? 0 : 0.72;
+    masterGain.connect(audio.destination);
+    return audio;
+  };
+
+  const startAmbience = () => {
+    if (!audio || audio.state !== "running" || !masterGain || ambienceGain) {
+      return;
+    }
+
+    const now = audio.currentTime;
+    ambienceGain = audio.createGain();
+    ambienceFilter = audio.createBiquadFilter();
+    lfo = audio.createOscillator();
+    lfoGain = audio.createGain();
+
+    ambienceGain.gain.setValueAtTime(0.0001, now);
+    ambienceGain.gain.setTargetAtTime(0.2, now, 2.2);
+    ambienceFilter.type = "lowpass";
+    ambienceFilter.frequency.value = 1650;
+    ambienceFilter.Q.value = 0.35;
+
+    lfo.type = "sine";
+    lfo.frequency.value = 0.055;
+    lfoGain.gain.value = 0.032;
+    lfo.connect(lfoGain);
+    lfoGain.connect(ambienceGain.gain);
+
+    const tones = [
+      { frequency: 65.41, type: "sine" as OscillatorType, gain: 0.28 },
+      { frequency: 130.81, type: "triangle" as OscillatorType, gain: 0.16 },
+      { frequency: 164.81, type: "sine" as OscillatorType, gain: 0.12 },
+      { frequency: 196, type: "triangle" as OscillatorType, gain: 0.09 },
+      { frequency: 261.63, type: "sine" as OscillatorType, gain: 0.055 },
+    ];
+
+    for (let i = 0; i < tones.length; i++) {
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = tones[i].type;
+      osc.frequency.value = tones[i].frequency;
+      osc.detune.value = i % 2 === 0 ? -4 + i : 3 - i;
+      gain.gain.value = tones[i].gain;
+      osc.connect(gain);
+      gain.connect(ambienceFilter);
+      osc.start(now);
+      oscillators.push(osc);
+    }
+
+    const noiseBuffer = audio.createBuffer(1, audio.sampleRate * 2, audio.sampleRate);
+    const channel = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < channel.length; i++) {
+      channel[i] = (Math.random() * 2 - 1) * 0.18;
+    }
+    noiseSource = audio.createBufferSource();
+    noiseGain = audio.createGain();
+    noiseFilter = audio.createBiquadFilter();
+    noiseSource.buffer = noiseBuffer;
+    noiseSource.loop = true;
+    noiseGain.gain.value = 0.01;
+    noiseFilter.type = "bandpass";
+    noiseFilter.frequency.value = 1400;
+    noiseFilter.Q.value = 0.6;
+    noiseSource.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(ambienceFilter);
+    noiseSource.start(now);
+
+    ambienceFilter.connect(ambienceGain);
+    ambienceGain.connect(masterGain);
+    lfo.start(now);
+  };
+
+  const stopAmbience = () => {
+    const now = audio?.currentTime ?? 0;
+    ambienceGain?.gain.setTargetAtTime(0.0001, now, 0.35);
+    for (let i = 0; i < oscillators.length; i++) {
+      const oscillator = oscillators[i];
+      try {
+        oscillator.stop(now + 0.45);
+      } catch {
+        // Already stopped.
+      }
+      oscillator.onended = () => oscillator.disconnect();
+    }
+    oscillators.length = 0;
+
+    try {
+      noiseSource?.stop(now + 0.45);
+    } catch {
+      // Already stopped.
+    }
+    try {
+      lfo?.stop(now + 0.45);
+    } catch {
+      // Already stopped.
+    }
+
+    window.setTimeout(() => {
+      noiseSource?.disconnect();
+      noiseGain?.disconnect();
+      noiseFilter?.disconnect();
+      lfo?.disconnect();
+      lfoGain?.disconnect();
+      ambienceFilter?.disconnect();
+      ambienceGain?.disconnect();
+      noiseSource = null;
+      noiseGain = null;
+      noiseFilter = null;
+      lfo = null;
+      lfoGain = null;
+      ambienceFilter = null;
+      ambienceGain = null;
+    }, 520);
+  };
+
+  const unlockAudio = async () => {
+    try {
+      const ctx = ensureAudio();
+      if (!ctx) return "unavailable";
+      if (ctx.state !== "running") {
+        await ctx.resume();
+      }
+      unlocked = ctx.state === "running";
+      if (unlocked && !muted) startAmbience();
+      return ctx.state;
+    } catch {
+      unlocked = false;
+      return "interrupted";
+    }
+  };
+
+  const playCollision = (intensity: number, size: number) => {
+    if (!audio || !masterGain || audio.state !== "running" || muted || !unlocked) {
+      return;
+    }
+
+    const now = audio.currentTime;
+    const impact = clamp(intensity, 0, 1);
+    if (impact < 0.24) return;
+
+    if (now - collisionWindowStart >= 1) {
+      collisionWindowStart = now;
+      collisionCount = 0;
+    }
+    if (collisionCount >= 5 || now - lastCollisionAt < 0.09) return;
+    collisionCount += 1;
+    lastCollisionAt = now;
+
+    const sizeTone = clamp(size / 26, 0, 1);
+    const frequency =
+      780 - sizeTone * 360 + impact * 140 + (Math.random() - 0.5) * 55;
+    const duration = 0.07 + impact * 0.07;
+    const peak = 0.026 + impact * 0.072;
+
+    const filter = audio.createBiquadFilter();
+    const gain = audio.createGain();
+    const osc = audio.createOscillator();
+    const click = audio.createOscillator();
+    const clickGain = audio.createGain();
+
+    filter.type = "bandpass";
+    filter.frequency.value = frequency * 1.25;
+    filter.Q.value = 1.2;
+    osc.type = "triangle";
+    osc.frequency.value = frequency;
+    click.type = "sine";
+    click.frequency.value = frequency * 1.9;
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(peak, now + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    clickGain.gain.setValueAtTime(0.0001, now);
+    clickGain.gain.exponentialRampToValueAtTime(peak * 0.42, now + 0.004);
+    clickGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.038);
+
+    osc.frequency.exponentialRampToValueAtTime(
+      Math.max(80, frequency * 0.72),
+      now + duration,
+    );
+    osc.connect(gain);
+    gain.connect(filter);
+    filter.connect(masterGain);
+    click.connect(clickGain);
+    clickGain.connect(masterGain);
+
+    osc.start(now);
+    click.start(now);
+    osc.stop(now + duration + 0.015);
+    click.stop(now + 0.045);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+      filter.disconnect();
+    };
+    click.onended = () => {
+      click.disconnect();
+      clickGain.disconnect();
+    };
+  };
+
+  const setMuted = (value: boolean) => {
+    muted = value;
+    if (masterGain && audio) {
+      masterGain.gain.setTargetAtTime(value ? 0 : 0.72, audio.currentTime, 0.08);
+    }
+    if (value) {
+      stopAmbience();
+    } else if (unlocked && audio?.state === "running") {
+      startAmbience();
+    }
+  };
+
+  return {
+    initAudio: unlockAudio,
+    unlockAudio,
+    startAmbience,
+    stopAmbience,
+    playCollision,
+    setMuted,
+  };
+};
+
 const bounceWalls = (entity: Entity, arena: Arena) => {
+  let impact = 0;
   if (entity.x - entity.radius < 0) {
+    impact = Math.max(impact, Math.abs(entity.vx));
     entity.x = entity.radius;
     entity.vx = Math.abs(entity.vx) * WALL_RESTITUTION;
   } else if (entity.x + entity.radius > arena.width) {
+    impact = Math.max(impact, Math.abs(entity.vx));
     entity.x = arena.width - entity.radius;
     entity.vx = -Math.abs(entity.vx) * WALL_RESTITUTION;
   }
 
   if (entity.y - entity.radius < 0) {
+    impact = Math.max(impact, Math.abs(entity.vy));
     entity.y = entity.radius;
     entity.vy = Math.abs(entity.vy) * WALL_RESTITUTION;
   } else if (entity.y + entity.radius > arena.height) {
+    impact = Math.max(impact, Math.abs(entity.vy));
     entity.y = arena.height - entity.radius;
     entity.vy = -Math.abs(entity.vy) * WALL_RESTITUTION;
   }
+
+  return impact;
 };
 
 const EcosystemArena = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const audioRef = useRef<EcosystemAudio | null>(null);
   const entitiesRef = useRef<Entity[]>(
     Array.from({ length: MAX_ENTITIES }, (_, id) => createBlankEntity(id)),
   );
@@ -157,15 +420,17 @@ const EcosystemArena = () => {
   const lastCounterUpdateRef = useRef(0);
   const seedRef = useRef(0x9e3779b9);
   const runningRef = useRef(false);
+  const elapsedTimeRef = useRef(0);
   const setupConfigRef = useRef<SetupConfig>(defaultSetup);
   const startSimulationRef = useRef<(() => void) | null>(null);
   const renderArenaRef = useRef<(() => void) | null>(null);
   const [setupOpen, setSetupOpen] = useState(true);
   const [setupConfig, setSetupConfig] = useState<SetupConfig>(defaultSetup);
+  const [timeLeft, setTimeLeft] = useState(SURVIVAL_SECONDS);
+  const [result, setResult] = useState<Result>(null);
   const [counts, setCounts] = useState<PopulationCounts>({
     predator: 0,
     prey: 0,
-    void: 0,
     safeZone: 0,
   });
 
@@ -173,6 +438,7 @@ const EcosystemArena = () => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
+    audioRef.current = audioRef.current ?? createEcosystemAudio();
 
     const random = () => {
       seedRef.current = (seedRef.current * 1664525 + 1013904223) >>> 0;
@@ -190,20 +456,36 @@ const EcosystemArena = () => {
 
     const getSpawnRadius = (species: Species) => {
       const isMobile = arenaRef.current.width < 640;
-      if (species === "prey") {
-        return randomBetween(isMobile ? 4 : 5, isMobile ? 5 : 6);
-      }
       if (species === "predator") {
         return randomBetween(isMobile ? 7 : 9, isMobile ? 9 : 11);
       }
-      return randomBetween(isMobile ? 6 : 7, isMobile ? 8 : 9);
+      return randomBetween(isMobile ? 4 : 5, isMobile ? 5 : 6);
     };
 
     const getPreyBaseRadius = () => (arenaRef.current.width < 640 ? 4.5 : 5.5);
 
+    const getMaxPredatorRadius = () => getPreyBaseRadius() * 4.5;
+
+    const getPredatorGrowth = (predator: Entity) => {
+      const baseRadius = getPreyBaseRadius() * 1.75;
+      const maxRadius = getMaxPredatorRadius();
+      return Math.max(
+        0,
+        Math.min(1, (predator.radius - baseRadius) / (maxRadius - baseRadius)),
+      );
+    };
+
+    const getPredatorMaxSpeed = (predator: Entity) =>
+      MAX_SPEED *
+      PREDATOR_SPEED_MULTIPLIER *
+      (1 - getPredatorGrowth(predator) * 0.32);
+
+    const getPredatorTurnScale = (predator: Entity) =>
+      1 - getPredatorGrowth(predator) * 0.46;
+
     const spawnSafeZone = (index: number) => {
       const zone = safeZonesRef.current[index];
-      const radius = getPreyBaseRadius() * 6;
+      const radius = getPreyBaseRadius() * 16;
       const angle = randomBetween(0, Math.PI * 2);
       const speed = randomBetween(8, 15);
       zone.active = true;
@@ -226,19 +508,20 @@ const EcosystemArena = () => {
 
         const angle = randomBetween(0, Math.PI * 2);
         const speed =
-          species === "void"
-            ? randomBetween(8, 18)
-            : species === "predator"
-              ? randomBetween(20, 36)
-              : randomBetween(18, 44);
+          species === "predator"
+            ? randomBetween(20, 36) * PREDATOR_SPEED_MULTIPLIER
+            : randomBetween(18, 44) * PREY_SPEED_MULTIPLIER;
 
         entity.x = x;
         entity.y = y;
         entity.vx = Math.cos(angle) * speed;
         entity.vy = Math.sin(angle) * speed;
         entity.radius = getSpawnRadius(species);
-        entity.energy =
-          species === "void" ? 120 : species === "predator" ? 90 : 62;
+        entity.mass =
+          species === "predator"
+            ? Math.max(1.7, entity.radius / getPreyBaseRadius())
+            : 1;
+        entity.energy = species === "predator" ? 90 : 62;
         entity.species = species;
         entity.alive = true;
         entity.age = 0;
@@ -253,7 +536,6 @@ const EcosystemArena = () => {
       const nextCounts: PopulationCounts = {
         predator: 0,
         prey: 0,
-        void: 0,
         safeZone: 0,
       };
       const entities = entitiesRef.current;
@@ -298,8 +580,10 @@ const EcosystemArena = () => {
       const config = setupConfigRef.current;
       for (let i = 0; i < config.prey; i++) spawnEntity("prey");
       for (let i = 0; i < config.predator; i++) spawnEntity("predator");
-      for (let i = 0; i < config.void; i++) spawnEntity("void");
       for (let i = 0; i < config.safeZone; i++) spawnSafeZone(i);
+      elapsedTimeRef.current = 0;
+      setTimeLeft(SURVIVAL_SECONDS);
+      setResult(null);
       setCounts(countSpecies());
     };
 
@@ -313,24 +597,6 @@ const EcosystemArena = () => {
         if (dx * dx + dy * dy < zone.radius * zone.radius) return true;
       }
       return false;
-    };
-
-    const nearestSafeZone = (entity: Entity) => {
-      let nearest: SafeZone | null = null;
-      let nearestDistanceSq = Infinity;
-      const safeZones = safeZonesRef.current;
-      for (let i = 0; i < safeZones.length; i++) {
-        const zone = safeZones[i];
-        if (!zone.active) continue;
-        const dx = zone.x - entity.x;
-        const dy = zone.y - entity.y;
-        const distanceSq = dx * dx + dy * dy;
-        if (distanceSq < nearestDistanceSq) {
-          nearestDistanceSq = distanceSq;
-          nearest = zone;
-        }
-      }
-      return nearest;
     };
 
     const nearestPredator = (entity: Entity, maxDistance: number) => {
@@ -370,120 +636,68 @@ const EcosystemArena = () => {
       return nearest;
     };
 
-    const wander = (entity: Entity, dt: number, strength: number) => {
-      const turn =
-        Math.sin(entity.age * 1.7 + entity.id * 12.9898) * strength +
-        (random() - 0.5) * strength * 0.6;
-      const speed = Math.hypot(entity.vx, entity.vy) || 1;
-      const nx = entity.vx / speed;
-      const ny = entity.vy / speed;
-      entity.vx += (-ny * turn + nx * strength * 0.16) * dt;
-      entity.vy += (nx * turn + ny * strength * 0.16) * dt;
-    };
-
-    const addSteeringNoise = (
+    const addRandomMotion = (
       entity: Entity,
       dt: number,
       strength: number,
-      frequency: number,
+      impulseChance: number,
     ) => {
-      const drift =
-        Math.sin(entity.age * frequency + entity.id * 4.73) * strength +
-        (random() - 0.5) * strength * 0.45;
-      entity.vx += Math.cos(entity.angle + Math.PI / 2) * drift * dt;
-      entity.vy += Math.sin(entity.angle + Math.PI / 2) * drift * dt;
-      if (random() < 0.7 * dt) {
-        entity.angle += randomBetween(-0.22, 0.22);
+      const driftAngle =
+        entity.angle + Math.sin(entity.age * 1.8 + entity.id * 4.73) * 1.15;
+      entity.vx += Math.cos(driftAngle) * strength * 0.28 * dt;
+      entity.vy += Math.sin(driftAngle) * strength * 0.28 * dt;
+
+      if (random() < impulseChance * dt) {
+        const angle = randomBetween(0, Math.PI * 2);
+        const impulse = randomBetween(strength * 0.25, strength * 0.7);
+        entity.vx += Math.cos(angle) * impulse;
+        entity.vy += Math.sin(angle) * impulse;
+        entity.angle = angle;
       }
     };
 
     const stepPredator = (entity: Entity, dt: number) => {
-      wander(entity, dt, 14);
-      addSteeringNoise(entity, dt, 26, 1.1);
+      const agility = getPredatorTurnScale(entity);
+      addRandomMotion(
+        entity,
+        dt,
+        20 * agility * PREDATOR_SPEED_MULTIPLIER,
+        0.75 * agility,
+      );
 
-      const hunting = random() > 0.018;
-      const prey = hunting ? nearestPrey(entity, PREDATOR_HUNT_RADIUS) : null;
-      if (prey && random() > 0.08) {
+      const prey = nearestPrey(entity, PREDATOR_ATTRACTION_RADIUS);
+      if (prey) {
         const dx = prey.x - entity.x;
         const dy = prey.y - entity.y;
         const distance = Math.hypot(dx, dy) || 1;
-        const targetAngle =
-          Math.atan2(dy, dx) + Math.sin(entity.age * 2.1 + entity.id) * 0.35;
-        entity.angle +=
-          Math.atan2(
-            Math.sin(targetAngle - entity.angle),
-            Math.cos(targetAngle - entity.angle),
-          ) * 0.08;
-        entity.vx += (Math.cos(targetAngle) * 36 + (random() - 0.5) * 18) * dt;
-        entity.vy += (Math.sin(targetAngle) * 36 + (random() - 0.5) * 18) * dt;
-
-        if (distance < entity.radius + prey.radius && !isInsideSafeZone(prey)) {
-          prey.alive = false;
-          entity.energy = Math.min(130, entity.energy + 30);
-        }
+        const falloff = 1 - distance / PREDATOR_ATTRACTION_RADIUS;
+        const pull = 11 * falloff * (1 - getPredatorGrowth(entity) * 0.2);
+        entity.vx += (dx / distance) * pull * dt;
+        entity.vy += (dy / distance) * pull * dt;
       }
 
-      entity.energy -= 2.8 * dt;
-      if (entity.energy <= 0) entity.alive = false;
+      entity.energy = Math.max(1, entity.energy - 0.35 * dt);
     };
 
     const stepPrey = (entity: Entity, dt: number) => {
-      wander(entity, dt, isInsideSafeZone(entity) ? 28 : 38);
-      addSteeringNoise(entity, dt, 34, 1.8);
+      addRandomMotion(
+        entity,
+        dt,
+        (isInsideSafeZone(entity) ? 17 : 24) * PREY_SPEED_MULTIPLIER,
+        1.05,
+      );
 
-      const threat = nearestPredator(entity, PREY_DANGER_RADIUS);
-      const zone = threat ? nearestSafeZone(entity) : null;
-      const willSeekZone = zone && random() < 0.52;
-      if (threat && willSeekZone) {
-        const dx = zone.x - entity.x;
-        const dy = zone.y - entity.y;
-        const offset = Math.sin(entity.age * 3.2 + entity.id) * 0.42;
-        const targetAngle = Math.atan2(dy, dx) + offset;
-        entity.vx += Math.cos(targetAngle) * 44 * dt;
-        entity.vy += Math.sin(targetAngle) * 44 * dt;
-      } else if (threat && random() < 0.45) {
+      const threat = nearestPredator(entity, PREY_PANIC_RADIUS);
+      if (threat) {
         const dx = entity.x - threat.x;
         const dy = entity.y - threat.y;
         const distance = Math.hypot(dx, dy) || 1;
-        entity.vx += (dx / distance) * randomBetween(20, 48) * dt;
-        entity.vy += (dy / distance) * randomBetween(20, 48) * dt;
-      } else if (isInsideSafeZone(entity) && random() < 0.35) {
-        wander(entity, dt, 46);
+        const panic = 32 * (1 - distance / PREY_PANIC_RADIUS);
+        entity.vx += (dx / distance) * panic * dt;
+        entity.vy += (dy / distance) * panic * dt;
       }
+
       entity.energy += 2.4 * dt;
-
-      if (
-        entity.age > 2.2 &&
-        entity.energy > 82 &&
-        random() < 0.18 * dt
-      ) {
-        const child = spawnEntity(
-          "prey",
-          entity.x + randomBetween(-14, 14),
-          entity.y + randomBetween(-14, 14),
-        );
-        if (child) {
-          child.energy = 44;
-          entity.energy *= 0.55;
-        }
-      }
-    };
-
-    const stepVoid = (entity: Entity, dt: number) => {
-      wander(entity, dt, 8);
-      const entities = entitiesRef.current;
-      for (let i = 0; i < entities.length; i++) {
-        const target = entities[i];
-        if (!target.alive || target.id === entity.id) continue;
-        const dx = target.x - entity.x;
-        const dy = target.y - entity.y;
-        const minDistance = entity.radius + target.radius;
-        if (dx * dx + dy * dy < minDistance * minDistance) {
-          target.alive = false;
-          entity.energy += 4;
-          entity.radius = Math.min(22, entity.radius + 0.08);
-        }
-      }
     };
 
     const stepSafeZones = (dt: number) => {
@@ -527,16 +741,113 @@ const EcosystemArena = () => {
         const minDist = zone.radius + predator.radius;
 
         if (dist < minDist) {
-          predator.x = zone.x + nx * minDist;
-          predator.y = zone.y + ny * minDist;
+          const overlap = minDist - dist;
+          const bounceScale = 1 + getPredatorGrowth(predator) * 0.65;
+          const impact = Math.max(0, -(predator.vx * nx + predator.vy * ny));
+          predator.x = zone.x + nx * (minDist + overlap * 0.18);
+          predator.y = zone.y + ny * (minDist + overlap * 0.18);
 
           const dot = predator.vx * nx + predator.vy * ny;
           if (dot < 0) {
-            predator.vx -= 2 * dot * nx;
-            predator.vy -= 2 * dot * ny;
+            predator.vx -= 2.15 * dot * nx * bounceScale;
+            predator.vy -= 2.15 * dot * ny * bounceScale;
           }
+          predator.vx += nx * overlap * 6 * bounceScale;
+          predator.vy += ny * overlap * 6 * bounceScale;
+          audioRef.current?.playCollision(impact / 260, predator.radius);
         }
       }
+    };
+
+    const growPredator = (predator: Entity) => {
+      predator.radius = Math.min(getMaxPredatorRadius(), predator.radius + 0.35);
+      predator.energy = Math.min(180, predator.energy + 34);
+      predator.mass += 0.14;
+    };
+
+    const bounceEntities = (a: Entity, b: Entity, nx: number, ny: number) => {
+      const rvx = b.vx - a.vx;
+      const rvy = b.vy - a.vy;
+      const velocityAlongNormal = rvx * nx + rvy * ny;
+      if (velocityAlongNormal > 0) return;
+
+      const invMassA = 1 / Math.max(0.1, a.mass);
+      const invMassB = 1 / Math.max(0.1, b.mass);
+      const impulse =
+        (-(1 + COLLISION_RESTITUTION) * velocityAlongNormal) /
+        (invMassA + invMassB);
+      const impulseX = impulse * nx;
+      const impulseY = impulse * ny;
+
+      a.vx -= impulseX * invMassA;
+      a.vy -= impulseY * invMassA;
+      b.vx += impulseX * invMassB;
+      b.vy += impulseY * invMassB;
+    };
+
+    const handleEntityCollisions = () => {
+      const entities = entitiesRef.current;
+      for (let i = 0; i < entities.length; i++) {
+        const a = entities[i];
+        if (!a.alive) continue;
+
+        for (let j = i + 1; j < entities.length; j++) {
+          const b = entities[j];
+          if (!b.alive) continue;
+
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const minDistance = a.radius + b.radius;
+          const distanceSq = dx * dx + dy * dy;
+          if (distanceSq >= minDistance * minDistance) continue;
+
+          const distance = Math.sqrt(distanceSq) || 1;
+          const nx = dx / distance;
+          const ny = dy / distance;
+          const overlap = minDistance - distance;
+          const relativeSpeed = Math.abs((b.vx - a.vx) * nx + (b.vy - a.vy) * ny);
+
+          const predator =
+            a.species === "predator" ? a : b.species === "predator" ? b : null;
+          const prey =
+            a.species === "prey" ? a : b.species === "prey" ? b : null;
+
+          if (predator && prey && !isInsideSafeZone(prey)) {
+            audioRef.current?.playCollision(
+              Math.max(0.48, relativeSpeed / 280),
+              predator.radius,
+            );
+            prey.alive = false;
+            growPredator(predator);
+            continue;
+          }
+
+          const totalMass = a.mass + b.mass;
+          const aShare = b.mass / totalMass;
+          const bShare = a.mass / totalMass;
+          a.x -= nx * overlap * aShare;
+          a.y -= ny * overlap * aShare;
+          b.x += nx * overlap * bShare;
+          b.y += ny * overlap * bShare;
+          bounceEntities(a, b, nx, ny);
+          audioRef.current?.playCollision(
+            relativeSpeed / 280,
+            Math.max(a.radius, b.radius),
+          );
+        }
+      }
+    };
+
+    const resolveEndCondition = () => {
+      const nextCounts = countSpecies();
+      if (nextCounts.prey === 0) {
+        return { counts: nextCounts, result: "predator" as Result };
+      }
+      if (elapsedTimeRef.current >= SURVIVAL_SECONDS && nextCounts.prey > 0) {
+        return { counts: nextCounts, result: "prey" as Result };
+      }
+
+      return { counts: nextCounts, result: null };
     };
 
     const stepSimulation = (dt: number) => {
@@ -550,50 +861,42 @@ const EcosystemArena = () => {
         entity.age += dt;
         if (entity.species === "predator") {
           stepPredator(entity, dt);
-        } else if (entity.species === "prey") {
-          stepPrey(entity, dt);
         } else {
-          stepVoid(entity, dt);
+          stepPrey(entity, dt);
         }
 
         if (!entity.alive) continue;
         entity.vx *= 0.995;
         entity.vy *= 0.995;
-        clampSpeed(entity, entity.species === "void" ? 34 : MAX_SPEED);
+        clampSpeed(
+          entity,
+          entity.species === "predator"
+            ? getPredatorMaxSpeed(entity)
+            : MAX_SPEED * PREY_SPEED_MULTIPLIER,
+        );
         if (entity.species === "predator") {
           entity.angle = Math.atan2(entity.vy, entity.vx);
-        } else if (entity.species === "void") {
-          entity.angle += 0.28 * dt;
         }
         entity.x += entity.vx * dt;
         entity.y += entity.vy * dt;
         if (entity.species === "predator") {
           repelPredatorFromSafeZones(entity);
         }
-        bounceWalls(entity, arena);
+        const wallImpact = bounceWalls(entity, arena);
+        audioRef.current?.playCollision(wallImpact / 300, entity.radius);
       }
-    };
 
-    const drawRegularPolygon = (
-      entity: Entity,
-      sides: number,
-      rotationOffset = 0,
-      radiusScale = 1,
-    ) => {
-      const radius = entity.radius * radiusScale;
-      ctx.beginPath();
-      for (let i = 0; i < sides; i++) {
-        const angle = entity.angle + rotationOffset + (i / sides) * Math.PI * 2;
-        const x = entity.x + Math.cos(angle) * radius;
-        const y = entity.y + Math.sin(angle) * radius;
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
+      handleEntityCollisions();
+
+      for (let i = 0; i < entities.length; i++) {
+        const entity = entities[i];
+        if (!entity.alive) continue;
+        if (entity.species === "predator") {
+          repelPredatorFromSafeZones(entity);
         }
+        const wallImpact = bounceWalls(entity, arena);
+        audioRef.current?.playCollision(wallImpact / 300, entity.radius);
       }
-      ctx.closePath();
-      ctx.fill();
     };
 
     const drawEntity = (entity: Entity) => {
@@ -607,40 +910,31 @@ const EcosystemArena = () => {
       }
 
       if (entity.species === "predator") {
-        drawRegularPolygon(entity, 3, 0, 1.18);
+        ctx.beginPath();
+        ctx.arc(entity.x, entity.y, entity.radius, 0, Math.PI * 2);
+        ctx.fill();
         return;
       }
-
-      const pulse = 1 + Math.sin(entity.age * 2.2) * 0.04;
-      const radius = entity.radius * pulse;
-      const ringRadius = radius * 1.75;
-      ctx.save();
-      ctx.translate(entity.x, entity.y);
-      ctx.rotate(entity.angle);
-      ctx.strokeStyle = "rgba(129, 140, 248, 0.45)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, ringRadius, ringRadius * 0.38, 0, 0, Math.PI * 2);
-      ctx.stroke();
-
-      ctx.fillStyle = "#030106";
-      ctx.beginPath();
-      ctx.arc(0, 0, radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "rgba(196, 181, 253, 0.42)";
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.restore();
     };
 
     const drawSafeZone = (zone: SafeZone) => {
-      ctx.fillStyle = "rgba(56, 189, 248, 0.045)";
-      ctx.strokeStyle = "rgba(125, 211, 252, 0.38)";
-      ctx.lineWidth = 1.2;
+      ctx.save();
+      ctx.shadowColor = "rgba(74, 222, 128, 0.22)";
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = "rgba(34, 197, 94, 0.075)";
+      ctx.strokeStyle = "rgba(134, 239, 172, 0.48)";
+      ctx.lineWidth = 1.4;
       ctx.beginPath();
       ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "rgba(220, 252, 231, 0.5)";
+      ctx.font = "700 10px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("SAFE ZONE", zone.x, zone.y);
+      ctx.restore();
     };
 
     const render = () => {
@@ -673,11 +967,19 @@ const EcosystemArena = () => {
 
     const animate = (timeMs: number) => {
       const previous = lastTimeRef.current || timeMs;
-      const dt = Math.min(0.033, (timeMs - previous) / 1000) * SIMULATION_SPEED;
+      const rawDt = Math.min(0.033, (timeMs - previous) / 1000);
+      const dt = rawDt * SIMULATION_SPEED;
       lastTimeRef.current = timeMs;
 
       if (runningRef.current) {
+        elapsedTimeRef.current += rawDt;
         stepSimulation(dt);
+        const nextResult = resolveEndCondition();
+        if (nextResult.result) {
+          runningRef.current = false;
+          setResult(nextResult.result);
+          setCounts(nextResult.counts);
+        }
       }
       render();
 
@@ -688,6 +990,9 @@ const EcosystemArena = () => {
       ) {
         lastCounterUpdateRef.current = time;
         setCounts(countSpecies());
+        setTimeLeft(
+          Math.max(0, Math.ceil(SURVIVAL_SECONDS - elapsedTimeRef.current)),
+        );
       }
 
       animationRef.current = requestAnimationFrame(animate);
@@ -704,6 +1009,7 @@ const EcosystemArena = () => {
     window.addEventListener("resize", handleResize);
 
     return () => {
+      audioRef.current?.stopAmbience();
       startSimulationRef.current = null;
       renderArenaRef.current = null;
       if (animationRef.current !== null) {
@@ -719,11 +1025,12 @@ const EcosystemArena = () => {
     setSetupConfig((current) => ({ ...current, [species]: nextValue }));
   };
 
-  const applyPreset = (config: SetupConfig) => {
-    setSetupConfig(config);
+  const unlockAudio = () => {
+    void audioRef.current?.unlockAudio();
   };
 
   const startSimulation = () => {
+    unlockAudio();
     setupConfigRef.current = setupConfig;
     startSimulationRef.current?.();
     setSetupOpen(false);
@@ -731,25 +1038,34 @@ const EcosystemArena = () => {
 
   const reopenSetup = () => {
     runningRef.current = false;
+    setResult(null);
     setSetupOpen(true);
     renderArenaRef.current?.();
   };
 
+  const resultLabel =
+    result === "predator"
+      ? "PREDATORS WON"
+      : result === "prey"
+        ? "PREY SURVIVED"
+        : null;
+
   return (
-    <div className="ecosystem-arena">
+    <div className="ecosystem-arena" onPointerDown={unlockAudio}>
       <canvas ref={canvasRef} className="ecosystem-canvas" />
-      <div className="ecosystem-counters" aria-label="Ecosystem population">
-        <div>
-          <span>Predators</span>
-          <strong>{counts.predator}</strong>
+      {!setupOpen ? (
+        <div className="ecosystem-timer" aria-live="polite">
+          {resultLabel ?? `TIMER: ${timeLeft}`}
         </div>
+      ) : null}
+      <div className="ecosystem-counters" aria-label="Ecosystem population">
         <div>
           <span>Prey</span>
           <strong>{counts.prey}</strong>
         </div>
         <div>
-          <span>Voids</span>
-          <strong>{counts.void}</strong>
+          <span>Predators</span>
+          <strong>{counts.predator}</strong>
         </div>
         <div>
           <span>Safe Zones</span>
@@ -763,17 +1079,6 @@ const EcosystemArena = () => {
         <div className="setup-overlay" role="dialog" aria-modal="true">
           <div className="setup-panel">
             <h2>Ecosystem Setup</h2>
-            <div className="preset-row">
-              {presets.map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => applyPreset(preset.config)}
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
             <div className="setup-controls">
               {(Object.keys(setupLimits) as Array<keyof SetupConfig>).map(
                 (species) => {
@@ -842,6 +1147,26 @@ const EcosystemArena = () => {
           min-height: 0;
           transform: none;
           -webkit-transform: none;
+        }
+
+        .ecosystem-timer {
+          position: fixed;
+          top: 18px;
+          left: 50%;
+          z-index: 5;
+          transform: translateX(-50%);
+          color: rgba(248, 250, 252, 0.9);
+          font-family: var(--font-geist-mono), monospace;
+          font-size: 0.86rem;
+          font-weight: 900;
+          letter-spacing: 0.08em;
+          text-align: center;
+          text-transform: uppercase;
+          pointer-events: none;
+          text-shadow:
+            0 0 10px rgba(255, 255, 255, 0.2),
+            0 1px 8px rgba(0, 0, 0, 0.72);
+          white-space: nowrap;
         }
 
         .ecosystem-counters {
@@ -944,14 +1269,6 @@ const EcosystemArena = () => {
           text-transform: uppercase;
         }
 
-        .preset-row {
-          display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 10px;
-          margin-bottom: 18px;
-        }
-
-        .preset-row button,
         .setup-inputs button,
         .start-simulation {
           min-height: 42px;
@@ -1012,6 +1329,11 @@ const EcosystemArena = () => {
         }
 
         @media (max-width: 640px) {
+          .ecosystem-timer {
+            top: 14px;
+            font-size: 0.76rem;
+          }
+
           .ecosystem-counters {
             left: 12px;
             bottom: 32px;
@@ -1043,10 +1365,6 @@ const EcosystemArena = () => {
             width: 92vw;
             max-height: calc(100vh - 36px);
             padding: 18px;
-          }
-
-          .preset-row {
-            grid-template-columns: 1fr;
           }
         }
       `}</style>
