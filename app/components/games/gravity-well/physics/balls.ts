@@ -13,6 +13,7 @@ export const createBlankBall = (): GravityBall => ({
   color: palette[0].color,
   glow: palette[0].glow,
   slowTime: 0,
+  escapeCandidate: false,
 });
 
 export const resetOrbitBall = (
@@ -46,6 +47,7 @@ export const resetOrbitBall = (
   ball.color = tone.color;
   ball.glow = tone.glow;
   ball.slowTime = 0;
+  ball.escapeCandidate = false;
 };
 
 export const resetExplosionBall = (
@@ -82,5 +84,5 @@ export const resetExplosionBall = (
   ball.color = tone.color;
   ball.glow = tone.glow;
   ball.slowTime = 0;
+  ball.escapeCandidate = false;
 };
-

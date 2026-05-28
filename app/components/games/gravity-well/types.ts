@@ -9,6 +9,7 @@ export type GravityBall = {
   color: string;
   glow: string;
   slowTime: number;
+  escapeCandidate: boolean;
 };
 
 export type ExplosionParticle = {
@@ -96,4 +97,3 @@ export type CycleState = {
   shockwaveAt: number;
   phaseDuration?: number;
 };
-

@@ -10,6 +10,15 @@ import { clampSpeed, enforceMinimumSpeed, resolveBallCollision, resolveWallColli
 import { drawBackground, drawBall, drawBlackHole, drawCriticalOverlay, drawExplosion, drawSpawnRings, drawTrails } from "./render";
 import { SoundManager } from "./sound/SoundManager";
 
+type TelemetryTone = "standard" | "rare" | "critical";
+
+type TelemetryMessage = {
+  id: number;
+  text: string;
+  tone: TelemetryTone;
+  duration: number;
+};
+
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const isMobile = window.innerWidth < 600;
   const dpr = Math.min(
@@ -69,6 +78,8 @@ const GravityWell = () => {
     charge: 0,
     stage: "Dormant",
   });
+  const [telemetryMessage, setTelemetryMessage] =
+    useState<TelemetryMessage | null>(null);
   const [showSoundPrompt, setShowSoundPrompt] = useState(true);
   const [waitingForPlacement, setWaitingForPlacement] = useState(true);
   const gravityWellRef = useRef<HTMLDivElement>(null);
@@ -104,6 +115,13 @@ const GravityWell = () => {
   const lastHudUpdateRef = useRef<number>(0);
   const pausedRef = useRef<boolean>(false);
   const trailCursorRef = useRef<number>(0);
+  const telemetryIdRef = useRef<number>(0);
+  const telemetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  const telemetryLastShownRef = useRef<Record<string, number>>({});
+  const lastGrowthSignalMassRef = useRef<number>(0);
+  const orbitalDecaySignalRef = useRef<boolean>(false);
 
   if (soundRef.current === null) {
     soundRef.current = new SoundManager();
@@ -210,11 +228,47 @@ const GravityWell = () => {
       ring.alpha = alpha;
     };
 
+    const emitTelemetry = (
+      text: string,
+      time: number,
+      options: {
+        tone?: TelemetryTone;
+        duration?: number;
+        cooldown?: number;
+      } = {},
+    ) => {
+      const cooldown = options.cooldown ?? 4.5;
+      const lastShown = telemetryLastShownRef.current[text] ?? -Infinity;
+      if (time - lastShown < cooldown) return;
+
+      telemetryLastShownRef.current[text] = time;
+      telemetryIdRef.current += 1;
+      const duration = options.duration ?? 2.2;
+      const message = {
+        id: telemetryIdRef.current,
+        text,
+        tone: options.tone ?? "standard",
+        duration,
+      };
+
+      if (telemetryTimeoutRef.current !== null) {
+        clearTimeout(telemetryTimeoutRef.current);
+      }
+      setTelemetryMessage(message);
+      telemetryTimeoutRef.current = setTimeout(() => {
+        setTelemetryMessage((current) =>
+          current?.id === message.id ? null : current,
+        );
+      }, duration * 1000);
+    };
+
     const respawnFromExplosion = (time: number) => {
       const balls = ballsRef.current;
       const scale = getPhysicsScale(arenaRef.current);
       const originX = blackHoleRef.current?.x ?? arenaRef.current.width / 2;
       const originY = blackHoleRef.current?.y ?? arenaRef.current.height / 2;
+      let fastestIndex = 0;
+      let fastestSpeed = 0;
       for (let i = 0; i < balls.length; i++) {
         if (i < BALL_COUNT) {
           resetExplosionBall(
@@ -226,13 +280,36 @@ const GravityWell = () => {
             originX,
             originY,
           );
+          const speed = Math.hypot(balls[i].vx, balls[i].vy);
+          if (speed > fastestSpeed) {
+            fastestSpeed = speed;
+            fastestIndex = i;
+          }
         } else {
           balls[i].active = false;
         }
       }
+      emitTelemetry("SUPERNOVA EVENT", time, {
+        tone: "critical",
+        duration: 2.8,
+        cooldown: 8,
+      });
+      if (Math.random() < 0.34) {
+        const candidate = balls[fastestIndex];
+        candidate.escapeCandidate = true;
+        candidate.color = "#facc15";
+        candidate.glow = "rgba(250, 204, 21, 0.74)";
+        candidate.vx *= 1.12;
+        candidate.vy *= 1.12;
+        emitTelemetry("ESCAPE VELOCITY CANDIDATE DETECTED", time, {
+          tone: "rare",
+          duration: 3,
+          cooldown: 12,
+        });
+      }
       emitExplosionParticles();
       emitShockwaves();
-      soundRef.current?.playSupernova();
+      soundRef.current?.playExplosion();
       cycleRef.current = {
         phase: "explosion",
         phaseStartedAt: time,
@@ -254,6 +331,8 @@ const GravityWell = () => {
       spawnOrbitBalls();
       blackHoleRef.current = null;
       secondBlackHoleRef.current = null;
+      lastGrowthSignalMassRef.current = 0;
+      orbitalDecaySignalRef.current = false;
       setWaitingForPlacement(true);
       setHudStats({
         mass: 0,
@@ -279,6 +358,8 @@ const GravityWell = () => {
 
       if (!blackHoleRef.current?.active) {
         blackHoleRef.current = blackHole;
+        lastGrowthSignalMassRef.current = 0;
+        orbitalDecaySignalRef.current = false;
         cycleRef.current = {
           phase: "awakening",
           phaseStartedAt: performance.now() / 1000,
@@ -321,8 +402,15 @@ const GravityWell = () => {
       placeBlackHole(touch.clientX, touch.clientY);
     };
 
-    const absorbBall = (blackHole: BlackHole, ball: GravityBall) => {
+    const absorbBall = (
+      blackHole: BlackHole,
+      ball: GravityBall,
+      time: number,
+    ) => {
       const scale = getPhysicsScale(arenaRef.current);
+      if (ball.escapeCandidate) {
+        ball.escapeCandidate = false;
+      }
       ball.active = false;
       blackHole.mass += 1;
       blackHole.targetRadius +=
@@ -331,6 +419,22 @@ const GravityWell = () => {
       soundRef.current?.playAbsorb(
         Math.min(1, (blackHole.mass - 1) / BALL_COUNT),
       );
+
+      const absorbedCount = getAbsorbedCount(
+        blackHoleRef.current,
+        secondBlackHoleRef.current,
+      );
+      const crossedGrowthGate =
+        absorbedCount >= 3 &&
+        (lastGrowthSignalMassRef.current === 0 ||
+          absorbedCount - lastGrowthSignalMassRef.current >= 5);
+      if (crossedGrowthGate) {
+        lastGrowthSignalMassRef.current = absorbedCount;
+        emitTelemetry("EVENT HORIZON EXPANDING", time, {
+          duration: 2,
+          cooldown: 4.5,
+        });
+      }
     };
 
     const pickDominantBlackHole = (ball: GravityBall) =>
@@ -411,7 +515,8 @@ const GravityWell = () => {
         clampSpeed(ball);
         ball.x += ball.vx * dt;
         ball.y += ball.vy * dt;
-        resolveWallCollision(ball, arena);
+        const wallImpact = resolveWallCollision(ball, arena);
+        if (wallImpact > 0) soundRef.current?.playCollision(wallImpact);
         emitTrail(ball);
       }
 
@@ -501,6 +606,11 @@ const GravityWell = () => {
           BASE_GRAVITY * 1.12 * scale.gravityScale,
         );
         if (phaseAge >= (cycle.phaseDuration ?? CRITICAL_MAX_DURATION)) {
+          emitTelemetry("SINGULARITY UNSTABLE", time, {
+            tone: "critical",
+            duration: 2.6,
+            cooldown: 8,
+          });
           cycleRef.current = {
             phase: "collapse",
             phaseStartedAt: time,
@@ -601,7 +711,7 @@ const GravityWell = () => {
         const absorbRadius = dominantBlackHole.radius + ball.radius * 0.35;
 
         if (absorptionEnabled && actualDistance < absorbRadius) {
-          absorbBall(dominantBlackHole, ball);
+          absorbBall(dominantBlackHole, ball, time);
           continue;
         }
 
@@ -693,7 +803,8 @@ const GravityWell = () => {
 
         ball.x += ball.vx * physicsDt;
         ball.y += ball.vy * physicsDt;
-        resolveWallCollision(ball, arena);
+        const wallImpact = resolveWallCollision(ball, arena);
+        if (wallImpact > 0) soundRef.current?.playCollision(wallImpact);
 
         if (absorptionEnabled) {
           const postMoveDistance = Math.hypot(
@@ -701,7 +812,7 @@ const GravityWell = () => {
             ball.y - dominantBlackHole.y,
           );
           if (postMoveDistance < absorbRadius) {
-            absorbBall(dominantBlackHole, ball);
+            absorbBall(dominantBlackHole, ball, time);
             continue;
           }
         }
@@ -717,6 +828,28 @@ const GravityWell = () => {
         }
         clampSpeed(ball);
 
+        const postMoveSpeed = Math.hypot(ball.vx, ball.vy);
+        if (
+          postMoveDistance >= influenceRadius * 0.94 &&
+          postMoveSpeed > MAX_SPEED * 0.78 &&
+          cycle.phase !== "calm"
+        ) {
+          if (ball.escapeCandidate) {
+            ball.escapeCandidate = false;
+            emitTelemetry("OBJECT HAS ESCAPED SINGULARITY", time, {
+              tone: "rare",
+              duration: 3,
+              cooldown: 10,
+            });
+          } else if (postMoveSpeed > MAX_SPEED * 0.84) {
+            emitTelemetry("GRAVITATIONAL SLINGSHOT DETECTED", time, {
+              tone: "rare",
+              duration: 2.5,
+              cooldown: 9,
+            });
+          }
+        }
+
         if (
           absorptionEnabled &&
           Math.hypot(
@@ -724,7 +857,7 @@ const GravityWell = () => {
             ball.y - dominantBlackHole.y,
           ) < absorbRadius
         ) {
-          absorbBall(dominantBlackHole, ball);
+          absorbBall(dominantBlackHole, ball, time);
           continue;
         }
 
@@ -763,9 +896,27 @@ const GravityWell = () => {
       const absorbedCount = getAbsorbedCount(blackHole, secondBlackHole);
       if (
         cycle.phase === "active" &&
+        !orbitalDecaySignalRef.current &&
+        activeCount > 0 &&
+        activeCount <= BALL_COUNT * 0.38
+      ) {
+        orbitalDecaySignalRef.current = true;
+        emitTelemetry("ORBITAL STABILITY COLLAPSING", time, {
+          tone: "critical",
+          duration: 2.4,
+          cooldown: 10,
+        });
+      }
+      if (
+        cycle.phase === "active" &&
         activeCount > 0 &&
         absorbedCount >= BALL_COUNT * CRITICAL_TRIGGER_RATIO
       ) {
+        emitTelemetry("CRITICAL MASS REACHED", time, {
+          tone: "critical",
+          duration: 2.7,
+          cooldown: 10,
+        });
         cycleRef.current = {
           phase: "critical",
           phaseStartedAt: time,
@@ -776,6 +927,11 @@ const GravityWell = () => {
           ),
         };
       } else if (cycle.phase === "active" && activeCount === 0) {
+        emitTelemetry("SINGULARITY UNSTABLE", time, {
+          tone: "critical",
+          duration: 2.6,
+          cooldown: 8,
+        });
         cycleRef.current = {
           phase: "collapse",
           phaseStartedAt: time,
@@ -893,9 +1049,9 @@ const GravityWell = () => {
         const totalMass =
           blackHole.mass +
           (secondBlackHole?.active ? secondBlackHole.mass - 1 : 0);
-        soundRef.current?.updateHum(
+        soundRef.current?.updateAmbience(
           Math.min(1, (totalMass - 1) / BALL_COUNT),
-          cycle.phase === "critical",
+          cycle.phase,
         );
       }
       drawTrails(ctx, trailParticlesRef.current, dt, renderScale.visualScale);
@@ -974,17 +1130,10 @@ const GravityWell = () => {
     };
 
     resetArena();
-    void soundRef.current?.initAudio().then((state) => {
-      if (state === "running") {
-        setShowSoundPrompt(false);
-        removeUnlockListeners();
-      }
-    });
     const handleVisibilityChange = () => {
       if (document.hidden) {
         pausedRef.current = true;
-        soundRef.current?.stopHum();
-        soundRef.current?.stopMusic();
+        soundRef.current?.stopAmbience();
         if (animationRef.current !== null) {
           cancelAnimationFrame(animationRef.current);
           animationRef.current = null;
@@ -993,15 +1142,13 @@ const GravityWell = () => {
       }
 
       pausedRef.current = false;
-      soundRef.current?.startHum();
-      soundRef.current?.startMusic();
+      soundRef.current?.startAmbience();
       lastTimeRef.current = 0;
       lastFrameRef.current = 0;
       animationRef.current = requestAnimationFrame(animate);
     };
 
     const root = gravityWellRef.current;
-    console.log("Waiting for first user gesture to unlock audio");
     root?.addEventListener("pointerdown", unlockAudioFromGesture, true);
     root?.addEventListener("touchstart", unlockAudioFromGesture, {
       capture: true,
@@ -1028,6 +1175,9 @@ const GravityWell = () => {
       if (animationRef.current !== null) {
         cancelAnimationFrame(animationRef.current);
       }
+      if (telemetryTimeoutRef.current !== null) {
+        clearTimeout(telemetryTimeoutRef.current);
+      }
       removeUnlockListeners();
       root?.removeEventListener("pointerdown", handlePlacePointer);
       root?.removeEventListener("touchstart", handlePlaceTouch);
@@ -1037,20 +1187,6 @@ const GravityWell = () => {
     };
   }, []);
 
-  const roundedMobileCharge = Math.min(
-    100,
-    Math.max(0, Math.round(hudStats.charge / 5) * 5),
-  );
-  const mobileStatus =
-    hudStats.charge >= 100
-      ? "SUPERNOVA READY"
-      : hudStats.stability <= 18
-        ? "COLLAPSE IMMINENT"
-        : hudStats.stage.includes("Critical") || hudStats.charge >= 76
-          ? "CRITICAL MASS"
-          : hudStats.charge >= 60
-            ? `SUPERNOVA ${roundedMobileCharge}%`
-            : "";
   return (
     <div ref={gravityWellRef} className="gravity-well">
       <canvas ref={canvasRef} className="gravity-canvas" />
@@ -1065,6 +1201,20 @@ const GravityWell = () => {
       >
         Click anywhere to place black hole
       </div>
+      {telemetryMessage ? (
+        <div
+          key={telemetryMessage.id}
+          className={`gravity-telemetry is-${telemetryMessage.tone}`}
+          style={
+            {
+              "--telemetry-duration": `${telemetryMessage.duration}s`,
+            } as React.CSSProperties
+          }
+          aria-live="polite"
+        >
+          {telemetryMessage.text}
+        </div>
+      ) : null}
       {!waitingForPlacement ? (
         <div className="gravity-stats" aria-label="Black hole status">
           <div>
@@ -1080,15 +1230,6 @@ const GravityWell = () => {
             <strong>{hudStats.charge}%</strong>
           </div>
           <p>{hudStats.stage}</p>
-        </div>
-      ) : null}
-      {mobileStatus && !waitingForPlacement ? (
-        <div
-          key={mobileStatus}
-          className="mobile-gravity-status"
-          aria-label="Black hole alert"
-        >
-          {mobileStatus}
         </div>
       ) : null}
       <style jsx>{`
@@ -1178,12 +1319,47 @@ const GravityWell = () => {
           opacity: 1;
         }
 
-        .mobile-gravity-status {
+        .sound-prompt {
           display: none;
         }
 
-        .sound-prompt {
-          display: none;
+        .gravity-telemetry {
+          position: fixed;
+          top: clamp(22px, 6vh, 64px);
+          left: 50%;
+          z-index: 7;
+          width: min(760px, calc(100vw - 32px));
+          transform: translateX(-50%);
+          color: rgba(224, 250, 255, 0.7);
+          font-family: var(--font-geist-mono), monospace;
+          font-size: clamp(0.68rem, 1.35vw, 1rem);
+          font-weight: 500;
+          letter-spacing: clamp(0.1em, 0.7vw, 0.22em);
+          line-height: 1.35;
+          text-align: center;
+          text-shadow:
+            0 0 10px rgba(103, 232, 249, 0.28),
+            0 0 22px rgba(96, 165, 250, 0.14);
+          text-transform: uppercase;
+          pointer-events: none;
+          animation: telemetryFade var(--telemetry-duration) ease-in-out
+            forwards;
+          will-change: opacity, transform;
+        }
+
+        .gravity-telemetry.is-rare {
+          color: rgba(255, 241, 184, 0.82);
+          text-shadow:
+            0 0 12px rgba(250, 204, 21, 0.44),
+            0 0 28px rgba(251, 191, 36, 0.22),
+            0 0 44px rgba(103, 232, 249, 0.12);
+        }
+
+        .gravity-telemetry.is-critical {
+          color: rgba(232, 250, 255, 0.78);
+          text-shadow:
+            0 0 12px rgba(125, 249, 255, 0.36),
+            0 0 30px rgba(240, 171, 252, 0.18);
         }
 
         @media (max-width: 640px) {
@@ -1207,42 +1383,28 @@ const GravityWell = () => {
             text-shadow: 0 0 12px rgba(103, 232, 249, 0.28);
           }
 
-          .mobile-gravity-status {
-            position: fixed;
-            top: 56px;
-            right: 14px;
-            z-index: 5;
-            display: block;
-            max-width: min(220px, calc(100vw - 28px));
-            color: rgba(224, 250, 255, 0.82);
-            font-family: var(--font-geist-mono), monospace;
-            font-size: 0.66rem;
-            font-weight: 600;
+          .gravity-telemetry {
+            top: 28px;
+            width: min(330px, calc(100vw - 28px));
+            font-size: clamp(0.58rem, 3vw, 0.76rem);
             letter-spacing: 0.12em;
-            line-height: 1.35;
-            text-align: right;
-            text-shadow:
-              0 0 10px rgba(103, 232, 249, 0.38),
-              0 0 18px rgba(167, 139, 250, 0.22);
-            text-transform: uppercase;
-            pointer-events: none;
-            animation: mobileStatusFade 2.4s ease-out forwards;
+            line-height: 1.45;
           }
         }
 
-        @keyframes mobileStatusFade {
+        @keyframes telemetryFade {
           0% {
             opacity: 0;
-            transform: translateY(-4px);
+            transform: translate(-50%, -6px);
           }
-          16%,
-          62% {
+          14%,
+          68% {
             opacity: 1;
-            transform: translateY(0);
+            transform: translate(-50%, 0);
           }
           100% {
             opacity: 0;
-            transform: translateY(-2px);
+            transform: translate(-50%, -3px);
           }
         }
 

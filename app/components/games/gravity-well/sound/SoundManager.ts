@@ -1,69 +1,60 @@
+type AmbiencePhase =
+  | "calm"
+  | "awakening"
+  | "active"
+  | "critical"
+  | "collapse"
+  | "explosion";
+
+const clamp = (value: number, min: number, max: number) =>
+  Math.min(max, Math.max(min, value));
+
 export class SoundManager {
-  private audio: AudioContext | null = null;
-  private masterGain: GainNode | null = null;
-  private humGain: GainNode | null = null;
-  private musicGain: GainNode | null = null;
-  private humOscillators: OscillatorNode[] = [];
-  private musicOscillators: OscillatorNode[] = [];
-  private musicTimer: number | null = null;
-  private musicStep = 0;
+  audio: AudioContext | null = null;
+  masterGain: GainNode | null = null;
+  private ambienceGain: GainNode | null = null;
+  private droneGain: GainNode | null = null;
+  private organGain: GainNode | null = null;
+  private pulseGain: GainNode | null = null;
+  private shimmerGain: GainNode | null = null;
+  private shimmerFilter: BiquadFilterNode | null = null;
+  private ambienceOscillators: OscillatorNode[] = [];
+  private shimmerSource: AudioBufferSourceNode | null = null;
+  private pulseTimer: number | null = null;
   private muted = false;
   private unlocked = false;
-  private testBeepPlayed = false;
   private lastAbsorbAt = 0;
   private lastCollisionAt = 0;
+  private collisionWindowStart = 0;
+  private collisionCount = 0;
   private lastCriticalPulseAt = 0;
 
   async initAudio() {
-    try {
-      if (this.audio?.state === "closed") {
-        this.audio = null;
-        this.masterGain = null;
-        this.unlocked = false;
-      }
+    return this.unlockAudio();
+  }
 
-      if (!this.audio) {
-        const audioWindow = window as Window &
-          typeof globalThis & {
-            webkitAudioContext?: typeof AudioContext;
-          };
-        const AudioContextClass =
-          audioWindow.AudioContext || audioWindow.webkitAudioContext;
-        if (!AudioContextClass) {
-          console.warn("Web Audio API unavailable");
-          return "unavailable";
-        }
-        this.audio = new AudioContextClass();
-        console.log("AudioContext created");
-        this.masterGain = this.audio.createGain();
-        this.masterGain.gain.value = this.muted ? 0 : 0.55;
-        this.masterGain.connect(this.audio.destination);
-      }
+  async unlockAudio() {
+    try {
+      this.ensureAudio();
+      if (!this.audio) return "unavailable";
 
       if (this.audio.state !== "running") {
         await this.audio.resume();
       }
 
-      console.log("AudioContext resumed");
       this.unlocked = this.audio.state === "running";
-      if (this.unlocked) {
-        this.muted = false;
-        if (this.masterGain) {
-          this.masterGain.gain.setTargetAtTime(
-            0.55,
-            this.audio.currentTime,
-            0.02,
-          );
-        }
-        this.playTestBeep();
-        this.startHum();
-        this.startMusic();
-      } else {
-        console.warn("Audio did not start:", this.audio.state);
+      if (this.unlocked && this.masterGain) {
+        this.masterGain.gain.setTargetAtTime(
+          this.muted ? 0 : 0.68,
+          this.audio.currentTime,
+          0.04,
+        );
+        this.startAmbience();
       }
+
       return this.audio.state;
     } catch (error) {
-      console.error("Audio init failed", error);
+      console.error("Audio unlock failed", error);
       this.unlocked = false;
       return "interrupted";
     }
@@ -85,137 +76,288 @@ export class SoundManager {
     return this.audio?.state ?? "closed";
   }
 
-  startHum() {
+  startAmbience() {
     if (
       !this.audio ||
       this.audio.state !== "running" ||
       !this.masterGain ||
       this.muted ||
-      this.humOscillators.length
+      this.ambienceGain
     ) {
       return;
     }
 
-    this.humGain = this.audio.createGain();
-    this.humGain.gain.value = this.muted ? 0 : 0.04;
-    this.humGain.connect(this.masterGain);
+    const now = this.audio.currentTime;
+    this.ambienceGain = this.audio.createGain();
+    this.droneGain = this.audio.createGain();
+    this.organGain = this.audio.createGain();
+    this.pulseGain = this.audio.createGain();
+    this.shimmerGain = this.audio.createGain();
+    this.shimmerFilter = this.audio.createBiquadFilter();
 
-    const low = this.audio.createOscillator();
-    low.type = "sine";
-    low.frequency.value = 42;
-    low.connect(this.humGain);
-    low.start();
+    this.ambienceGain.gain.setValueAtTime(0.0001, now);
+    this.ambienceGain.gain.setTargetAtTime(0.16, now, 1.4);
+    this.droneGain.gain.value = 0.32;
+    this.organGain.gain.value = 0.18;
+    this.pulseGain.gain.value = 0.055;
+    this.shimmerGain.gain.value = 0.018;
+    this.shimmerFilter.type = "bandpass";
+    this.shimmerFilter.frequency.value = 2450;
+    this.shimmerFilter.Q.value = 0.55;
 
-    const air = this.audio.createOscillator();
-    air.type = "triangle";
-    air.frequency.value = 84;
-    air.connect(this.humGain);
-    air.start();
+    this.droneGain.connect(this.ambienceGain);
+    this.organGain.connect(this.ambienceGain);
+    this.pulseGain.connect(this.ambienceGain);
+    this.shimmerGain.connect(this.ambienceGain);
+    this.ambienceGain.connect(this.masterGain);
 
-    this.humOscillators = [low, air];
-    console.log("Ambient hum started");
+    const drone = this.audio.createOscillator();
+    drone.type = "sine";
+    drone.frequency.value = 45;
+    drone.connect(this.droneGain);
+    drone.start(now);
+
+    const organFundamental = this.audio.createOscillator();
+    organFundamental.type = "triangle";
+    organFundamental.frequency.value = 90;
+    organFundamental.detune.value = -4;
+    organFundamental.connect(this.organGain);
+    organFundamental.start(now);
+
+    const organFifth = this.audio.createOscillator();
+    organFifth.type = "sine";
+    organFifth.frequency.value = 135;
+    organFifth.detune.value = 3;
+    organFifth.connect(this.organGain);
+    organFifth.start(now);
+
+    const pulse = this.audio.createOscillator();
+    pulse.type = "sine";
+    pulse.frequency.value = 45;
+    pulse.connect(this.pulseGain);
+    pulse.start(now);
+
+    this.ambienceOscillators = [drone, organFundamental, organFifth, pulse];
+    this.startShimmer();
+    this.startPulseModulation();
   }
 
-  stopHum() {
-    for (let i = 0; i < this.humOscillators.length; i++) {
-      this.humOscillators[i].stop();
-      this.humOscillators[i].disconnect();
-    }
-    this.humOscillators = [];
-    this.humGain?.disconnect();
-    this.humGain = null;
-  }
-
-  startMusic() {
-    if (
-      !this.audio ||
-      this.audio.state !== "running" ||
-      !this.masterGain ||
-      this.muted ||
-      this.musicOscillators.length
-    ) {
-      return;
+  stopAmbience() {
+    if (this.pulseTimer !== null) {
+      window.clearInterval(this.pulseTimer);
+      this.pulseTimer = null;
     }
 
-    this.musicGain = this.audio.createGain();
-    this.musicGain.gain.value = this.muted ? 0 : 0.11;
-    this.musicGain.connect(this.masterGain);
-
-    for (let i = 0; i < 5; i++) {
-      const osc = this.audio.createOscillator();
-      osc.type = i % 2 === 0 ? "sine" : "triangle";
-      osc.frequency.value = 55;
-      osc.detune.value = (i - 2) * 3;
-      osc.connect(this.musicGain);
-      osc.start();
-      this.musicOscillators.push(osc);
+    for (let i = 0; i < this.ambienceOscillators.length; i++) {
+      this.ambienceOscillators[i].stop();
+      this.ambienceOscillators[i].disconnect();
     }
+    this.ambienceOscillators = [];
 
-    this.scheduleMusicChord();
-    this.musicTimer = window.setInterval(() => {
-      this.scheduleMusicChord();
-    }, 7800);
-    console.log("Background music started");
-  }
+    this.shimmerSource?.stop();
+    this.shimmerSource?.disconnect();
+    this.shimmerSource = null;
+    this.shimmerFilter?.disconnect();
+    this.shimmerFilter = null;
 
-  stopMusic() {
-    if (this.musicTimer !== null) {
-      window.clearInterval(this.musicTimer);
-      this.musicTimer = null;
-    }
-    for (let i = 0; i < this.musicOscillators.length; i++) {
-      this.musicOscillators[i].stop();
-      this.musicOscillators[i].disconnect();
-    }
-    this.musicOscillators = [];
-    this.musicGain?.disconnect();
-    this.musicGain = null;
+    this.droneGain?.disconnect();
+    this.organGain?.disconnect();
+    this.pulseGain?.disconnect();
+    this.shimmerGain?.disconnect();
+    this.ambienceGain?.disconnect();
+    this.droneGain = null;
+    this.organGain = null;
+    this.pulseGain = null;
+    this.shimmerGain = null;
+    this.ambienceGain = null;
   }
 
   setMuted(value: boolean) {
     this.muted = value;
     if (this.masterGain && this.audio) {
-      const gain = value ? 0 : 0.55;
-      this.masterGain.gain.setTargetAtTime(gain, this.audio.currentTime, 0.04);
+      this.masterGain.gain.setTargetAtTime(
+        value ? 0 : 0.68,
+        this.audio.currentTime,
+        0.05,
+      );
     }
+
     if (value) {
-      this.stopHum();
-      this.stopMusic();
+      this.stopAmbience();
     } else if (this.unlocked && this.audio?.state === "running") {
-      this.startHum();
-      this.startMusic();
+      this.startAmbience();
     }
   }
 
-  updateHum(massRatio: number, critical = false) {
-    if (!this.audio || !this.humGain || this.muted) return;
-    const time = this.audio.currentTime;
-    const boost = critical ? 0.05 : 0;
-    this.humGain.gain.setTargetAtTime(
-      0.036 + massRatio * 0.05 + boost,
-      time,
-      0.18,
+  updateAmbience(massRatio: number, phase: AmbiencePhase) {
+    if (!this.audio || !this.ambienceGain || this.muted) return;
+
+    const now = this.audio.currentTime;
+    const mass = clamp(massRatio, 0, 1);
+    const isCritical = phase === "critical";
+    const isCollapse = phase === "collapse";
+    const isExplosion = phase === "explosion";
+    const tension = isCritical ? 1 : isCollapse ? 0.65 : 0;
+    const duck = isCollapse || isExplosion ? 0.58 : 1;
+    const baseGain = (0.13 + mass * 0.08 + tension * 0.035) * duck;
+
+    this.ambienceGain.gain.setTargetAtTime(baseGain, now, 0.35);
+    this.droneGain?.gain.setTargetAtTime(0.3 + mass * 0.16, now, 0.35);
+    this.organGain?.gain.setTargetAtTime(0.15 + mass * 0.08, now, 0.45);
+    this.pulseGain?.gain.setTargetAtTime(
+      isCritical ? 0.18 : 0.045 + mass * 0.05,
+      now,
+      0.22,
     );
-    if (this.humOscillators[0]) {
-      this.humOscillators[0].frequency.setTargetAtTime(
-        38 + massRatio * 18 + (critical ? 12 : 0),
-        time,
-        0.24,
+    this.shimmerGain?.gain.setTargetAtTime(
+      isCritical ? 0.028 : 0.012 + mass * 0.012,
+      now,
+      0.5,
+    );
+
+    const root = 45 - mass * 6 - (isCritical ? 3 : 0);
+    const frequencies = [root, root * 2, root * 3, root * (isCritical ? 0.92 : 1)];
+    for (let i = 0; i < this.ambienceOscillators.length; i++) {
+      this.ambienceOscillators[i].frequency.setTargetAtTime(
+        frequencies[i],
+        now,
+        0.65,
       );
     }
-    if (this.humOscillators[1]) {
-      this.humOscillators[1].frequency.setTargetAtTime(
-        78 + massRatio * 24 + (critical ? 18 : 0),
-        time,
-        0.24,
-      );
+
+    this.shimmerFilter?.frequency.setTargetAtTime(
+      isCritical ? 3200 : 2100 + mass * 700,
+      now,
+      0.8,
+    );
+  }
+
+  playCollision(intensity: number) {
+    if (!this.isPlayable()) return;
+    const now = this.audio.currentTime;
+
+    if (now - this.collisionWindowStart >= 1) {
+      this.collisionWindowStart = now;
+      this.collisionCount = 0;
     }
+    if (this.collisionCount >= 8 || now - this.lastCollisionAt < 0.045) return;
+    this.collisionCount += 1;
+    this.lastCollisionAt = now;
+
+    const impact = clamp(intensity, 0, 1);
+    const duration = 0.08 + impact * 0.08;
+    const frequency = 650 + impact * 750 + (Math.random() - 0.5) * 90;
+    const peak = clamp(0.018 + impact * 0.055, 0.015, 0.075);
+
+    const osc = this.audio.createOscillator();
+    const overtone = this.audio.createOscillator();
+    const gain = this.audio.createGain();
+    const filter = this.audio.createBiquadFilter();
+
+    osc.type = "triangle";
+    overtone.type = "sine";
+    osc.frequency.setValueAtTime(frequency, now);
+    overtone.frequency.setValueAtTime(frequency * 2.01, now);
+    filter.type = "highpass";
+    filter.frequency.value = 520;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(peak, now + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    osc.connect(filter);
+    overtone.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    osc.start(now);
+    overtone.start(now);
+    osc.stop(now + duration + 0.02);
+    overtone.stop(now + duration + 0.02);
+    osc.onended = () => {
+      osc.disconnect();
+      overtone.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
+  }
+
+  playAbsorb(massRatio: number) {
+    if (!this.isPlayable()) return;
+    const now = this.audio.currentTime;
+    if (now - this.lastAbsorbAt < 0.06) return;
+    this.lastAbsorbAt = now;
+
+    const mass = clamp(massRatio, 0, 1);
+    const duration = 0.48 + mass * 0.22;
+    const peak = 0.18 + mass * 0.08;
+
+    const osc = this.audio.createOscillator();
+    const bass = this.audio.createOscillator();
+    const gain = this.audio.createGain();
+    const bassGain = this.audio.createGain();
+    const noise = this.createNoiseSource(duration);
+    const noiseFilter = this.audio.createBiquadFilter();
+    const noiseGain = this.audio.createGain();
+
+    osc.type = "triangle";
+    bass.type = "sine";
+    osc.frequency.setValueAtTime(180 + mass * 25, now);
+    osc.frequency.exponentialRampToValueAtTime(45, now + duration);
+    bass.frequency.setValueAtTime(78, now);
+    bass.frequency.exponentialRampToValueAtTime(34, now + duration * 0.8);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(peak, now + 0.035);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    bassGain.gain.setValueAtTime(0.0001, now);
+    bassGain.gain.exponentialRampToValueAtTime(0.11 + mass * 0.06, now + 0.04);
+    bassGain.gain.exponentialRampToValueAtTime(0.0001, now + duration * 0.85);
+
+    noiseFilter.type = "lowpass";
+    noiseFilter.frequency.setValueAtTime(900, now);
+    noiseFilter.frequency.exponentialRampToValueAtTime(300, now + duration);
+    noiseFilter.Q.value = 0.9;
+    noiseGain.gain.setValueAtTime(0.0001, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.16 + mass * 0.05, now + 0.04);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
+    osc.connect(gain);
+    bass.connect(bassGain);
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    gain.connect(this.masterGain);
+    bassGain.connect(this.masterGain);
+    noiseGain.connect(this.masterGain);
+
+    osc.start(now);
+    bass.start(now);
+    noise.start(now);
+    osc.stop(now + duration + 0.04);
+    bass.stop(now + duration + 0.04);
+    noise.stop(now + duration + 0.04);
+    osc.onended = () => {
+      osc.disconnect();
+      bass.disconnect();
+      gain.disconnect();
+      bassGain.disconnect();
+      noise.disconnect();
+      noiseFilter.disconnect();
+      noiseGain.disconnect();
+    };
+  }
+
+  playExplosion() {
+    if (!this.isPlayable()) return;
+    const now = this.audio.currentTime;
+    this.ambienceGain?.gain.setTargetAtTime(0.04, now, 0.08);
+
+    this.playExplosionBass(now);
+    this.playExplosionRumble(now);
+    this.playExplosionCrack(now);
+    this.playExplosionWhoosh(now);
   }
 
   playCriticalPulse() {
-    if (!this.audio || this.audio.state !== "running" || !this.masterGain)
-      return;
-    if (this.muted) return;
+    if (!this.isPlayable()) return;
     const now = this.audio.currentTime;
     if (now - this.lastCriticalPulseAt < 0.58) return;
     this.lastCriticalPulseAt = now;
@@ -223,44 +365,15 @@ export class SoundManager {
     const osc = this.audio.createOscillator();
     const gain = this.audio.createGain();
     osc.type = "sine";
-    osc.frequency.setValueAtTime(48, now);
-    osc.frequency.exponentialRampToValueAtTime(74, now + 0.18);
+    osc.frequency.setValueAtTime(42, now);
+    osc.frequency.exponentialRampToValueAtTime(72, now + 0.14);
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.045, now + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.22);
+    gain.gain.exponentialRampToValueAtTime(0.07, now + 0.018);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.24);
     osc.connect(gain);
     gain.connect(this.masterGain);
     osc.start(now);
-    osc.stop(now + 0.24);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  playAbsorb(massRatio: number) {
-    if (!this.audio || this.audio.state !== "running" || !this.masterGain) {
-      console.log("Absorb sound blocked because audio is locked");
-      return;
-    }
-    if (this.muted) return;
-    const now = this.audio.currentTime;
-    if (now - this.lastAbsorbAt < 0.045) return;
-    this.lastAbsorbAt = now;
-    console.log("Playing absorb sound");
-
-    const osc = this.audio.createOscillator();
-    const gain = this.audio.createGain();
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(240 + massRatio * 140, now);
-    osc.frequency.exponentialRampToValueAtTime(54 + massRatio * 42, now + 0.3);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.018);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.34);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.36);
+    osc.stop(now + 0.26);
     osc.onended = () => {
       osc.disconnect();
       gain.disconnect();
@@ -268,24 +381,21 @@ export class SoundManager {
   }
 
   playSpawn() {
-    if (!this.audio || this.audio.state !== "running" || !this.masterGain) {
-      return;
-    }
-    if (this.muted) return;
+    if (!this.isPlayable()) return;
 
     const now = this.audio.currentTime;
     const osc = this.audio.createOscillator();
     const gain = this.audio.createGain();
     osc.type = "sine";
-    osc.frequency.setValueAtTime(140, now);
-    osc.frequency.exponentialRampToValueAtTime(320, now + 0.22);
+    osc.frequency.setValueAtTime(120, now);
+    osc.frequency.exponentialRampToValueAtTime(310, now + 0.24);
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.09, now + 0.025);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+    gain.gain.exponentialRampToValueAtTime(0.07, now + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
     osc.connect(gain);
     gain.connect(this.masterGain);
     osc.start(now);
-    osc.stop(now + 0.3);
+    osc.stop(now + 0.34);
     osc.onended = () => {
       osc.disconnect();
       gain.disconnect();
@@ -293,188 +403,243 @@ export class SoundManager {
   }
 
   playMerge() {
-    if (!this.audio || this.audio.state !== "running" || !this.masterGain) {
-      return;
-    }
-    if (this.muted) return;
+    if (!this.isPlayable()) return;
 
     const now = this.audio.currentTime;
     const osc = this.audio.createOscillator();
+    const noise = this.createNoiseSource(0.62);
+    const filter = this.audio.createBiquadFilter();
     const gain = this.audio.createGain();
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(86, now);
-    osc.frequency.exponentialRampToValueAtTime(34, now + 0.42);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.18, now + 0.025);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.48);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.5);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  playCollision(intensity: number) {
-    if (!this.audio || !this.masterGain || this.muted || intensity < 0.34)
-      return;
-    const now = this.audio.currentTime;
-    if (now - this.lastCollisionAt < 0.075) return;
-    this.lastCollisionAt = now;
-
-    const osc = this.audio.createOscillator();
-    const gain = this.audio.createGain();
-    osc.type = "triangle";
-    osc.frequency.value = 420 + intensity * 360;
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(
-      0.012 + intensity * 0.018,
-      now + 0.01,
-    );
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-    osc.connect(gain);
-    gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.09);
-    osc.onended = () => {
-      osc.disconnect();
-      gain.disconnect();
-    };
-  }
-
-  playSupernova() {
-    if (
-      !this.audio ||
-      this.audio.state !== "running" ||
-      !this.masterGain ||
-      this.muted
-    ) {
-      return;
-    }
-    const now = this.audio.currentTime;
-    console.log("Playing supernova sound");
-
-    const bass = this.audio.createOscillator();
-    const bassGain = this.audio.createGain();
-    bass.type = "triangle";
-    bass.frequency.setValueAtTime(55, now);
-    bass.frequency.exponentialRampToValueAtTime(28, now + 0.6);
-    bassGain.gain.setValueAtTime(0.0001, now);
-    bassGain.gain.exponentialRampToValueAtTime(0.42, now + 0.025);
-    bassGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.62);
-    bass.connect(bassGain);
-    bassGain.connect(this.masterGain);
-    bass.start(now);
-    bass.stop(now + 0.65);
-
-    const crack = this.audio.createOscillator();
-    const crackGain = this.audio.createGain();
-    crack.type = "sawtooth";
-    crack.frequency.setValueAtTime(620, now);
-    crack.frequency.exponentialRampToValueAtTime(1200, now + 0.12);
-    crackGain.gain.setValueAtTime(0.0001, now);
-    crackGain.gain.exponentialRampToValueAtTime(0.09, now + 0.012);
-    crackGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
-    crack.connect(crackGain);
-    crackGain.connect(this.masterGain);
-    crack.start(now);
-    crack.stop(now + 0.13);
-
-    const noiseLength = Math.max(1, Math.floor(this.audio.sampleRate * 0.8));
-    const noiseBuffer = this.audio.createBuffer(
-      1,
-      noiseLength,
-      this.audio.sampleRate,
-    );
-    const channel = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < noiseLength; i++) {
-      channel[i] = Math.random() * 2 - 1;
-    }
-    const noise = this.audio.createBufferSource();
-    const noiseFilter = this.audio.createBiquadFilter();
     const noiseGain = this.audio.createGain();
-    noise.buffer = noiseBuffer;
-    noiseFilter.type = "lowpass";
-    noiseFilter.frequency.setValueAtTime(980, now);
-    noiseFilter.frequency.exponentialRampToValueAtTime(180, now + 0.8);
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(88, now);
+    osc.frequency.exponentialRampToValueAtTime(30, now + 0.58);
+    filter.type = "lowpass";
+    filter.frequency.value = 520;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.58);
     noiseGain.gain.setValueAtTime(0.0001, now);
-    noiseGain.gain.exponentialRampToValueAtTime(0.24, now + 0.04);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.8);
-    noise.connect(noiseFilter);
-    noiseFilter.connect(noiseGain);
+    noiseGain.gain.exponentialRampToValueAtTime(0.1, now + 0.03);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.62);
+    osc.connect(gain);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    gain.connect(this.masterGain);
     noiseGain.connect(this.masterGain);
+    osc.start(now);
     noise.start(now);
-    noise.stop(now + 0.82);
-
-    bass.onended = () => {
-      bass.disconnect();
-      bassGain.disconnect();
-    };
-    crack.onended = () => {
-      crack.disconnect();
-      crackGain.disconnect();
-    };
-    noise.onended = () => {
+    osc.stop(now + 0.62);
+    noise.stop(now + 0.64);
+    osc.onended = () => {
+      osc.disconnect();
       noise.disconnect();
-      noiseFilter.disconnect();
+      filter.disconnect();
+      gain.disconnect();
       noiseGain.disconnect();
     };
   }
 
+  startHum() {
+    this.startAmbience();
+  }
+
+  stopHum() {
+    this.stopAmbience();
+  }
+
+  startMusic() {
+    this.startAmbience();
+  }
+
+  stopMusic() {
+    this.stopAmbience();
+  }
+
+  updateHum(massRatio: number, critical = false) {
+    this.updateAmbience(massRatio, critical ? "critical" : "active");
+  }
+
+  playSupernova() {
+    this.playExplosion();
+  }
+
   dispose() {
-    this.stopHum();
-    this.stopMusic();
+    this.stopAmbience();
     void this.audio?.close();
     this.audio = null;
     this.masterGain = null;
     this.unlocked = false;
   }
 
-  private scheduleMusicChord() {
-    if (!this.audio || !this.musicGain || this.musicOscillators.length === 0) {
-      return;
+  private ensureAudio() {
+    if (this.audio?.state === "closed") {
+      this.audio = null;
+      this.masterGain = null;
+      this.unlocked = false;
     }
+    if (this.audio) return;
 
-    const chords = [
-      [55, 82.41, 110, 164.81, 220],
-      [49, 73.42, 98, 146.83, 196],
-      [41.2, 61.74, 82.41, 123.47, 164.81],
-      [46.25, 69.3, 92.5, 138.59, 185],
-    ];
-    const chord = chords[this.musicStep % chords.length];
-    const time = this.audio.currentTime;
+    const audioWindow = window as Window &
+      typeof globalThis & {
+        webkitAudioContext?: typeof AudioContext;
+      };
+    const AudioContextClass =
+      audioWindow.AudioContext || audioWindow.webkitAudioContext;
+    if (!AudioContextClass) return;
 
-    this.musicGain.gain.setTargetAtTime(0.13, time, 1.6);
-    for (let i = 0; i < this.musicOscillators.length; i++) {
-      this.musicOscillators[i].frequency.setTargetAtTime(chord[i], time, 2.4);
-    }
-    this.musicStep += 1;
+    this.audio = new AudioContextClass();
+    this.masterGain = this.audio.createGain();
+    this.masterGain.gain.value = this.muted ? 0 : 0.68;
+    this.masterGain.connect(this.audio.destination);
   }
 
-  private playTestBeep() {
-    if (!this.audio || !this.masterGain || this.muted || this.testBeepPlayed) {
-      return;
+  private isPlayable(): this is this & {
+    audio: AudioContext;
+    masterGain: GainNode;
+  } {
+    return Boolean(
+      this.audio &&
+        this.audio.state === "running" &&
+        this.masterGain &&
+        this.unlocked &&
+        !this.muted,
+    );
+  }
+
+  private createNoiseSource(duration: number) {
+    if (!this.audio) {
+      throw new Error("AudioContext is required before creating noise");
     }
 
-    this.testBeepPlayed = true;
-    const now = this.audio.currentTime;
-    const osc = this.audio.createOscillator();
+    const length = Math.max(1, Math.floor(this.audio.sampleRate * duration));
+    const buffer = this.audio.createBuffer(1, length, this.audio.sampleRate);
+    const channel = buffer.getChannelData(0);
+    for (let i = 0; i < length; i++) {
+      channel[i] = Math.random() * 2 - 1;
+    }
+
+    const source = this.audio.createBufferSource();
+    source.buffer = buffer;
+    return source;
+  }
+
+  private startShimmer() {
+    if (!this.audio || !this.shimmerFilter || !this.shimmerGain) return;
+
+    const source = this.createNoiseSource(2);
+    source.loop = true;
+    source.connect(this.shimmerFilter);
+    this.shimmerFilter.connect(this.shimmerGain);
+    source.start();
+    this.shimmerSource = source;
+  }
+
+  private startPulseModulation() {
+    if (!this.audio || !this.pulseGain) return;
+
+    this.pulseTimer = window.setInterval(() => {
+      if (!this.audio || !this.pulseGain || this.muted) return;
+      const now = this.audio.currentTime;
+      this.pulseGain.gain.cancelScheduledValues(now);
+      this.pulseGain.gain.setValueAtTime(this.pulseGain.gain.value, now);
+      this.pulseGain.gain.linearRampToValueAtTime(0.12, now + 0.18);
+      this.pulseGain.gain.linearRampToValueAtTime(0.035, now + 1.6);
+    }, 3600);
+  }
+
+  private playExplosionBass(now: number) {
+    if (!this.audio || !this.masterGain) return;
+
+    const bass = this.audio.createOscillator();
     const gain = this.audio.createGain();
-    osc.type = "sine";
-    osc.frequency.value = 660;
+    bass.type = "sine";
+    bass.frequency.setValueAtTime(60, now);
+    bass.frequency.exponentialRampToValueAtTime(28, now + 0.8);
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.08, now + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
-    osc.connect(gain);
+    gain.gain.exponentialRampToValueAtTime(0.48, now + 0.028);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.86);
+    bass.connect(gain);
     gain.connect(this.masterGain);
-    osc.start(now);
-    osc.stop(now + 0.12);
-    osc.onended = () => {
-      osc.disconnect();
+    bass.start(now);
+    bass.stop(now + 0.9);
+    bass.onended = () => {
+      bass.disconnect();
+      gain.disconnect();
+    };
+  }
+
+  private playExplosionRumble(now: number) {
+    if (!this.audio || !this.masterGain) return;
+
+    const rumble = this.createNoiseSource(1.25);
+    const filter = this.audio.createBiquadFilter();
+    const gain = this.audio.createGain();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(120, now);
+    filter.frequency.exponentialRampToValueAtTime(62, now + 1.2);
+    filter.Q.value = 1.2;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.34, now + 0.045);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.22);
+    rumble.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    rumble.start(now);
+    rumble.stop(now + 1.26);
+    rumble.onended = () => {
+      rumble.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
+  }
+
+  private playExplosionCrack(now: number) {
+    if (!this.audio || !this.masterGain) return;
+
+    const crack = this.createNoiseSource(0.09);
+    const filter = this.audio.createBiquadFilter();
+    const gain = this.audio.createGain();
+    filter.type = "highpass";
+    filter.frequency.value = 1800;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.2, now + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
+    crack.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    crack.start(now);
+    crack.stop(now + 0.09);
+    crack.onended = () => {
+      crack.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
+  }
+
+  private playExplosionWhoosh(now: number) {
+    if (!this.audio || !this.masterGain) return;
+
+    const whoosh = this.createNoiseSource(1.05);
+    const filter = this.audio.createBiquadFilter();
+    const gain = this.audio.createGain();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(420, now);
+    filter.frequency.exponentialRampToValueAtTime(1450, now + 0.32);
+    filter.frequency.exponentialRampToValueAtTime(220, now + 1);
+    filter.Q.value = 0.75;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.26, now + 0.06);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.02);
+    whoosh.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.masterGain);
+    whoosh.start(now);
+    whoosh.stop(now + 1.06);
+    whoosh.onended = () => {
+      whoosh.disconnect();
+      filter.disconnect();
       gain.disconnect();
     };
   }
 }
-

@@ -45,21 +45,28 @@ export const enforceMinimumSpeed = (
 };
 
 export const resolveWallCollision = (ball: GravityBall, arena: Arena) => {
+  let impact = 0;
   if (ball.x - ball.radius < 0) {
+    impact = Math.max(impact, 0.18, Math.abs(ball.vx) / 420);
     ball.x = ball.radius;
     ball.vx = Math.abs(ball.vx) * WALL_RESTITUTION;
   } else if (ball.x + ball.radius > arena.width) {
+    impact = Math.max(impact, 0.18, Math.abs(ball.vx) / 420);
     ball.x = arena.width - ball.radius;
     ball.vx = -Math.abs(ball.vx) * WALL_RESTITUTION;
   }
 
   if (ball.y - ball.radius < 0) {
+    impact = Math.max(impact, 0.18, Math.abs(ball.vy) / 420);
     ball.y = ball.radius;
     ball.vy = Math.abs(ball.vy) * WALL_RESTITUTION;
   } else if (ball.y + ball.radius > arena.height) {
+    impact = Math.max(impact, 0.18, Math.abs(ball.vy) / 420);
     ball.y = arena.height - ball.radius;
     ball.vy = -Math.abs(ball.vy) * WALL_RESTITUTION;
   }
+
+  return Math.min(1, impact);
 };
 
 export const resolveBallCollision = (
@@ -86,9 +93,12 @@ export const resolveBallCollision = (
   const relativeVx = ballB.vx - ballA.vx;
   const relativeVy = ballB.vy - ballA.vy;
   const velocityAlongNormal = relativeVx * nx + relativeVy * ny;
+  const impact = Math.min(
+    1,
+    Math.max(0.16, Math.abs(velocityAlongNormal) / 260),
+  );
 
-  if (velocityAlongNormal > 0) return 0;
-  const impact = Math.min(1, Math.abs(velocityAlongNormal) / 260);
+  if (velocityAlongNormal > 0) return impact;
 
   const impulse =
     (-(1 + BALL_RESTITUTION) * velocityAlongNormal) /
