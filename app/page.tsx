@@ -28,24 +28,43 @@ export default function Home() {
         <>
           <button
             type="button"
+            aria-label="Back to menu"
+            title="Back to menu"
             onClick={() => setActiveSimulationId(null)}
             style={{
               position: "fixed",
-              left: 16,
-              top: 16,
+              left: 10,
+              top: 10,
               zIndex: 20,
-              padding: "12px 18px",
-              borderRadius: 14,
-              border: "none",
-              background: "rgba(15, 23, 42, 0.92)",
+              width: 34,
+              height: 34,
+              display: "grid",
+              placeItems: "center",
+              padding: 0,
+              borderRadius: 999,
+              border: "1px solid rgba(248, 250, 252, 0.16)",
+              background: "rgba(15, 23, 42, 0.58)",
               color: "#f8fafc",
-              fontSize: 14,
-              fontWeight: 700,
               cursor: "pointer",
-              boxShadow: "0 18px 40px rgba(15, 23, 42, 0.4)",
+              boxShadow: "0 8px 22px rgba(15, 23, 42, 0.28)",
+              backdropFilter: "blur(8px)",
             }}
           >
-            ← Back to menu
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              width="17"
+              height="17"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2.2"
+            >
+              <path d="m3 11 9-8 9 8" />
+              <path d="M5 10v10h14V10" />
+              <path d="M10 20v-6h4v6" />
+            </svg>
           </button>
           <ActiveSimulation />
         </>
