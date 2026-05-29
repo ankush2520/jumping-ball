@@ -17,6 +17,7 @@ type Entity = {
   alive: boolean;
   age: number;
   angle: number;
+  reproductionCooldown: number;
 };
 
 type Arena = {
@@ -45,7 +46,7 @@ type SetupConfig = {
   safeZone: number;
 };
 
-type Result = "predator" | "prey" | null;
+type Result = "predator" | "prey" | "empty" | null;
 
 type EcosystemAudio = {
   initAudio: () => Promise<AudioContextState | "unavailable" | "interrupted">;
@@ -56,18 +57,21 @@ type EcosystemAudio = {
   setMuted: (value: boolean) => void;
 };
 
-const MAX_ENTITIES = 180;
+const MAX_ENTITIES = 650;
 const MAX_SAFE_ZONES = 6;
-const MAX_SPEED = 95;
 const WALL_RESTITUTION = 0.92;
 const COUNTER_UPDATE_INTERVAL = 0.22;
 const SIMULATION_SPEED = 2;
 const SURVIVAL_SECONDS = 60;
-const PREY_PANIC_RADIUS = 58;
-const PREDATOR_ATTRACTION_RADIUS = 135;
 const COLLISION_RESTITUTION = 0.95;
-const PREDATOR_SPEED_MULTIPLIER = 3;
-const PREY_SPEED_MULTIPLIER = 2;
+const SAFE_ZONE_COLLISION_RESTITUTION = 0.94;
+const BASE_SPEED = 60;
+const SAFE_ZONE_SPEED = BASE_SPEED;
+const PREY_SPEED = BASE_SPEED * 2;
+const PREDATOR_SPEED = BASE_SPEED * 3;
+const REPRODUCTION_CHANCE = 0.8;
+const REPRODUCTION_COOLDOWN_MIN = 1;
+const REPRODUCTION_COOLDOWN_MAX = 2.5;
 
 let ecosystemAudioContext: AudioContext | null = null;
 
@@ -81,15 +85,16 @@ const setupLimits: Record<
   keyof SetupConfig,
   { label: string; min: number; max: number }
 > = {
-  prey: { label: "Prey", min: 5, max: 80 },
-  predator: { label: "Predators", min: 1, max: 20 },
-  safeZone: { label: "Safe Zones", min: 1, max: 6 },
+  prey: { label: "Prey", min: 0, max: 80 },
+  predator: { label: "Predators", min: 0, max: 20 },
+  safeZone: { label: "Safe Zones", min: 0, max: 6 },
 };
 
 const speciesColors: Record<Species, string> = {
   predator: "#ef4444",
   prey: "#3b82f6",
 };
+const reproducingPreyColor = "#facc15";
 
 const createBlankEntity = (id: number): Entity => ({
   id,
@@ -104,6 +109,7 @@ const createBlankEntity = (id: number): Entity => ({
   alive: false,
   age: 0,
   angle: 0,
+  reproductionCooldown: 0,
 });
 
 const createBlankSafeZone = (id: number): SafeZone => ({
@@ -116,12 +122,16 @@ const createBlankSafeZone = (id: number): SafeZone => ({
   active: false,
 });
 
-const clampSpeed = (entity: Entity, maxSpeed = MAX_SPEED) => {
-  const speed = Math.hypot(entity.vx, entity.vy);
-  if (speed <= maxSpeed) return;
-  const scale = maxSpeed / speed;
-  entity.vx *= scale;
-  entity.vy *= scale;
+const setVelocitySpeed = (
+  moving: { vx: number; vy: number },
+  speed: number,
+  fallbackAngle = 0,
+) => {
+  const currentSpeed = Math.hypot(moving.vx, moving.vy);
+  const angle =
+    currentSpeed > 0.001 ? Math.atan2(moving.vy, moving.vx) : fallbackAngle;
+  moving.vx = Math.cos(angle) * speed;
+  moving.vy = Math.sin(angle) * speed;
 };
 
 const clamp = (value: number, min: number, max: number) =>
@@ -422,6 +432,7 @@ const EcosystemArena = () => {
   const runningRef = useRef(false);
   const elapsedTimeRef = useRef(0);
   const setupConfigRef = useRef<SetupConfig>(defaultSetup);
+  const maxPreyLimitRef = useRef(Math.max(defaultSetup.prey * 3, 120));
   const startSimulationRef = useRef<(() => void) | null>(null);
   const renderArenaRef = useRef<(() => void) | null>(null);
   const [setupOpen, setSetupOpen] = useState(true);
@@ -475,31 +486,44 @@ const EcosystemArena = () => {
       );
     };
 
-    const getPredatorMaxSpeed = (predator: Entity) =>
-      MAX_SPEED *
-      PREDATOR_SPEED_MULTIPLIER *
-      (1 - getPredatorGrowth(predator) * 0.32);
-
-    const getPredatorTurnScale = (predator: Entity) =>
-      1 - getPredatorGrowth(predator) * 0.46;
-
     const spawnSafeZone = (index: number) => {
       const zone = safeZonesRef.current[index];
       const radius = getPreyBaseRadius() * 16;
       const angle = randomBetween(0, Math.PI * 2);
-      const speed = randomBetween(8, 15);
+      let x = arenaRef.current.width * 0.5;
+      let y = arenaRef.current.height * 0.5;
+
+      for (let attempt = 0; attempt < 80; attempt++) {
+        x = randomBetween(radius + 12, arenaRef.current.width - radius - 12);
+        y = randomBetween(radius + 12, arenaRef.current.height - radius - 12);
+        let intersects = false;
+        for (let i = 0; i < safeZonesRef.current.length; i++) {
+          const other = safeZonesRef.current[i];
+          if (!other.active || other.id === zone.id) continue;
+          const dx = x - other.x;
+          const dy = y - other.y;
+          const minDistance = radius + other.radius + 10;
+          if (dx * dx + dy * dy < minDistance * minDistance) {
+            intersects = true;
+            break;
+          }
+        }
+        if (!intersects) break;
+      }
+
       zone.active = true;
       zone.radius = radius;
-      zone.x = randomBetween(radius + 12, arenaRef.current.width - radius - 12);
-      zone.y = randomBetween(radius + 12, arenaRef.current.height - radius - 12);
-      zone.vx = Math.cos(angle) * speed;
-      zone.vy = Math.sin(angle) * speed;
+      zone.x = x;
+      zone.y = y;
+      zone.vx = Math.cos(angle) * SAFE_ZONE_SPEED;
+      zone.vy = Math.sin(angle) * SAFE_ZONE_SPEED;
     };
 
     const spawnEntity = (
       species: Species,
       x = randomBetween(28, Math.max(29, arenaRef.current.width - 28)),
       y = randomBetween(28, Math.max(29, arenaRef.current.height - 28)),
+      reproductionCooldown = 0,
     ) => {
       const entities = entitiesRef.current;
       for (let i = 0; i < entities.length; i++) {
@@ -507,16 +531,21 @@ const EcosystemArena = () => {
         if (entity.alive) continue;
 
         const angle = randomBetween(0, Math.PI * 2);
-        const speed =
-          species === "predator"
-            ? randomBetween(20, 36) * PREDATOR_SPEED_MULTIPLIER
-            : randomBetween(18, 44) * PREY_SPEED_MULTIPLIER;
+        const speed = species === "predator" ? PREDATOR_SPEED : PREY_SPEED;
 
-        entity.x = x;
-        entity.y = y;
+        entity.radius = getSpawnRadius(species);
+        entity.x = clamp(
+          x,
+          entity.radius + 2,
+          arenaRef.current.width - entity.radius - 2,
+        );
+        entity.y = clamp(
+          y,
+          entity.radius + 2,
+          arenaRef.current.height - entity.radius - 2,
+        );
         entity.vx = Math.cos(angle) * speed;
         entity.vy = Math.sin(angle) * speed;
-        entity.radius = getSpawnRadius(species);
         entity.mass =
           species === "predator"
             ? Math.max(1.7, entity.radius / getPreyBaseRadius())
@@ -526,6 +555,7 @@ const EcosystemArena = () => {
         entity.alive = true;
         entity.age = 0;
         entity.angle = angle;
+        entity.reproductionCooldown = reproductionCooldown;
         return entity;
       }
 
@@ -578,6 +608,7 @@ const EcosystemArena = () => {
       }
 
       const config = setupConfigRef.current;
+      maxPreyLimitRef.current = MAX_ENTITIES;
       for (let i = 0; i < config.prey; i++) spawnEntity("prey");
       for (let i = 0; i < config.predator; i++) spawnEntity("predator");
       for (let i = 0; i < config.safeZone; i++) spawnSafeZone(i);
@@ -599,104 +630,11 @@ const EcosystemArena = () => {
       return false;
     };
 
-    const nearestPredator = (entity: Entity, maxDistance: number) => {
-      let nearest: Entity | null = null;
-      let nearestDistanceSq = maxDistance * maxDistance;
-      const entities = entitiesRef.current;
-      for (let i = 0; i < entities.length; i++) {
-        const predator = entities[i];
-        if (!predator.alive || predator.species !== "predator") continue;
-        const dx = predator.x - entity.x;
-        const dy = predator.y - entity.y;
-        const distanceSq = dx * dx + dy * dy;
-        if (distanceSq < nearestDistanceSq) {
-          nearestDistanceSq = distanceSq;
-          nearest = predator;
-        }
-      }
-      return nearest;
-    };
-
-    const nearestPrey = (predator: Entity, maxDistance: number) => {
-      let nearest: Entity | null = null;
-      let nearestDistanceSq = maxDistance * maxDistance;
-      const entities = entitiesRef.current;
-      for (let i = 0; i < entities.length; i++) {
-        const prey = entities[i];
-        if (!prey.alive || prey.species !== "prey") continue;
-        if (isInsideSafeZone(prey)) continue;
-        const dx = prey.x - predator.x;
-        const dy = prey.y - predator.y;
-        const distanceSq = dx * dx + dy * dy;
-        if (distanceSq < nearestDistanceSq) {
-          nearestDistanceSq = distanceSq;
-          nearest = prey;
-        }
-      }
-      return nearest;
-    };
-
-    const addRandomMotion = (
-      entity: Entity,
-      dt: number,
-      strength: number,
-      impulseChance: number,
-    ) => {
-      const driftAngle =
-        entity.angle + Math.sin(entity.age * 1.8 + entity.id * 4.73) * 1.15;
-      entity.vx += Math.cos(driftAngle) * strength * 0.28 * dt;
-      entity.vy += Math.sin(driftAngle) * strength * 0.28 * dt;
-
-      if (random() < impulseChance * dt) {
-        const angle = randomBetween(0, Math.PI * 2);
-        const impulse = randomBetween(strength * 0.25, strength * 0.7);
-        entity.vx += Math.cos(angle) * impulse;
-        entity.vy += Math.sin(angle) * impulse;
-        entity.angle = angle;
-      }
-    };
-
     const stepPredator = (entity: Entity, dt: number) => {
-      const agility = getPredatorTurnScale(entity);
-      addRandomMotion(
-        entity,
-        dt,
-        20 * agility * PREDATOR_SPEED_MULTIPLIER,
-        0.75 * agility,
-      );
-
-      const prey = nearestPrey(entity, PREDATOR_ATTRACTION_RADIUS);
-      if (prey) {
-        const dx = prey.x - entity.x;
-        const dy = prey.y - entity.y;
-        const distance = Math.hypot(dx, dy) || 1;
-        const falloff = 1 - distance / PREDATOR_ATTRACTION_RADIUS;
-        const pull = 11 * falloff * (1 - getPredatorGrowth(entity) * 0.2);
-        entity.vx += (dx / distance) * pull * dt;
-        entity.vy += (dy / distance) * pull * dt;
-      }
-
       entity.energy = Math.max(1, entity.energy - 0.35 * dt);
     };
 
     const stepPrey = (entity: Entity, dt: number) => {
-      addRandomMotion(
-        entity,
-        dt,
-        (isInsideSafeZone(entity) ? 17 : 24) * PREY_SPEED_MULTIPLIER,
-        1.05,
-      );
-
-      const threat = nearestPredator(entity, PREY_PANIC_RADIUS);
-      if (threat) {
-        const dx = entity.x - threat.x;
-        const dy = entity.y - threat.y;
-        const distance = Math.hypot(dx, dy) || 1;
-        const panic = 32 * (1 - distance / PREY_PANIC_RADIUS);
-        entity.vx += (dx / distance) * panic * dt;
-        entity.vy += (dy / distance) * panic * dt;
-      }
-
       entity.energy += 2.4 * dt;
     };
 
@@ -724,6 +662,47 @@ const EcosystemArena = () => {
         } else if (zone.y + zone.radius > arena.height) {
           zone.y = arena.height - zone.radius;
           zone.vy = -Math.abs(zone.vy) * WALL_RESTITUTION;
+        }
+        setVelocitySpeed(zone, SAFE_ZONE_SPEED);
+      }
+
+      for (let i = 0; i < safeZones.length; i++) {
+        const a = safeZones[i];
+        if (!a.active) continue;
+        for (let j = i + 1; j < safeZones.length; j++) {
+          const b = safeZones[j];
+          if (!b.active) continue;
+
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const minDistance = a.radius + b.radius;
+          const distanceSq = dx * dx + dy * dy;
+          if (distanceSq >= minDistance * minDistance) continue;
+
+          const distance = Math.sqrt(distanceSq) || 1;
+          const nx = dx / distance;
+          const ny = dy / distance;
+          const overlap = minDistance - distance;
+          a.x -= nx * overlap * 0.5;
+          a.y -= ny * overlap * 0.5;
+          b.x += nx * overlap * 0.5;
+          b.y += ny * overlap * 0.5;
+
+          const rvx = b.vx - a.vx;
+          const rvy = b.vy - a.vy;
+          const velocityAlongNormal = rvx * nx + rvy * ny;
+          if (velocityAlongNormal > 0) continue;
+
+          const impulse =
+            (-(1 + SAFE_ZONE_COLLISION_RESTITUTION) * velocityAlongNormal) / 2;
+          const impulseX = impulse * nx;
+          const impulseY = impulse * ny;
+          a.vx -= impulseX;
+          a.vy -= impulseY;
+          b.vx += impulseX;
+          b.vy += impulseY;
+          setVelocitySpeed(a, SAFE_ZONE_SPEED);
+          setVelocitySpeed(b, SAFE_ZONE_SPEED);
         }
       }
     };
@@ -754,6 +733,7 @@ const EcosystemArena = () => {
           }
           predator.vx += nx * overlap * 6 * bounceScale;
           predator.vy += ny * overlap * 6 * bounceScale;
+          setVelocitySpeed(predator, PREDATOR_SPEED);
           audioRef.current?.playCollision(impact / 260, predator.radius);
         }
       }
@@ -783,6 +763,43 @@ const EcosystemArena = () => {
       a.vy -= impulseY * invMassA;
       b.vx += impulseX * invMassB;
       b.vy += impulseY * invMassB;
+    };
+
+    const countAlivePrey = () => {
+      let preyCount = 0;
+      const entities = entitiesRef.current;
+      for (let i = 0; i < entities.length; i++) {
+        if (entities[i].alive && entities[i].species === "prey") preyCount += 1;
+      }
+      return preyCount;
+    };
+
+    const resetReproductionCooldown = (entity: Entity) => {
+      entity.reproductionCooldown = randomBetween(
+        REPRODUCTION_COOLDOWN_MIN,
+        REPRODUCTION_COOLDOWN_MAX,
+      );
+    };
+
+    const maybeReproducePrey = (a: Entity, b: Entity, x: number, y: number) => {
+      if (a.species !== "prey" || b.species !== "prey") return;
+      if (!a.alive || !b.alive) return;
+      if (a.reproductionCooldown > 0 || b.reproductionCooldown > 0) return;
+      if (countAlivePrey() >= maxPreyLimitRef.current) return;
+      if (random() > REPRODUCTION_CHANCE) return;
+
+      const jitterAngle = randomBetween(0, Math.PI * 2);
+      const jitter = randomBetween(4, 14);
+      const child = spawnEntity(
+        "prey",
+        x + Math.cos(jitterAngle) * jitter,
+        y + Math.sin(jitterAngle) * jitter,
+        randomBetween(REPRODUCTION_COOLDOWN_MIN, REPRODUCTION_COOLDOWN_MAX),
+      );
+      if (!child) return;
+
+      resetReproductionCooldown(a);
+      resetReproductionCooldown(b);
     };
 
     const handleEntityCollisions = () => {
@@ -822,6 +839,8 @@ const EcosystemArena = () => {
             continue;
           }
 
+          maybeReproducePrey(a, b, (a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+
           const totalMass = a.mass + b.mass;
           const aShare = b.mass / totalMass;
           const bShare = a.mass / totalMass;
@@ -840,14 +859,17 @@ const EcosystemArena = () => {
 
     const resolveEndCondition = () => {
       const nextCounts = countSpecies();
-      if (nextCounts.prey === 0) {
-        return { counts: nextCounts, result: "predator" as Result };
+      if (elapsedTimeRef.current < SURVIVAL_SECONDS) {
+        return { counts: nextCounts, result: null };
       }
-      if (elapsedTimeRef.current >= SURVIVAL_SECONDS && nextCounts.prey > 0) {
+      if (setupConfigRef.current.prey === 0) {
+        return { counts: nextCounts, result: "empty" as Result };
+      }
+      if (nextCounts.prey > 0) {
         return { counts: nextCounts, result: "prey" as Result };
       }
+      return { counts: nextCounts, result: "predator" as Result };
 
-      return { counts: nextCounts, result: null };
     };
 
     const stepSimulation = (dt: number) => {
@@ -859,6 +881,10 @@ const EcosystemArena = () => {
         if (!entity.alive) continue;
 
         entity.age += dt;
+        entity.reproductionCooldown = Math.max(
+          0,
+          entity.reproductionCooldown - dt,
+        );
         if (entity.species === "predator") {
           stepPredator(entity, dt);
         } else {
@@ -866,13 +892,10 @@ const EcosystemArena = () => {
         }
 
         if (!entity.alive) continue;
-        entity.vx *= 0.995;
-        entity.vy *= 0.995;
-        clampSpeed(
+        setVelocitySpeed(
           entity,
-          entity.species === "predator"
-            ? getPredatorMaxSpeed(entity)
-            : MAX_SPEED * PREY_SPEED_MULTIPLIER,
+          entity.species === "predator" ? PREDATOR_SPEED : PREY_SPEED,
+          entity.angle,
         );
         if (entity.species === "predator") {
           entity.angle = Math.atan2(entity.vy, entity.vx);
@@ -883,6 +906,11 @@ const EcosystemArena = () => {
           repelPredatorFromSafeZones(entity);
         }
         const wallImpact = bounceWalls(entity, arena);
+        setVelocitySpeed(
+          entity,
+          entity.species === "predator" ? PREDATOR_SPEED : PREY_SPEED,
+          entity.angle,
+        );
         audioRef.current?.playCollision(wallImpact / 300, entity.radius);
       }
 
@@ -895,12 +923,20 @@ const EcosystemArena = () => {
           repelPredatorFromSafeZones(entity);
         }
         const wallImpact = bounceWalls(entity, arena);
+        setVelocitySpeed(
+          entity,
+          entity.species === "predator" ? PREDATOR_SPEED : PREY_SPEED,
+          entity.angle,
+        );
         audioRef.current?.playCollision(wallImpact / 300, entity.radius);
       }
     };
 
     const drawEntity = (entity: Entity) => {
-      ctx.fillStyle = speciesColors[entity.species];
+      ctx.fillStyle =
+        entity.species === "prey" && entity.reproductionCooldown > 0
+          ? reproducingPreyColor
+          : speciesColors[entity.species];
 
       if (entity.species === "prey") {
         ctx.beginPath();
@@ -1048,14 +1084,21 @@ const EcosystemArena = () => {
       ? "PREDATORS WON"
       : result === "prey"
         ? "PREY SURVIVED"
-        : null;
+        : result === "empty"
+          ? "EMPTY ECOSYSTEM"
+          : null;
+  const timerLabel =
+    resultLabel ??
+    (setupConfig.prey === 0 && !setupOpen
+      ? "NO PREY SPAWNED"
+      : `TIMER: ${timeLeft}`);
 
   return (
     <div className="ecosystem-arena" onPointerDown={unlockAudio}>
       <canvas ref={canvasRef} className="ecosystem-canvas" />
       {!setupOpen ? (
         <div className="ecosystem-timer" aria-live="polite">
-          {resultLabel ?? `TIMER: ${timeLeft}`}
+          {timerLabel}
         </div>
       ) : null}
       <div className="ecosystem-counters" aria-label="Ecosystem population">
