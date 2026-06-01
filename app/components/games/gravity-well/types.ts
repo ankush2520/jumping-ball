@@ -9,7 +9,6 @@ export type GravityBall = {
   color: string;
   glow: string;
   slowTime: number;
-  escapeCandidate: boolean;
 };
 
 export type ExplosionParticle = {

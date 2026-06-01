@@ -1,5 +1,5 @@
 export const performanceMode = true;
-export const MAX_BALLS = 40;
+export const MAX_BALLS = 60;
 export const MAX_EXPLOSION_PARTICLES = 70;
 export const MAX_TRAIL_PARTICLES = 120;
 export const MAX_SHOCKWAVES = 3;
@@ -52,4 +52,3 @@ export const palette = [
   { color: "#22d3ee", glow: "rgba(34, 211, 238, 0.56)" },
   { color: "#f0abfc", glow: "rgba(240, 171, 252, 0.5)" },
 ];
-

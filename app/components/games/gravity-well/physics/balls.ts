@@ -1,4 +1,4 @@
-import { BALL_COUNT, BALL_SPEED_SCALE, BASE_HOLE_RADIUS, EXPLOSION_LAUNCH_SCALE, MAX_RADIUS, MIN_RADIUS, palette } from "../constants";
+import { BALL_COUNT, BALL_SPEED_SCALE, BASE_HOLE_RADIUS, EXPLOSION_LAUNCH_SCALE, MAX_RADIUS, MIN_RADIUS } from "../constants";
 import type { Arena, GravityBall } from "../types";
 import { randomBetween } from "./blackHole";
 
@@ -10,11 +10,24 @@ export const createBlankBall = (): GravityBall => ({
   vy: 0,
   radius: MIN_RADIUS,
   mass: MIN_RADIUS * MIN_RADIUS,
-  color: palette[0].color,
-  glow: palette[0].glow,
+  color: "#3b82f6",
+  glow: "rgba(59, 130, 246, 0.35)",
   slowTime: 0,
-  escapeCandidate: false,
 });
+
+const normalBallColors = [
+  "#3b82f6",
+  "#14b8a6",
+  "#22d3ee",
+  "#38bdf8",
+  "#60a5fa",
+];
+
+const pickBallColor = () =>
+  normalBallColors[
+    Math.floor(randomBetween(0, normalBallColors.length)) %
+      normalBallColors.length
+  ];
 
 export const resetOrbitBall = (
   ball: GravityBall,
@@ -25,11 +38,10 @@ export const resetOrbitBall = (
   const radius = randomBetween(MIN_RADIUS, MAX_RADIUS);
   const angle = randomBetween(0, Math.PI * 2);
   const orbitRadius = randomBetween(
-    Math.min(arena.width, arena.height) * 0.22,
-    Math.min(arena.width, arena.height) * 0.45,
+    Math.min(arena.width, arena.height) * 0.16,
+    Math.min(arena.width, arena.height) * 0.36,
   );
   const speed = randomBetween(120, 285);
-  const tone = palette[index % palette.length];
 
   ball.active = true;
   ball.x = arena.width / 2 + Math.cos(angle) * orbitRadius;
@@ -44,10 +56,9 @@ export const resetOrbitBall = (
     speedScale;
   ball.radius = radius;
   ball.mass = radius * radius;
-  ball.color = tone.color;
-  ball.glow = tone.glow;
+  ball.color = pickBallColor();
+  ball.glow = "rgba(56, 189, 248, ALPHA)";
   ball.slowTime = 0;
-  ball.escapeCandidate = false;
 };
 
 export const resetExplosionBall = (
@@ -62,7 +73,6 @@ export const resetExplosionBall = (
   const radius = randomBetween(MIN_RADIUS, MAX_RADIUS);
   const angle = (index / BALL_COUNT) * Math.PI * 2 + randomBetween(-0.16, 0.16);
   const speed = randomBetween(430, 760);
-  const tone = palette[index % palette.length];
 
   ball.active = true;
   ball.x = originX + Math.cos(angle) * (BASE_HOLE_RADIUS + radius + 4);
@@ -81,8 +91,7 @@ export const resetExplosionBall = (
     explosionScale;
   ball.radius = radius;
   ball.mass = radius * radius;
-  ball.color = tone.color;
-  ball.glow = tone.glow;
+  ball.color = pickBallColor();
+  ball.glow = "rgba(56, 189, 248, ALPHA)";
   ball.slowTime = 0;
-  ball.escapeCandidate = false;
 };

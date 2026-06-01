@@ -421,84 +421,16 @@ export const drawBall = (
   ctx: CanvasRenderingContext2D,
   ball: GravityBall,
   visualScale: number,
-  blackHole?: BlackHole | null,
 ) => {
   const radius = ball.radius * visualScale;
-  const glowAlpha = 0.55 + visualScale * 0.45;
-  let drawX = ball.x;
-  let drawY = ball.y;
-  let stretchT = 0;
 
   ctx.save();
-  if (blackHole) {
-    const dx = blackHole.x - ball.x;
-    const dy = blackHole.y - ball.y;
-    const dist = Math.hypot(dx, dy);
-    const spaghettiRadius = blackHole.radius * 3;
-
-    if (dist < spaghettiRadius) {
-      stretchT = Math.min(1, Math.max(0, 1 - dist / spaghettiRadius));
-      const stretchX = 1 + stretchT * 2.5;
-      const stretchY = Math.max(0.35, 1 - stretchT * 0.45);
-      const angle = Math.atan2(dy, dx);
-
-      ctx.translate(ball.x, ball.y);
-      ctx.rotate(angle);
-      ctx.scale(stretchX, stretchY);
-      drawX = 0;
-      drawY = 0;
-    }
-  }
-
-  ctx.globalCompositeOperation = "lighter";
-  if (!performanceMode || ball.radius > 14) {
-    ctx.shadowColor = ball.glow;
-    ctx.shadowBlur =
-      radius *
-      (performanceMode ? 0.52 : 1.2) *
-      glowAlpha *
-      (1 + stretchT * 0.7);
-  }
-
-  if (stretchT > 0.45) {
-    ctx.strokeStyle = ball.glow.replace(
-      /[\d.]+\)$/,
-      `${0.22 + stretchT * 0.22})`,
-    );
-    ctx.lineWidth = Math.max(0.7, radius * (0.18 + stretchT * 0.18));
-    ctx.beginPath();
-    ctx.moveTo(-radius * (1.3 + stretchT * 2.7), 0);
-    ctx.lineTo(radius * (0.35 + stretchT * 0.8), 0);
-    ctx.stroke();
-  }
-
-  if (performanceMode && ball.radius <= 14) {
-    ctx.fillStyle = ball.color;
-  } else {
-    const body = ctx.createRadialGradient(
-      drawX - radius * 0.34,
-      drawY - radius * 0.42,
-      radius * 0.1,
-      drawX,
-      drawY,
-      radius,
-    );
-    body.addColorStop(0, "rgba(255, 255, 255, 1)");
-    body.addColorStop(0.14, "rgba(224, 250, 255, 0.92)");
-    body.addColorStop(0.34, ball.color);
-    body.addColorStop(1, "rgba(2, 6, 23, 0.9)");
-    ctx.fillStyle = body;
-  }
-
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = ball.color;
   ctx.beginPath();
-  ctx.arc(drawX, drawY, radius, 0, Math.PI * 2);
+  ctx.arc(ball.x, ball.y, radius, 0, Math.PI * 2);
   ctx.fill();
-
-  ctx.shadowBlur =
-    !performanceMode || ball.radius > 14
-      ? radius * (0.26 + stretchT * 0.18)
-      : 0;
-  ctx.strokeStyle = ball.glow;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.32)";
   ctx.lineWidth = Math.max(0.7, 1.15 * visualScale);
   ctx.stroke();
   ctx.restore();
@@ -541,4 +473,3 @@ export const drawTrails = (
 
   ctx.restore();
 };
-
