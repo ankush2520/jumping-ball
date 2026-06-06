@@ -50,6 +50,93 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
+  if (icon === "shrinking-escape") {
+    return (
+      <svg
+        className="shrinking-escape-thumb"
+        viewBox="0 0 96 72"
+        width="84"
+        height="62"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter
+            id="escape-cyan-glow"
+            x="-30%"
+            y="-35%"
+            width="160%"
+            height="170%"
+          >
+            <feGaussianBlur stdDeviation="2.8" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <filter
+            id="escape-square-glow"
+            x="-45%"
+            y="-45%"
+            width="190%"
+            height="190%"
+          >
+            <feGaussianBlur stdDeviation="3.2" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <linearGradient
+            id="escape-square-fill"
+            x1="27"
+            y1="19"
+            x2="60"
+            y2="52"
+          >
+            <stop stopColor="#fde68a" />
+            <stop offset="0.52" stopColor="#f59e0b" />
+            <stop offset="1" stopColor="#fb923c" />
+          </linearGradient>
+        </defs>
+        <rect
+          x="14"
+          y="12"
+          width="68"
+          height="48"
+          rx="6"
+          fill="rgba(2, 6, 23, 0.72)"
+          stroke="rgba(34, 211, 238, 0.2)"
+        />
+        <path
+          className="escape-box-line"
+          d="M18 58H80M18 14H80M18 14V58M80 14V27M80 45V58"
+          filter="url(#escape-cyan-glow)"
+        />
+        <path className="escape-exit-glow" d="M80 31V42" />
+        <path className="escape-arrow" d="M51 36H70M64 30l7 6-7 6" />
+        <rect
+          className="escape-square"
+          x="27"
+          y="21"
+          width="30"
+          height="30"
+          rx="4"
+          fill="url(#escape-square-fill)"
+          filter="url(#escape-square-glow)"
+        />
+        <rect
+          className="escape-square-core"
+          x="32"
+          y="26"
+          width="20"
+          height="20"
+          rx="3"
+        />
+      </svg>
+    );
+  }
+
   return null;
 };
 
@@ -89,10 +176,18 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
             <button
               key={simulation.id}
               onClick={() => handleLaunch(simulation)}
-              className={`launch-button ${simulation.glow}`}
+              className={`launch-button ${simulation.glow} ${
+                simulation.status === "coming-soon" ? "is-coming-soon" : ""
+              }`}
             >
               <div className="button-content">
-                <div className="button-icon">
+                <div
+                  className={`button-icon ${
+                    simulation.icon === "shrinking-escape"
+                      ? "button-icon-thumbnail"
+                      : ""
+                  }`}
+                >
                   {renderSimulationIcon(simulation.icon)}
                 </div>
                 <div className="button-text">
@@ -110,16 +205,20 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
               </div>
               <div className="button-arrow">
                 <span>
-                  {simulation.status === "coming-soon" ? "Soon" : "Launch"}
+                  {simulation.status === "coming-soon"
+                    ? "COMING SOON"
+                    : "Launch"}
                 </span>
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                >
-                  <path d="M5 12h14M12 5l7 7-7 7" />
-                </svg>
+                {simulation.status === "coming-soon" ? null : (
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                  >
+                    <path d="M5 12h14M12 5l7 7-7 7" />
+                  </svg>
+                )}
               </div>
             </button>
           ))}
@@ -372,11 +471,11 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
         /* Buttons Section */
         .buttons-section {
           display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 28px;
           align-items: stretch;
           justify-content: center;
-          width: min(880px, 100%);
+          width: min(1040px, 100%);
           padding: 0 34px 10px;
           margin: 0 auto;
         }
@@ -533,6 +632,24 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
             inset 0 0 22px rgba(var(--card-rgb), 0.08);
         }
 
+        .button-icon-thumbnail {
+          width: 104px;
+          height: 78px;
+          border-radius: 16px;
+          background:
+            radial-gradient(
+              circle at 74% 48%,
+              rgba(34, 197, 94, 0.18),
+              transparent 25%
+            ),
+            linear-gradient(
+              135deg,
+              rgba(2, 6, 23, 0.9),
+              rgba(8, 13, 31, 0.76)
+            );
+          border-color: rgba(34, 211, 238, 0.48);
+        }
+
         .launch-button:hover .button-icon {
           background: linear-gradient(
             135deg,
@@ -548,6 +665,75 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
             0 0 16px rgba(var(--card-rgb), 0.16),
             inset 0 1px 0 rgba(255, 255, 255, 0.42),
             inset 0 0 28px rgba(var(--card-rgb), 0.2);
+        }
+
+        .launch-button:hover .button-icon-thumbnail {
+          background:
+            radial-gradient(
+              circle at 74% 48%,
+              rgba(34, 197, 94, 0.24),
+              transparent 25%
+            ),
+            linear-gradient(
+              135deg,
+              rgba(2, 6, 23, 0.94),
+              rgba(12, 21, 42, 0.84)
+            );
+        }
+
+        .shrinking-escape-thumb {
+          overflow: visible;
+        }
+
+        .escape-box-line {
+          stroke: #67e8f9;
+          stroke-width: 3;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+          opacity: 0.9;
+        }
+
+        .escape-exit-glow {
+          stroke: #22c55e;
+          stroke-width: 5;
+          stroke-linecap: round;
+          filter: drop-shadow(0 0 5px rgba(34, 197, 94, 0.92));
+        }
+
+        .escape-arrow {
+          stroke: rgba(187, 247, 208, 0.52);
+          stroke-width: 2;
+          stroke-linecap: round;
+          stroke-linejoin: round;
+          filter: drop-shadow(0 0 5px rgba(34, 197, 94, 0.3));
+        }
+
+        .escape-square {
+          transform-box: fill-box;
+          transform-origin: center;
+          animation: shrinkEscapeSquare 3.8s ease-in-out infinite;
+        }
+
+        .escape-square-core {
+          fill: rgba(255, 247, 237, 0.34);
+          transform-box: fill-box;
+          transform-origin: center;
+          animation: shrinkEscapeSquare 3.8s ease-in-out infinite;
+        }
+
+        @keyframes shrinkEscapeSquare {
+          0%,
+          18% {
+            transform: scale(1);
+          }
+
+          68% {
+            transform: scale(0.7);
+          }
+
+          100% {
+            transform: scale(1);
+          }
         }
 
         .button-text {
@@ -641,6 +827,17 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
           width: 16px;
           height: 16px;
           stroke-width: 2;
+        }
+
+        .is-coming-soon .button-arrow {
+          background: linear-gradient(
+            135deg,
+            rgba(34, 197, 94, 0.14),
+            rgba(245, 158, 11, 0.24),
+            rgba(34, 211, 238, 0.1)
+          );
+          border-color: rgba(34, 197, 94, 0.42);
+          color: #dcfce7;
         }
 
         .launch-button:hover .button-arrow {
@@ -764,6 +961,13 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
           }
         }
 
+        @media (max-width: 900px) {
+          .buttons-section {
+            grid-template-columns: 1fr;
+            max-width: 520px;
+          }
+        }
+
         @media (max-width: 768px) {
           .menu-root {
             padding: 22px 16px 28px;
@@ -811,6 +1015,11 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
             height: 64px;
           }
 
+          .button-icon-thumbnail {
+            width: 116px;
+            height: 84px;
+          }
+
           .button-title {
             justify-content: center;
             font-size: 1.2rem;
@@ -849,6 +1058,11 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
           .button-icon {
             width: 52px;
             height: 52px;
+          }
+
+          .button-icon-thumbnail {
+            width: 104px;
+            height: 76px;
           }
         }
       `}</style>

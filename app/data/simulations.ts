@@ -15,7 +15,8 @@ export type Simulation = {
   icon:
     | "gravity-well"
     | "ecosystem-arena"
-  glow: "card-cyan" | "card-emerald";
+    | "shrinking-escape";
+  glow: "card-cyan" | "card-emerald" | "card-amber";
 };
 
 export const simulations: Simulation[] = [
@@ -40,6 +41,17 @@ export const simulations: Simulation[] = [
     accentColor: "#22c55e",
     icon: "ecosystem-arena",
     glow: "card-emerald",
+  },
+  {
+    id: "shrinking-escape",
+    title: "Shrinking Escape",
+    subtitle: "SIZE DECAY CHALLENGE",
+    description: "Bounce. Shrink. Escape.",
+    component: null,
+    status: "coming-soon",
+    accentColor: "#f59e0b",
+    icon: "shrinking-escape",
+    glow: "card-amber",
   },
 ];
 
