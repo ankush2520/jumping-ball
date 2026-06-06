@@ -58,8 +58,9 @@ type BounceAudio = {
 const HUD_UPDATE_INTERVAL = 0.08;
 const EXIT_FADE_MS = 180;
 const HUD_RESERVED_HEIGHT_DESKTOP = 142;
-const HUD_RESERVED_HEIGHT_MOBILE = 150;
+const HUD_RESERVED_HEIGHT_MOBILE = 158;
 const ARENA_SAFE_SPACING = 24;
+const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const SPEED_PER_BOUNDARY_AT_1X = 0.2;
 const DEBUG_SETTINGS_LOGS = true;
 
@@ -250,15 +251,23 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const width = window.innerWidth;
   const height = window.innerHeight;
   const ctx = canvas.getContext("2d");
-  const hudReservedHeight =
-    width < 600 ? HUD_RESERVED_HEIGHT_MOBILE : HUD_RESERVED_HEIGHT_DESKTOP;
+  const isMobile = width < 600;
+  const hudReservedHeight = isMobile
+    ? HUD_RESERVED_HEIGHT_MOBILE
+    : HUD_RESERVED_HEIGHT_DESKTOP;
+  const availableHeight = Math.max(
+    260,
+    height - hudReservedHeight - MOBILE_BOTTOM_SAFE_SPACING,
+  );
+  const mobileBoundarySize = Math.min(width * 0.88, availableHeight * 0.62);
+  const desktopBoundarySize = Math.min(
+    width - 28,
+    height - hudReservedHeight - ARENA_SAFE_SPACING,
+    920,
+  );
   const boundarySize = clamp(
-    Math.min(
-      width - 28,
-      height - hudReservedHeight - ARENA_SAFE_SPACING,
-      920,
-    ),
-    280,
+    isMobile ? mobileBoundarySize : desktopBoundarySize,
+    240,
     920,
   );
   const x = (width - boundarySize) / 2;
@@ -391,78 +400,21 @@ const drawExitGlow = (
   const right = arena.x + arena.width;
   const bottom = arena.y + arena.height;
   const start = getExitStart(exit);
-  const end = getExitEnd(exit);
-  const center = exit.center;
-  const pulse = 0.72 + Math.sin(performance.now() * 0.008) * 0.28;
-  const glowAlpha = alpha * pulse;
 
   ctx.save();
   ctx.globalAlpha = alpha;
-  ctx.shadowColor = "rgba(34, 197, 94, 0.95)";
-  ctx.shadowBlur = 18 + 10 * pulse;
-  ctx.fillStyle = `rgba(34, 197, 94, ${0.14 * glowAlpha})`;
-  ctx.strokeStyle = `rgba(34, 197, 94, ${0.95 * alpha})`;
-  ctx.lineWidth = 5;
-  ctx.lineCap = "round";
-  ctx.beginPath();
+  ctx.fillStyle = "rgba(34, 197, 94, 0.08)";
 
   if (exit.wall === "right") {
     ctx.fillRect(right + 2, arena.y + start, 34, exit.size);
-    ctx.moveTo(right + 2, arena.y + start);
-    ctx.lineTo(right + 32, arena.y + start);
-    ctx.moveTo(right + 2, arena.y + end);
-    ctx.lineTo(right + 32, arena.y + end);
   } else if (exit.wall === "left") {
     ctx.fillRect(arena.x - 36, arena.y + start, 34, exit.size);
-    ctx.moveTo(arena.x - 32, arena.y + start);
-    ctx.lineTo(arena.x - 2, arena.y + start);
-    ctx.moveTo(arena.x - 32, arena.y + end);
-    ctx.lineTo(arena.x - 2, arena.y + end);
   } else if (exit.wall === "top") {
     ctx.fillRect(arena.x + start, arena.y - 36, exit.size, 34);
-    ctx.moveTo(arena.x + start, arena.y - 32);
-    ctx.lineTo(arena.x + start, arena.y - 2);
-    ctx.moveTo(arena.x + end, arena.y - 32);
-    ctx.lineTo(arena.x + end, arena.y - 2);
   } else {
     ctx.fillRect(arena.x + start, bottom + 2, exit.size, 34);
-    ctx.moveTo(arena.x + start, bottom + 2);
-    ctx.lineTo(arena.x + start, bottom + 32);
-    ctx.moveTo(arena.x + end, bottom + 2);
-    ctx.lineTo(arena.x + end, bottom + 32);
   }
 
-  ctx.stroke();
-
-  ctx.strokeStyle = `rgba(187, 247, 208, ${0.32 * alpha})`;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  if (exit.wall === "right") {
-    ctx.moveTo(right - 88, arena.y + center);
-    ctx.lineTo(right - 28, arena.y + center);
-    ctx.moveTo(right - 39, arena.y + center - 10);
-    ctx.lineTo(right - 26, arena.y + center);
-    ctx.lineTo(right - 39, arena.y + center + 10);
-  } else if (exit.wall === "left") {
-    ctx.moveTo(arena.x + 88, arena.y + center);
-    ctx.lineTo(arena.x + 28, arena.y + center);
-    ctx.moveTo(arena.x + 39, arena.y + center - 10);
-    ctx.lineTo(arena.x + 26, arena.y + center);
-    ctx.lineTo(arena.x + 39, arena.y + center + 10);
-  } else if (exit.wall === "top") {
-    ctx.moveTo(arena.x + center, arena.y + 88);
-    ctx.lineTo(arena.x + center, arena.y + 28);
-    ctx.moveTo(arena.x + center - 10, arena.y + 39);
-    ctx.lineTo(arena.x + center, arena.y + 26);
-    ctx.lineTo(arena.x + center + 10, arena.y + 39);
-  } else {
-    ctx.moveTo(arena.x + center, bottom - 88);
-    ctx.lineTo(arena.x + center, bottom - 28);
-    ctx.moveTo(arena.x + center - 10, bottom - 39);
-    ctx.lineTo(arena.x + center, bottom - 26);
-    ctx.lineTo(arena.x + center + 10, bottom - 39);
-  }
-  ctx.stroke();
   ctx.restore();
 };
 
@@ -477,6 +429,10 @@ const drawArena = (
 ) => {
   const exitStart = getExitStart(exit);
   const exitEnd = getExitEnd(exit);
+  const isMobile = window.innerWidth < 600;
+  const boundaryLineWidth = isMobile ? 3 : 4;
+  const boundaryGlow = isMobile ? 12 : 18;
+  const squareGlow = isMobile ? 16 : 24;
 
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
   ctx.fillStyle = "#020617";
@@ -497,10 +453,19 @@ const drawArena = (
   ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
   ctx.save();
+  ctx.strokeStyle = "rgba(2, 6, 23, 0.5)";
+  ctx.lineWidth = isMobile ? 12 : 16;
+  ctx.strokeRect(arena.x + 6, arena.y + 6, arena.width - 12, arena.height - 12);
+  ctx.strokeStyle = "rgba(125, 249, 255, 0.08)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(arena.x + 10, arena.y + 10, arena.width - 20, arena.height - 20);
+  ctx.restore();
+
+  ctx.save();
   ctx.shadowColor = "rgba(34, 211, 238, 0.65)";
-  ctx.shadowBlur = 18;
+  ctx.shadowBlur = boundaryGlow;
   ctx.strokeStyle = "#22d3ee";
-  ctx.lineWidth = 4;
+  ctx.lineWidth = boundaryLineWidth;
   ctx.lineCap = "round";
   ctx.beginPath();
   (["top", "right", "bottom", "left"] as ExitWall[]).forEach((wall) => {
@@ -531,8 +496,8 @@ const drawArena = (
   ctx.save();
   ctx.translate(square.x, square.y);
   ctx.shadowColor =
-    ratio > 0.48 ? "rgba(251, 146, 60, 0.7)" : "rgba(34, 197, 94, 0.7)";
-  ctx.shadowBlur = 24;
+    ratio > 0.48 ? "rgba(251, 146, 60, 0.55)" : "rgba(34, 197, 94, 0.56)";
+  ctx.shadowBlur = squareGlow;
   ctx.fillStyle = color;
   ctx.fillRect(-half, -half, square.size, square.size);
   ctx.shadowBlur = 0;
@@ -769,35 +734,6 @@ const ShrinkingEscape = () => {
       audioRef.current?.playBounce();
     };
 
-    const cancelEscapeAtClosedWall = () => {
-      const arena = arenaRef.current;
-      const square = squareRef.current;
-      const wall = escapingWallRef.current;
-      if (!arena || !square || !wall) return;
-
-      const half = square.size / 2;
-      const right = arena.x + arena.width;
-      const bottom = arena.y + arena.height;
-
-      if (wall === "right") {
-        square.x = right - half;
-        square.vx = -Math.abs(square.vx);
-      } else if (wall === "left") {
-        square.x = arena.x + half;
-        square.vx = Math.abs(square.vx);
-      } else if (wall === "top") {
-        square.y = arena.y + half;
-        square.vy = Math.abs(square.vy);
-      } else {
-        square.y = bottom - half;
-        square.vy = -Math.abs(square.vy);
-      }
-
-      escapingRef.current = false;
-      escapingWallRef.current = null;
-      registerBounce();
-    };
-
     const fitsAndAlignsWithExit = (
       square: Square,
       exit: DynamicExit,
@@ -831,6 +767,16 @@ const ShrinkingEscape = () => {
       return null;
     };
 
+    const finishEscape = (time: number, wall: ExitWall) => {
+      fullyExitedAtRef.current = time;
+      escapingWallRef.current = wall;
+      escapingRef.current = false;
+      simulationStateRef.current = "escaped";
+      escapedRef.current = true;
+      syncHud(time);
+      animationRef.current = null;
+    };
+
     const step = (time: number) => {
       if (simulationStateRef.current !== "running") return;
 
@@ -855,20 +801,34 @@ const ShrinkingEscape = () => {
         const fullyOutsideWall = getFullyOutsideWall(square, arena, half);
 
         if (fullyOutsideWall) {
-          fullyExitedAtRef.current = time;
-          escapingWallRef.current = fullyOutsideWall;
-          escapingRef.current = false;
-          simulationStateRef.current = "escaped";
-          escapedRef.current = true;
-          syncHud(time);
-          animationRef.current = null;
+          finishEscape(time, fullyOutsideWall);
           return;
         }
 
         if (escapingRef.current) {
-          if (time >= currentExit.endsAt) {
-            cancelEscapeAtClosedWall();
-            rotateExit(arena, time);
+          // Keep normal bounce physics while the committed exit wall stays open.
+          if (escapingWallRef.current !== "left" && square.x - half <= left) {
+            square.x = left + half;
+            square.vx = Math.abs(square.vx);
+            registerBounce();
+          }
+
+          if (escapingWallRef.current !== "top" && square.y - half <= top) {
+            square.y = top + half;
+            square.vy = Math.abs(square.vy);
+            registerBounce();
+          }
+
+          if (escapingWallRef.current !== "bottom" && square.y + half >= bottom) {
+            square.y = bottom - half;
+            square.vy = -Math.abs(square.vy);
+            registerBounce();
+          }
+
+          if (escapingWallRef.current !== "right" && square.x + half >= right) {
+            square.x = right - half;
+            square.vx = -Math.abs(square.vx);
+            registerBounce();
           }
         } else {
           if (time >= currentExit.endsAt) {
@@ -1074,9 +1034,18 @@ const ShrinkingEscape = () => {
       ) : null}
       {hasStarted && !hud.exiting && !hud.escaped ? (
         <div className="escape-hud" aria-live="polite">
-          <div>BOUNCES: {hud.bounces}</div>
-          <div>SIZE: {hud.sizePercent}%</div>
-          <div>EXIT IN: {hud.exitRemaining.toFixed(1)}s</div>
+          <div className="hud-stat">
+            <span>BOUNCES</span>
+            <strong>{hud.bounces}</strong>
+          </div>
+          <div className="hud-stat">
+            <span>SIZE</span>
+            <strong>{hud.sizePercent}%</strong>
+          </div>
+          <div className="hud-stat">
+            <span>EXIT</span>
+            <strong>{hud.exitRemaining.toFixed(1)}s</strong>
+          </div>
         </div>
       ) : null}
       {hud.escaped ? (
@@ -1265,6 +1234,22 @@ const ShrinkingEscape = () => {
           pointer-events: none;
         }
 
+        .hud-stat {
+          display: flex;
+          align-items: baseline;
+          justify-content: center;
+          gap: 8px;
+        }
+
+        .hud-stat span,
+        .hud-stat strong {
+          font: inherit;
+        }
+
+        .hud-stat strong {
+          color: #bbf7d0;
+        }
+
         .escape-end {
           position: fixed;
           inset: 0;
@@ -1326,6 +1311,57 @@ const ShrinkingEscape = () => {
           .settings-actions button,
           .result-actions button {
             width: 100%;
+          }
+
+          .escape-hud {
+            top: calc(64px + env(safe-area-inset-top, 0px));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0;
+            width: max-content;
+            max-width: 92vw;
+            min-width: 0;
+            min-height: 38px;
+            padding: 7px 11px;
+            border: 1px solid rgba(34, 211, 238, 0.34);
+            border-radius: 999px;
+            background: rgba(2, 6, 23, 0.68);
+            box-shadow:
+              0 0 18px rgba(34, 211, 238, 0.1),
+              inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(10px);
+            font-size: 12px;
+            line-height: 1;
+            letter-spacing: 0;
+            text-shadow: 0 5px 14px rgba(2, 6, 23, 0.72);
+            white-space: nowrap;
+          }
+
+          .hud-stat {
+            gap: 4px;
+          }
+
+          .hud-stat:not(:last-child)::after {
+            content: "";
+            width: 1px;
+            height: 16px;
+            margin: 0 9px;
+            background: rgba(125, 249, 255, 0.22);
+          }
+
+          .hud-stat span {
+            color: rgba(226, 246, 255, 0.58);
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0;
+          }
+
+          .hud-stat strong {
+            color: #ecfeff;
+            font-size: 15px;
+            font-weight: 950;
+            letter-spacing: 0;
           }
         }
 

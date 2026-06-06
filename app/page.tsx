@@ -30,6 +30,7 @@ export default function Home() {
             type="button"
             aria-label="Back to menu"
             title="Back to menu"
+            className="home-button"
             onClick={() => setActiveSimulationId(null)}
             style={{
               position: "fixed",
@@ -67,6 +68,27 @@ export default function Home() {
             </svg>
           </button>
           <ActiveSimulation />
+          <style jsx>{`
+            .home-button {
+              opacity: 1;
+            }
+
+            @media (max-width: 600px) {
+              .home-button {
+                left: 14px !important;
+                top: calc(14px + env(safe-area-inset-top, 0px)) !important;
+                width: 42px !important;
+                height: 42px !important;
+                opacity: 0.75;
+                z-index: 40 !important;
+              }
+
+              .home-button svg {
+                width: 20px;
+                height: 20px;
+              }
+            }
+          `}</style>
         </>
       ) : (
         <MenuScreen
