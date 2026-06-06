@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import EcosystemArena from "../components/games/ecosystem-arena/EcosystemArena";
 import GravityWell from "../components/games/gravity-well/GravityWell";
+import ShrinkingEscape from "../components/games/shrinking-escape/ShrinkingEscape";
 
 export type SimulationStatus = "stable" | "experimental" | "coming-soon";
 
@@ -47,8 +48,8 @@ export const simulations: Simulation[] = [
     title: "Shrinking Escape",
     subtitle: "SIZE DECAY CHALLENGE",
     description: "Bounce. Shrink. Escape.",
-    component: null,
-    status: "coming-soon",
+    component: ShrinkingEscape,
+    status: "experimental",
     accentColor: "#f59e0b",
     icon: "shrinking-escape",
     glow: "card-amber",
