@@ -27,6 +27,7 @@ type Square = {
   vy: number;
   size: number;
   startSize: number;
+  color: string;
 };
 
 type Hud = {
@@ -63,6 +64,15 @@ const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const SPEED_PER_BOUNDARY_AT_1X = 0.2;
 const DEBUG_SETTINGS_LOGS = true;
+const squareCollisionColors = [
+  "#f97316",
+  "#facc15",
+  "#ec4899",
+  "#22d3ee",
+  "#22c55e",
+  "#a855f7",
+  "#ef4444",
+];
 
 const defaultSettings: SimulationSettings = {
   squareSpeed: 2,
@@ -89,6 +99,11 @@ const clamp = (value: number, min: number, max: number) =>
 
 const randomBetween = (min: number, max: number) =>
   min + Math.random() * (max - min);
+
+const getRandomSquareColor = (currentColor?: string) => {
+  const options = squareCollisionColors.filter((color) => color !== currentColor);
+  return options[Math.floor(Math.random() * options.length)] ?? squareCollisionColors[0];
+};
 
 const logConfigValue = (label: string, value: unknown) => {
   if (!DEBUG_SETTINGS_LOGS) return;
@@ -172,7 +187,7 @@ const createBounceAudio = (): BounceAudio => {
     sharedAudioContext = sharedAudioContext || new AudioContextClass();
     audio = sharedAudioContext;
     masterGain = audio.createGain();
-    masterGain.gain.value = 0.42;
+    masterGain.gain.value = 0.92;
     masterGain.connect(audio.destination);
     return audio;
   };
@@ -199,18 +214,18 @@ const createBounceAudio = (): BounceAudio => {
       const outputGain = context.createGain();
       const filter = context.createBiquadFilter();
       const harmonics = [
-        { ratio: 1, gain: 0.16 },
-        { ratio: 2, gain: 0.055 },
-        { ratio: 3, gain: 0.022 },
+        { ratio: 1, gain: 0.34 },
+        { ratio: 2, gain: 0.12 },
+        { ratio: 3, gain: 0.055 },
       ];
 
       filter.type = "lowpass";
       filter.frequency.setValueAtTime(2600, now);
       filter.frequency.exponentialRampToValueAtTime(900, now + 0.34);
       outputGain.gain.setValueAtTime(0.0001, now);
-      outputGain.gain.linearRampToValueAtTime(0.18, now + 0.012);
-      outputGain.gain.exponentialRampToValueAtTime(0.045, now + 0.12);
-      outputGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+      outputGain.gain.linearRampToValueAtTime(0.44, now + 0.01);
+      outputGain.gain.exponentialRampToValueAtTime(0.12, now + 0.14);
+      outputGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.48);
       outputGain.connect(filter);
       filter.connect(masterGain);
 
@@ -222,11 +237,11 @@ const createBounceAudio = (): BounceAudio => {
         osc.frequency.setValueAtTime(root * harmonic.ratio, now);
         osc.detune.setValueAtTime((Math.random() - 0.5) * 5, now);
         gain.gain.setValueAtTime(harmonic.gain, now);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.38 + index * 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.44 + index * 0.03);
         osc.connect(gain);
         gain.connect(outputGain);
         osc.start(now);
-        osc.stop(now + 0.46);
+        osc.stop(now + 0.54);
         osc.onended = () => {
           osc.disconnect();
           gain.disconnect();
@@ -236,7 +251,7 @@ const createBounceAudio = (): BounceAudio => {
       window.setTimeout(() => {
         filter.disconnect();
         outputGain.disconnect();
-      }, 520);
+      }, 620);
     },
     dispose: () => {
       masterGain?.disconnect();
@@ -255,19 +270,14 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const hudReservedHeight = isMobile
     ? HUD_RESERVED_HEIGHT_MOBILE
     : HUD_RESERVED_HEIGHT_DESKTOP;
-  const availableHeight = Math.max(
-    260,
-    height - hudReservedHeight - MOBILE_BOTTOM_SAFE_SPACING,
-  );
-  const mobileBoundarySize = Math.min(width * 0.88, availableHeight * 0.62);
-  const desktopBoundarySize = Math.min(
-    width - 28,
-    height - hudReservedHeight - ARENA_SAFE_SPACING,
-    920,
-  );
+  const horizontalPadding = isMobile ? width * 0.12 : 28;
+  const bottomSpacing = isMobile ? MOBILE_BOTTOM_SAFE_SPACING : ARENA_SAFE_SPACING;
+  const availableWidth = Math.max(220, width - horizontalPadding);
+  const availableHeight = Math.max(220, height - hudReservedHeight - bottomSpacing);
+  const availableSize = Math.min(availableWidth, availableHeight);
   const boundarySize = clamp(
-    isMobile ? mobileBoundarySize : desktopBoundarySize,
-    240,
+    availableSize,
+    220,
     920,
   );
   const x = (width - boundarySize) / 2;
@@ -357,13 +367,8 @@ const resetSquare = (arena: Arena, settings: SimulationSettings): Square => {
     vy: Math.sin(angle) * speed,
     size,
     startSize: size,
+    color: "#f97316",
   };
-};
-
-const getSquareColor = (ratio: number) => {
-  if (ratio > 0.72) return "#f97316";
-  if (ratio > 0.48) return "#facc15";
-  return "#22c55e";
 };
 
 const drawWallSegment = (
@@ -490,7 +495,6 @@ const drawArena = (
   drawExitGlow(ctx, arena, exit, fadeIn);
 
   const ratio = square.size / square.startSize;
-  const color = getSquareColor(ratio);
   const half = square.size / 2;
 
   ctx.save();
@@ -498,7 +502,7 @@ const drawArena = (
   ctx.shadowColor =
     ratio > 0.48 ? "rgba(251, 146, 60, 0.55)" : "rgba(34, 197, 94, 0.56)";
   ctx.shadowBlur = squareGlow;
-  ctx.fillStyle = color;
+  ctx.fillStyle = square.color;
   ctx.fillRect(-half, -half, square.size, square.size);
   ctx.shadowBlur = 0;
   ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
@@ -556,6 +560,7 @@ const ShrinkingEscape = () => {
 
   const startSimulation = () => {
     const validSettings = validateSettings(settings);
+    void audioRef.current?.unlock();
     settingsRef.current = validSettings;
     simulationStateRef.current = "running";
     setSettings(validSettings);
@@ -572,6 +577,7 @@ const ShrinkingEscape = () => {
   };
 
   const playAgain = () => {
+    void audioRef.current?.unlock();
     simulationStateRef.current = "running";
     setHud({
       bounces: 0,
@@ -731,6 +737,7 @@ const ShrinkingEscape = () => {
 
       bouncesRef.current += 1;
       square.size = Math.max(square.size * (1 - activeSettings.shrinkRate / 100), 10);
+      square.color = getRandomSquareColor(square.color);
       audioRef.current?.playBounce();
     };
 
@@ -1068,7 +1075,9 @@ const ShrinkingEscape = () => {
         .escape-root {
           position: relative;
           width: 100%;
-          min-height: 100vh;
+          height: 100dvh;
+          min-height: 100dvh;
+          max-height: 100dvh;
           overflow: hidden;
           background: #020617;
           color: #f8fafc;
@@ -1076,8 +1085,9 @@ const ShrinkingEscape = () => {
 
         .escape-canvas {
           width: 100%;
-          height: 100vh;
-          min-height: 100vh;
+          height: 100dvh;
+          min-height: 100dvh;
+          max-height: 100dvh;
         }
 
         .settings-layer {
