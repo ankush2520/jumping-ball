@@ -137,6 +137,62 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
+  if (icon === "vortex-escape") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter id="vortex-thumb-glow" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="2.6" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <rect
+          x="12"
+          y="12"
+          width="48"
+          height="48"
+          rx="5"
+          fill="rgba(2, 6, 23, 0.68)"
+          stroke="rgba(148, 163, 184, 0.36)"
+        />
+        <path
+          d="M36 19a17 17 0 1 1-12.02 4.98"
+          stroke="rgba(34, 211, 238, 0.72)"
+          strokeWidth="3"
+          strokeLinecap="round"
+          filter="url(#vortex-thumb-glow)"
+        />
+        <path
+          d="M43.78 28.22a11 11 0 1 1-15.56 0"
+          stroke="rgba(168, 85, 247, 0.82)"
+          strokeWidth="3"
+          strokeLinecap="round"
+          filter="url(#vortex-thumb-glow)"
+        />
+        <path
+          d="M36 31a5 5 0 1 1-3.54 1.46"
+          stroke="rgba(244, 114, 182, 0.9)"
+          strokeWidth="3"
+          strokeLinecap="round"
+          filter="url(#vortex-thumb-glow)"
+        />
+        <circle cx="36" cy="36" r="3.5" fill="#bbf7d0" filter="url(#vortex-thumb-glow)" />
+        <circle cx="23" cy="26" r="3.8" fill="#67e8f9" filter="url(#vortex-thumb-glow)" />
+        <circle cx="48" cy="45" r="3.4" fill="#fde68a" filter="url(#vortex-thumb-glow)" />
+        <circle cx="27" cy="50" r="3.1" fill="#f9a8d4" filter="url(#vortex-thumb-glow)" />
+      </svg>
+    );
+  }
+
   return null;
 };
 
@@ -193,7 +249,7 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
                 <div className="button-text">
                   <div className="button-title">
                     {simulation.title}
-                    {simulation.id === "ecosystem-arena" ? (
+                    {simulation.id === "vortex-escape" ? (
                       <span className="simulation-badge">NEW</span>
                     ) : null}
                   </div>

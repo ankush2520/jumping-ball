@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import EcosystemArena from "../components/games/ecosystem-arena/EcosystemArena";
 import GravityWell from "../components/games/gravity-well/GravityWell";
 import ShrinkingEscape from "../components/games/shrinking-escape/ShrinkingEscape";
+import VortexEscape from "../components/games/vortex-escape/VortexEscape";
 
 export type SimulationStatus = "stable" | "experimental" | "coming-soon";
 
@@ -16,7 +17,8 @@ export type Simulation = {
   icon:
     | "gravity-well"
     | "ecosystem-arena"
-    | "shrinking-escape";
+    | "shrinking-escape"
+    | "vortex-escape";
   glow: "card-cyan" | "card-emerald" | "card-amber";
 };
 
@@ -53,6 +55,17 @@ export const simulations: Simulation[] = [
     accentColor: "#f59e0b",
     icon: "shrinking-escape",
     glow: "card-amber",
+  },
+  {
+    id: "vortex-escape",
+    title: "Vortex Escape",
+    subtitle: "CENTER GATE MAZE",
+    description: "Find the rotating gaps and reach the center exit.",
+    component: VortexEscape,
+    status: "experimental",
+    accentColor: "#22c55e",
+    icon: "vortex-escape",
+    glow: "card-emerald",
   },
 ];
 
