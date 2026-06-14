@@ -367,7 +367,7 @@ const resetSquare = (arena: Arena, settings: SimulationSettings): Square => {
     vy: Math.sin(angle) * speed,
     size,
     startSize: size,
-    color: "#f97316",
+    color: "#d77026",
   };
 };
 

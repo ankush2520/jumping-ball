@@ -40,7 +40,7 @@ type HudStats = {
 
 const MAX_DT = 1 / 30;
 const PHYSICS_SUBSTEPS = 3;
-const TEST_BALL_COUNT = 3;
+const TEST_BALL_COUNT = 30;
 const CENTER_EXIT_RATIO = 0.066;
 const BALL_COLORS = [
   "#67e8f9",
@@ -111,10 +111,11 @@ const createRings = (arena: Arena): Ring[] => {
   const base = Math.min(arena.width, arena.height);
   const thickness = clamp(base * 0.016, 5, 8);
   const gapSize = 1.18;
+  const radiusUnit = base * 0.0475;
 
   return [
     {
-      radius: base * 0.38,
+      radius: radiusUnit * 8,
       thickness,
       gapSize,
       offset: -Math.PI / 2,
@@ -122,7 +123,7 @@ const createRings = (arena: Arena): Ring[] => {
       color: "#38bdf8",
     },
     {
-      radius: base * 0.27,
+      radius: radiusUnit * 5,
       thickness,
       gapSize: gapSize * 0.94,
       offset: Math.PI * 0.2,
@@ -130,7 +131,7 @@ const createRings = (arena: Arena): Ring[] => {
       color: "#a78bfa",
     },
     {
-      radius: base * 0.16,
+      radius: radiusUnit * 3,
       thickness,
       gapSize: gapSize * 0.88,
       offset: Math.PI * 0.9,

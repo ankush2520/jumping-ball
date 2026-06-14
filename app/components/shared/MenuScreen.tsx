@@ -193,6 +193,68 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
+  if (icon === "plasma-bounce") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter
+            id="plasma-bounce-glow"
+            x="-45%"
+            y="-45%"
+            width="190%"
+            height="190%"
+          >
+            <feGaussianBlur stdDeviation="2.8" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <radialGradient id="plasma-bounce-core" cx="35%" cy="28%" r="70%">
+            <stop stopColor="#ffffff" />
+            <stop offset="0.42" stopColor="#67e8f9" />
+            <stop offset="1" stopColor="#ec4899" />
+          </radialGradient>
+        </defs>
+        <circle
+          cx="36"
+          cy="36"
+          r="25"
+          stroke="rgba(125, 211, 252, 0.68)"
+          strokeWidth="2.5"
+          filter="url(#plasma-bounce-glow)"
+        />
+        <circle
+          cx="24"
+          cy="30"
+          r="8"
+          fill="url(#plasma-bounce-core)"
+          filter="url(#plasma-bounce-glow)"
+        />
+        <circle
+          cx="45"
+          cy="43"
+          r="7"
+          fill="#f9a8d4"
+          filter="url(#plasma-bounce-glow)"
+        />
+        <circle cx="39" cy="25" r="4" fill="#fde68a" opacity="0.9" />
+        <path
+          d="M29 33c6 8 12 10 20 9M41 25c-8 2-13 6-17 14"
+          stroke="rgba(248, 250, 252, 0.58)"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
   return null;
 };
 

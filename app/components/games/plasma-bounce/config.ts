@@ -1,5 +1,5 @@
 export const CIRCLE_RADIUS = 200; // increased by 20% (140 * 1.2)
-export const BALL_RADIUS = 12.8; // decreased by 20% (16 * 0.8)
+export const BALL_RADIUS = 2.8; // decreased by 20% (16 * 0.8)
 export const GRAVITY = 0;
 export const BOUNCE_SPEED = 10;
 export const BALL_SPEED = 10;
