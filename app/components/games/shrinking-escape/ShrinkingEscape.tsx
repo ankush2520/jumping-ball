@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 
 type Arena = {
   x: number;
@@ -29,12 +29,6 @@ type Square = {
   cells: Cell[];
 };
 
-type Hud = {
-  merges: number;
-  elapsed: number;
-  blocks: number;
-};
-
 type SimulationSettings = {
   squareSpeed: number;
   initialSquareSize: number;
@@ -48,7 +42,6 @@ type BounceAudio = {
   dispose: () => void;
 };
 
-const HUD_UPDATE_INTERVAL = 0.08;
 const HUD_RESERVED_HEIGHT_DESKTOP = 142;
 const HUD_RESERVED_HEIGHT_MOBILE = 158;
 const ARENA_SAFE_SPACING = 24;
@@ -280,9 +273,6 @@ const getOverlappingSquarePairs = (squares: Square[]) => {
   return pairs;
 };
 
-const getCellCount = (squares: Square[]) =>
-  squares.reduce((total, square) => total + square.cells.length, 0);
-
 const getCellWorldPosition = (square: Square, cell: Cell) => ({
   x: square.x + cell.x * square.size,
   y: square.y + cell.y * square.size,
@@ -384,8 +374,8 @@ const drawArena = (
   squares: Square[],
 ) => {
   const isMobile = window.innerWidth < 600;
-  const boundaryLineWidth = isMobile ? 3 : 4;
-  const boundaryGlow = isMobile ? 12 : 18;
+  const boundaryLineWidth = isMobile ? 2.25 : 3;
+  const boundaryGlow = isMobile ? 7 : 11;
   const squareGlow = isMobile ? 16 : 24;
 
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
@@ -408,17 +398,17 @@ const drawArena = (
 
   ctx.save();
   ctx.strokeStyle = "rgba(2, 6, 23, 0.5)";
-  ctx.lineWidth = isMobile ? 12 : 16;
+  ctx.lineWidth = isMobile ? 9 : 12;
   ctx.strokeRect(arena.x + 6, arena.y + 6, arena.width - 12, arena.height - 12);
-  ctx.strokeStyle = "rgba(125, 249, 255, 0.08)";
+  ctx.strokeStyle = "rgba(124, 143, 163, 0.12)";
   ctx.lineWidth = 1;
   ctx.strokeRect(arena.x + 10, arena.y + 10, arena.width - 20, arena.height - 20);
   ctx.restore();
 
   ctx.save();
-  ctx.shadowColor = "rgba(34, 211, 238, 0.65)";
+  ctx.shadowColor = "rgba(124, 143, 163, 0.32)";
   ctx.shadowBlur = boundaryGlow;
-  ctx.strokeStyle = "#22d3ee";
+  ctx.strokeStyle = "rgba(124, 143, 163, 0.82)";
   ctx.lineWidth = boundaryLineWidth;
   ctx.lineCap = "round";
   ctx.beginPath();
@@ -426,6 +416,29 @@ const drawArena = (
     drawWallSegment(ctx, arena, wall, 0, arena.width);
   });
   ctx.stroke();
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(226, 232, 240, 0.08)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(arena.x + 5, arena.y + 5, arena.width - 10, arena.height - 10);
+  ctx.fillStyle = "rgba(241, 245, 249, 0.9)";
+  ctx.shadowColor = "rgba(148, 163, 184, 0.32)";
+  ctx.shadowBlur = isMobile ? 8 : 12;
+  ctx.font = `800 ${isMobile ? 14 : 19}px Arial, Helvetica, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  const caption = isMobile
+    ? ["WHAT WEIRD STRUCTURES", "WILL THESE BLOCKS CREATE?"]
+    : ["WHAT WEIRD STRUCTURES WILL THESE COLLIDING BLOCKS CREATE?"];
+  const lineHeight = isMobile ? 18 : 24;
+  caption.forEach((line, index) => {
+    ctx.fillText(
+      line,
+      arena.x + arena.width / 2,
+      arena.y - 16 - (caption.length - index - 1) * lineHeight,
+    );
+  });
   ctx.restore();
 
   squares.forEach((square) => {
@@ -457,17 +470,10 @@ const ShrinkingEscape = () => {
   const squaresRef = useRef<Square[]>([]);
   const animationRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
-  const startedAtRef = useRef(0);
-  const lastHudUpdateRef = useRef(0);
   const mergesRef = useRef(0);
   const nextSquareIdRef = useRef(2);
   const activeSquareCollisionPairsRef = useRef<Set<string>>(new Set());
   const simulationStateRef = useRef<SimulationState>("running");
-  const [hud, setHud] = useState<Hud>({
-    merges: 0,
-    elapsed: 0,
-    blocks: 2,
-  });
 
   if (audioRef.current === null) {
     audioRef.current = createBounceAudio();
@@ -478,17 +484,6 @@ const ShrinkingEscape = () => {
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
     const activeSettings = settingsRef.current;
-
-    const syncHud = (time: number) => {
-      const squares = squaresRef.current;
-      if (squares.length === 0) return;
-
-      setHud({
-        merges: mergesRef.current,
-        elapsed: (time - startedAtRef.current) / 1000,
-        blocks: getCellCount(squares),
-      });
-    };
 
     const initialize = () => {
       const arena = resizeCanvas(canvas);
@@ -503,10 +498,7 @@ const ShrinkingEscape = () => {
       const squares = squaresRef.current;
       mergesRef.current = 0;
       simulationStateRef.current = "running";
-      startedAtRef.current = startedAt;
-      lastTimeRef.current = startedAtRef.current;
-      lastHudUpdateRef.current = 0;
-      syncHud(startedAtRef.current);
+      lastTimeRef.current = startedAt;
 
       logConfigValue("actual square speed px/s", Math.hypot(squares[0].vx, squares[0].vy));
       logConfigValue("actual initial square size percent", {
@@ -791,11 +783,6 @@ const ShrinkingEscape = () => {
       resolveSquareCollisions(arena);
       drawArena(ctx, arena, squares);
 
-      if (time - lastHudUpdateRef.current > HUD_UPDATE_INTERVAL * 1000) {
-        lastHudUpdateRef.current = time;
-        syncHud(time);
-      }
-
       animationRef.current = requestAnimationFrame(step);
     };
 
@@ -858,16 +845,6 @@ const ShrinkingEscape = () => {
   return (
     <div className="escape-root">
       <canvas ref={canvasRef} className="escape-canvas" />
-      <div className="escape-hud" aria-live="polite">
-        <div className="hud-stat">
-          <span>MERGES</span>
-          <strong>{hud.merges}</strong>
-        </div>
-        <div className="hud-stat">
-          <span>BLOCKS</span>
-          <strong>{hud.blocks}</strong>
-        </div>
-      </div>
       <style jsx>{`
         .escape-root {
           position: relative;
@@ -919,152 +896,6 @@ const ShrinkingEscape = () => {
           transform: translateY(-1px);
           border-color: rgba(34, 197, 94, 0.64);
           background: rgba(22, 101, 52, 0.28);
-        }
-
-        .escape-hud {
-          position: fixed;
-          top: 18px;
-          left: 50%;
-          z-index: 3;
-          transform: translateX(-50%);
-          display: grid;
-          gap: 5px;
-          min-width: 160px;
-          color: #ecfeff;
-          font-family:
-            "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
-          font-size: clamp(0.78rem, 2.5vw, 1rem);
-          font-weight: 900;
-          letter-spacing: 0.08em;
-          line-height: 1.25;
-          text-align: center;
-          text-shadow:
-            0 0 12px rgba(34, 211, 238, 0.38),
-            0 6px 22px rgba(2, 6, 23, 0.8);
-          pointer-events: none;
-        }
-
-        .hud-stat {
-          display: flex;
-          align-items: baseline;
-          justify-content: center;
-          gap: 8px;
-        }
-
-        .hud-stat span,
-        .hud-stat strong {
-          font: inherit;
-        }
-
-        .hud-stat strong {
-          color: #bbf7d0;
-        }
-
-        .escape-end {
-          position: fixed;
-          inset: 0;
-          z-index: 4;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 12px;
-          padding: 24px;
-          background: rgba(2, 6, 23, 0.52);
-          color: #dcfce7;
-          font-family:
-            "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
-          text-align: center;
-          text-shadow:
-            0 0 18px rgba(34, 197, 94, 0.46),
-            0 10px 28px rgba(2, 6, 23, 0.88);
-          animation: escapeEndFade 0.7s ease-out both;
-        }
-
-        .escape-end strong {
-          display: block;
-          color: #86efac;
-          font-size: clamp(3.2rem, 12vw, 7.6rem);
-          font-weight: 950;
-          letter-spacing: 0;
-          line-height: 0.9;
-        }
-
-        .escape-end span {
-          font-size: clamp(1rem, 3vw, 1.35rem);
-          font-weight: 900;
-          letter-spacing: 0.08em;
-        }
-
-        .escape-end .result-actions {
-          margin-top: 18px;
-        }
-
-        @media (max-width: 640px) {
-          .result-actions button {
-            width: 100%;
-          }
-
-          .escape-hud {
-            top: calc(64px + env(safe-area-inset-top, 0px));
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0;
-            width: max-content;
-            max-width: 92vw;
-            min-width: 0;
-            min-height: 38px;
-            padding: 7px 11px;
-            border: 1px solid rgba(34, 211, 238, 0.34);
-            border-radius: 999px;
-            background: rgba(2, 6, 23, 0.68);
-            box-shadow:
-              0 0 18px rgba(34, 211, 238, 0.1),
-              inset 0 1px 0 rgba(255, 255, 255, 0.08);
-            backdrop-filter: blur(10px);
-            font-size: 12px;
-            line-height: 1;
-            letter-spacing: 0;
-            text-shadow: 0 5px 14px rgba(2, 6, 23, 0.72);
-            white-space: nowrap;
-          }
-
-          .hud-stat {
-            gap: 4px;
-          }
-
-          .hud-stat:not(:last-child)::after {
-            content: "";
-            width: 1px;
-            height: 16px;
-            margin: 0 9px;
-            background: rgba(125, 249, 255, 0.22);
-          }
-
-          .hud-stat span {
-            color: rgba(226, 246, 255, 0.58);
-            font-size: 12px;
-            font-weight: 800;
-            letter-spacing: 0;
-          }
-
-          .hud-stat strong {
-            color: #ecfeff;
-            font-size: 15px;
-            font-weight: 950;
-            letter-spacing: 0;
-          }
-        }
-
-        @keyframes escapeEndFade {
-          from {
-            opacity: 0;
-          }
-
-          to {
-            opacity: 1;
-          }
         }
       `}</style>
     </div>
