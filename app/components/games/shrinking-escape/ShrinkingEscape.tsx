@@ -12,6 +12,11 @@ type Arena = {
 
 type ExitWall = "top" | "right" | "bottom" | "left";
 
+type Cell = {
+  x: number;
+  y: number;
+};
+
 type Square = {
   id: number;
   x: number;
@@ -21,22 +26,18 @@ type Square = {
   size: number;
   startSize: number;
   color: string;
+  cells: Cell[];
 };
 
 type Hud = {
-  bounces: number;
-  sizePercent: number;
+  merges: number;
   elapsed: number;
-  squares: number;
+  blocks: number;
 };
 
 type SimulationSettings = {
   squareSpeed: number;
-  exitDuration: number;
   initialSquareSize: number;
-  minExitSize: number;
-  maxExitSize: number;
-  shrinkRate: number;
 };
 
 type SimulationState = "running";
@@ -53,15 +54,10 @@ const HUD_RESERVED_HEIGHT_MOBILE = 158;
 const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const SPEED_PER_BOUNDARY_AT_1X = 0.2;
-const MAX_SQUARES = 625;
 const DEBUG_SETTINGS_LOGS = true;
 const defaultSettings: SimulationSettings = {
-  squareSpeed: 2,
-  exitDuration: 2.25,
+  squareSpeed: 6,
   initialSquareSize: 4,
-  minExitSize: 20,
-  maxExitSize: 85,
-  shrinkRate: 1,
 };
 
 let sharedAudioContext: AudioContext | null = null;
@@ -71,7 +67,7 @@ const clamp = (value: number, min: number, max: number) =>
 
 const logConfigValue = (label: string, value: unknown) => {
   if (!DEBUG_SETTINGS_LOGS) return;
-  console.info(`[Shrinking Escape settings] ${label}:`, value);
+  console.info(`[Merging Squares settings] ${label}:`, value);
 };
 
 const createBounceAudio = (): BounceAudio => {
@@ -236,30 +232,7 @@ const resetSquare = (
     size,
     startSize: size,
     color: "#d77026",
-  };
-};
-
-const createSpawnedSquare = (
-  arena: Arena,
-  source: Square,
-  x: number,
-  y: number,
-  index: number,
-  id: number,
-): Square => {
-  const speed = Math.hypot(source.vx, source.vy) || arena.width * 0.4;
-  const angle = Math.random() * Math.PI * 2 + index * 0.37;
-  const half = source.size / 2;
-
-  return {
-    id,
-    x: clamp(x, arena.x + half, arena.x + arena.width - half),
-    y: clamp(y, arena.y + half, arena.y + arena.height - half),
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
-    size: source.size,
-    startSize: source.startSize,
-    color: source.color,
+    cells: [{ x: 0, y: 0 }],
   };
 };
 
@@ -268,9 +241,30 @@ const getSquarePairKey = (first: Square, second: Square) =>
     ? `${first.id}:${second.id}`
     : `${second.id}:${first.id}`;
 
-const doSquaresOverlap = (first: Square, second: Square) =>
-  Math.abs(first.x - second.x) < (first.size + second.size) / 2 &&
-  Math.abs(first.y - second.y) < (first.size + second.size) / 2;
+const getBodyBounds = (square: Square) => {
+  const half = square.size / 2;
+  const xs = square.cells.map((cell) => square.x + cell.x * square.size);
+  const ys = square.cells.map((cell) => square.y + cell.y * square.size);
+
+  return {
+    left: Math.min(...xs) - half,
+    right: Math.max(...xs) + half,
+    top: Math.min(...ys) - half,
+    bottom: Math.max(...ys) + half,
+  };
+};
+
+const doSquaresOverlap = (first: Square, second: Square) => {
+  const firstBounds = getBodyBounds(first);
+  const secondBounds = getBodyBounds(second);
+
+  return (
+    firstBounds.left < secondBounds.right &&
+    firstBounds.right > secondBounds.left &&
+    firstBounds.top < secondBounds.bottom &&
+    firstBounds.bottom > secondBounds.top
+  );
+};
 
 const getOverlappingSquarePairs = (squares: Square[]) => {
   const pairs = new Set<string>();
@@ -286,19 +280,40 @@ const getOverlappingSquarePairs = (squares: Square[]) => {
   return pairs;
 };
 
-const isSquarePositionEmpty = (
+const getCellCount = (squares: Square[]) =>
+  squares.reduce((total, square) => total + square.cells.length, 0);
+
+const getCellWorldPosition = (square: Square, cell: Cell) => ({
+  x: square.x + cell.x * square.size,
+  y: square.y + cell.y * square.size,
+});
+
+const isSingleSquarePositionEmpty = (
   x: number,
   y: number,
   size: number,
   squares: Square[],
-) =>
-  squares.every(
-    (square) =>
-      Math.abs(square.x - x) >= (square.size + size) / 2 ||
-      Math.abs(square.y - y) >= (square.size + size) / 2,
-  );
+) => {
+  const half = size / 2;
+  const candidate = {
+    left: x - half,
+    right: x + half,
+    top: y - half,
+    bottom: y + half,
+  };
 
-const findRandomEmptySquarePosition = (
+  return squares.every((square) => {
+    const bounds = getBodyBounds(square);
+    return (
+      candidate.right <= bounds.left ||
+      candidate.left >= bounds.right ||
+      candidate.bottom <= bounds.top ||
+      candidate.top >= bounds.bottom
+    );
+  });
+};
+
+const findRandomEmptySingleSquarePosition = (
   arena: Arena,
   size: number,
   squares: Square[],
@@ -313,7 +328,7 @@ const findRandomEmptySquarePosition = (
     const x = minX + Math.random() * (maxX - minX);
     const y = minY + Math.random() * (maxY - minY);
 
-    if (isSquarePositionEmpty(x, y, size, squares)) {
+    if (isSingleSquarePositionEmpty(x, y, size, squares)) {
       return { x, y };
     }
   }
@@ -330,7 +345,7 @@ const findRandomEmptySquarePosition = (
     const x = arena.x + half + column * size;
     const y = arena.y + half + row * size;
 
-    if (isSquarePositionEmpty(x, y, size, squares)) {
+    if (isSingleSquarePositionEmpty(x, y, size, squares)) {
       return { x, y };
     }
   }
@@ -417,18 +432,20 @@ const drawArena = (
     const ratio = square.size / square.startSize;
     const half = square.size / 2;
 
-    ctx.save();
-    ctx.translate(square.x, square.y);
-    ctx.shadowColor =
-      ratio > 0.48 ? "rgba(251, 146, 60, 0.55)" : "rgba(34, 197, 94, 0.56)";
-    ctx.shadowBlur = squareGlow;
-    ctx.fillStyle = square.color;
-    ctx.fillRect(-half, -half, square.size, square.size);
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(-half + 1, -half + 1, square.size - 2, square.size - 2);
-    ctx.restore();
+    square.cells.forEach((cell) => {
+      ctx.save();
+      ctx.translate(square.x + cell.x * square.size, square.y + cell.y * square.size);
+      ctx.shadowColor =
+        ratio > 0.48 ? "rgba(251, 146, 60, 0.55)" : "rgba(34, 197, 94, 0.56)";
+      ctx.shadowBlur = squareGlow;
+      ctx.fillStyle = square.color;
+      ctx.fillRect(-half, -half, square.size, square.size);
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.4)";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(-half + 1, -half + 1, square.size - 2, square.size - 2);
+      ctx.restore();
+    });
   });
 };
 
@@ -442,15 +459,14 @@ const ShrinkingEscape = () => {
   const lastTimeRef = useRef(0);
   const startedAtRef = useRef(0);
   const lastHudUpdateRef = useRef(0);
-  const bouncesRef = useRef(0);
+  const mergesRef = useRef(0);
   const nextSquareIdRef = useRef(2);
   const activeSquareCollisionPairsRef = useRef<Set<string>>(new Set());
   const simulationStateRef = useRef<SimulationState>("running");
   const [hud, setHud] = useState<Hud>({
-    bounces: 0,
-    sizePercent: 100,
+    merges: 0,
     elapsed: 0,
-    squares: 2,
+    blocks: 2,
   });
 
   if (audioRef.current === null) {
@@ -466,17 +482,11 @@ const ShrinkingEscape = () => {
     const syncHud = (time: number) => {
       const squares = squaresRef.current;
       if (squares.length === 0) return;
-      const averageSizePercent =
-        squares.reduce(
-          (total, square) => total + square.size / square.startSize,
-          0,
-        ) / squares.length;
 
       setHud({
-        bounces: bouncesRef.current,
-        sizePercent: Math.round(averageSizePercent * 100),
+        merges: mergesRef.current,
         elapsed: (time - startedAtRef.current) / 1000,
-        squares: squares.length,
+        blocks: getCellCount(squares),
       });
     };
 
@@ -491,7 +501,7 @@ const ShrinkingEscape = () => {
         resetSquare(arena, activeSettings, 1, 1),
       ];
       const squares = squaresRef.current;
-      bouncesRef.current = 0;
+      mergesRef.current = 0;
       simulationStateRef.current = "running";
       startedAtRef.current = startedAt;
       lastTimeRef.current = startedAtRef.current;
@@ -504,39 +514,189 @@ const ShrinkingEscape = () => {
         squareSizePx: Number(squares[0].size.toFixed(2)),
         boundarySizePx: Number(arena.width.toFixed(2)),
       });
-      logConfigValue("actual shrink rate percent per bounce", activeSettings.shrinkRate);
     };
 
-    const registerBounce = (square: Square) => {
-      if (!square || simulationStateRef.current !== "running") return;
-
-      bouncesRef.current += 1;
+    const playBounce = () => {
+      if (simulationStateRef.current !== "running") return;
       audioRef.current?.playBounce();
+    };
+
+    const createRandomSingleSquare = (arena: Arena, source: Square) => {
+      const spawnPosition = findRandomEmptySingleSquarePosition(
+        arena,
+        source.size,
+        squaresRef.current,
+      );
+      if (!spawnPosition) return null;
+
+      const speed = getSquareSpeed(arena, activeSettings);
+      const angle = Math.random() * Math.PI * 2;
+      const spawned: Square = {
+        id: nextSquareIdRef.current,
+        x: spawnPosition.x,
+        y: spawnPosition.y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        size: source.size,
+        startSize: source.startSize,
+        color: source.color,
+        cells: [{ x: 0, y: 0 }],
+      };
+
+      nextSquareIdRef.current += 1;
+      return spawned;
+    };
+
+    const getNearestMergeShift = (target: Square, source: Square) => {
+      const candidates: Array<{ score: number; shift: Cell }> = [];
+
+      for (const targetCell of target.cells) {
+        for (const sourceCell of source.cells) {
+          const targetWorld = getCellWorldPosition(target, targetCell);
+          const sourceWorld = getCellWorldPosition(source, sourceCell);
+          const targetBounds = {
+            left: targetWorld.x - target.size / 2,
+            right: targetWorld.x + target.size / 2,
+            top: targetWorld.y - target.size / 2,
+            bottom: targetWorld.y + target.size / 2,
+          };
+          const sourceBounds = {
+            left: sourceWorld.x - source.size / 2,
+            right: sourceWorld.x + source.size / 2,
+            top: sourceWorld.y - source.size / 2,
+            bottom: sourceWorld.y + source.size / 2,
+          };
+
+          candidates.push(
+            {
+              score:
+                Math.abs(sourceBounds.left - targetBounds.right) +
+                Math.abs(sourceWorld.y - targetWorld.y) * 1.4,
+              shift: {
+                x: targetCell.x + 1 - sourceCell.x,
+                y: targetCell.y - sourceCell.y,
+              },
+            },
+            {
+              score:
+                Math.abs(sourceBounds.right - targetBounds.left) +
+                Math.abs(sourceWorld.y - targetWorld.y) * 1.4,
+              shift: {
+                x: targetCell.x - 1 - sourceCell.x,
+                y: targetCell.y - sourceCell.y,
+              },
+            },
+            {
+              score:
+                Math.abs(sourceBounds.top - targetBounds.bottom) +
+                Math.abs(sourceWorld.x - targetWorld.x) * 1.4,
+              shift: {
+                x: targetCell.x - sourceCell.x,
+                y: targetCell.y + 1 - sourceCell.y,
+              },
+            },
+            {
+              score:
+                Math.abs(sourceBounds.bottom - targetBounds.top) +
+                Math.abs(sourceWorld.x - targetWorld.x) * 1.4,
+              shift: {
+                x: targetCell.x - sourceCell.x,
+                y: targetCell.y - 1 - sourceCell.y,
+              },
+            },
+          );
+        }
+      }
+
+      const occupied = new Set(target.cells.map((cell) => `${cell.x}:${cell.y}`));
+      const orderedCandidates = candidates.sort((a, b) => a.score - b.score);
+
+      for (const candidate of orderedCandidates) {
+        const shiftedSourceCells = source.cells.map((cell) => ({
+          x: cell.x + candidate.shift.x,
+          y: cell.y + candidate.shift.y,
+        }));
+        const hasOverlap = shiftedSourceCells.some((cell) =>
+          occupied.has(`${cell.x}:${cell.y}`),
+        );
+        if (hasOverlap) continue;
+
+        const hasFullEdgeConnection = shiftedSourceCells.some((sourceCell) =>
+          target.cells.some((targetCell) => {
+            const dx = Math.abs(sourceCell.x - targetCell.x);
+            const dy = Math.abs(sourceCell.y - targetCell.y);
+            return dx + dy === 1;
+          }),
+        );
+
+        if (hasFullEdgeConnection) {
+          return candidate.shift;
+        }
+      }
+
+      return null;
+    };
+
+    const mergeSquares = (
+      target: Square,
+      source: Square,
+      shift: Cell,
+      arena: Arena,
+    ) => {
+      const occupied = new Set(target.cells.map((cell) => `${cell.x}:${cell.y}`));
+      source.cells.forEach((cell) => {
+        const mergedCell = {
+          x: cell.x + shift.x,
+          y: cell.y + shift.y,
+        };
+        const key = `${mergedCell.x}:${mergedCell.y}`;
+        if (!occupied.has(key)) {
+          occupied.add(key);
+          target.cells.push(mergedCell);
+        }
+      });
+
+      const mergedVx = (target.vx + source.vx) / 2;
+      const mergedVy = (target.vy + source.vy) / 2;
+      const targetSpeed = getSquareSpeed(arena, activeSettings);
+      const mergedSpeed = Math.hypot(mergedVx, mergedVy) || 1;
+      target.vx = (mergedVx / mergedSpeed) * targetSpeed;
+      target.vy = (mergedVy / mergedSpeed) * targetSpeed;
+
+      const bounds = getBodyBounds(target);
+      if (bounds.left < arena.x) target.x += arena.x - bounds.left;
+      if (bounds.right > arena.x + arena.width) {
+        target.x -= bounds.right - (arena.x + arena.width);
+      }
+      if (bounds.top < arena.y) target.y += arena.y - bounds.top;
+      if (bounds.bottom > arena.y + arena.height) {
+        target.y -= bounds.bottom - (arena.y + arena.height);
+      }
+
+      mergesRef.current += 1;
     };
 
     const resolveSquareCollisions = (arena: Arena) => {
       const squares = squaresRef.current;
-      const previousPairs = activeSquareCollisionPairsRef.current;
-      const currentPairs = new Set<string>();
-      const spawnedSquares: Square[] = [];
 
       for (let i = 0; i < squares.length; i += 1) {
         for (let j = i + 1; j < squares.length; j += 1) {
           const first = squares[i];
           const second = squares[j];
+          const firstBounds = getBodyBounds(first);
+          const secondBounds = getBodyBounds(second);
           const halfOverlapX =
-            (first.size + second.size) / 2 - Math.abs(first.x - second.x);
+            Math.min(firstBounds.right, secondBounds.right) -
+            Math.max(firstBounds.left, secondBounds.left);
           const halfOverlapY =
-            (first.size + second.size) / 2 - Math.abs(first.y - second.y);
+            Math.min(firstBounds.bottom, secondBounds.bottom) -
+            Math.max(firstBounds.top, secondBounds.top);
 
           if (halfOverlapX <= 0 || halfOverlapY <= 0) continue;
 
-          const pairKey = getSquarePairKey(first, second);
-          const isCollisionEnter = !previousPairs.has(pairKey);
-          currentPairs.add(pairKey);
-
-          const resolveOnX = halfOverlapX < halfOverlapY;
-          const direction = resolveOnX
+          const separateOnX = halfOverlapX < halfOverlapY;
+          const mergeShift = getNearestMergeShift(first, second);
+          const direction = separateOnX
             ? first.x < second.x
               ? -1
               : 1
@@ -544,54 +704,42 @@ const ShrinkingEscape = () => {
               ? -1
               : 1;
 
-          if (resolveOnX) {
+          if (separateOnX) {
             first.x += (halfOverlapX / 2) * direction;
             second.x -= (halfOverlapX / 2) * direction;
-            const firstVx = first.vx;
-            first.vx = second.vx;
-            second.vx = firstVx;
           } else {
             first.y += (halfOverlapY / 2) * direction;
             second.y -= (halfOverlapY / 2) * direction;
-            const firstVy = first.vy;
-            first.vy = second.vy;
-            second.vy = firstVy;
           }
 
-          if (!isCollisionEnter) continue;
-
-          registerBounce(first);
-          registerBounce(second);
-
-          if (squares.length + spawnedSquares.length < MAX_SQUARES) {
-            const spawnPosition = findRandomEmptySquarePosition(
-              arena,
-              first.size,
-              [...squares, ...spawnedSquares],
-            );
-            if (!spawnPosition) continue;
-
-            const spawned = createSpawnedSquare(
-              arena,
-              first,
-              spawnPosition.x,
-              spawnPosition.y,
-              squares.length,
-              nextSquareIdRef.current,
-            );
-            nextSquareIdRef.current += 1;
-            spawnedSquares.push(spawned);
+          playBounce();
+          if (!mergeShift) {
+            if (separateOnX) {
+              const firstVx = first.vx;
+              first.vx = second.vx;
+              second.vx = firstVx;
+            } else {
+              const firstVy = first.vy;
+              first.vy = second.vy;
+              second.vy = firstVy;
+            }
+            activeSquareCollisionPairsRef.current =
+              getOverlappingSquarePairs(squares);
+            return;
           }
+
+          const newborn = createRandomSingleSquare(arena, first);
+          mergeSquares(first, second, mergeShift, arena);
+          squares.splice(j, 1);
+          if (newborn) {
+            squares.push(newborn);
+          }
+          activeSquareCollisionPairsRef.current = getOverlappingSquarePairs(squares);
+          return;
         }
       }
 
-      if (spawnedSquares.length > 0) {
-        squares.push(...spawnedSquares);
-      }
-      activeSquareCollisionPairsRef.current =
-        spawnedSquares.length > 0
-          ? getOverlappingSquarePairs(squares)
-          : currentPairs;
+      activeSquareCollisionPairsRef.current = getOverlappingSquarePairs(squares);
     };
 
     const step = (time: number) => {
@@ -613,30 +761,30 @@ const ShrinkingEscape = () => {
         square.x += square.vx * dt;
         square.y += square.vy * dt;
 
-        const half = square.size / 2;
+        const bounds = getBodyBounds(square);
 
-        if (square.x - half <= left) {
-          square.x = left + half;
+        if (bounds.left <= left) {
+          square.x += left - bounds.left;
           square.vx = Math.abs(square.vx);
-          registerBounce(square);
+          playBounce();
         }
 
-        if (square.y - half <= top) {
-          square.y = top + half;
+        if (bounds.top <= top) {
+          square.y += top - bounds.top;
           square.vy = Math.abs(square.vy);
-          registerBounce(square);
+          playBounce();
         }
 
-        if (square.y + half >= bottom) {
-          square.y = bottom - half;
+        if (bounds.bottom >= bottom) {
+          square.y -= bounds.bottom - bottom;
           square.vy = -Math.abs(square.vy);
-          registerBounce(square);
+          playBounce();
         }
 
-        if (square.x + half >= right) {
-          square.x = right - half;
+        if (bounds.right >= right) {
+          square.x -= bounds.right - right;
           square.vx = -Math.abs(square.vx);
-          registerBounce(square);
+          playBounce();
         }
       });
 
@@ -660,16 +808,16 @@ const ShrinkingEscape = () => {
 
       if (previousSquares.length > 0) {
         previousSquares.forEach((square) => {
-          const half = square.size / 2;
+          const bounds = getBodyBounds(square);
           square.x = clamp(
             square.x,
-            arena.x + half,
-            arena.x + arena.width - half,
+            square.x + arena.x - bounds.left,
+            square.x + arena.x + arena.width - bounds.right,
           );
           square.y = clamp(
             square.y,
-            arena.y + half,
-            arena.y + arena.height - half,
+            square.y + arena.y - bounds.top,
+            square.y + arena.y + arena.height - bounds.bottom,
           );
         });
       } else {
@@ -712,16 +860,12 @@ const ShrinkingEscape = () => {
       <canvas ref={canvasRef} className="escape-canvas" />
       <div className="escape-hud" aria-live="polite">
         <div className="hud-stat">
-          <span>BOUNCES</span>
-          <strong>{hud.bounces}</strong>
+          <span>MERGES</span>
+          <strong>{hud.merges}</strong>
         </div>
         <div className="hud-stat">
-          <span>SIZE</span>
-          <strong>{hud.sizePercent}%</strong>
-        </div>
-        <div className="hud-stat">
-          <span>SQUARES</span>
-          <strong>{hud.squares}</strong>
+          <span>BLOCKS</span>
+          <strong>{hud.blocks}</strong>
         </div>
       </div>
       <style jsx>{`

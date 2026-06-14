@@ -49,9 +49,9 @@ export const simulations: Simulation[] = [
   },
   {
     id: "shrinking-escape",
-    title: "Shrinking Escape",
-    subtitle: "SIZE DECAY CHALLENGE",
-    description: "Bounce. Shrink. Escape.",
+    title: "Merging Squares",
+    subtitle: "GRID MERGE CHALLENGE",
+    description: "Bounce blocks into clean compound shapes.",
     component: ShrinkingEscape,
     status: "experimental",
     accentColor: "#f59e0b",
