@@ -12,4 +12,4 @@ export const MAX_SPEED = 20;
 export const RESTITUTION = 0.88;
 
 export const COOLDOWN_MS = 200;
-export const MAX_BALLS = 60; // reduced from 200 for performance
+export const MAX_BALLS = 120; // reduced from 200 for performance

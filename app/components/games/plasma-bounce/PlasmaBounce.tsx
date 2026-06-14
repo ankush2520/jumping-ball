@@ -16,7 +16,6 @@ import {
 } from "./config";
 import ResetButton from "./components/ResetButton";
 import StartButton from "./components/StartButton";
-import TimePanel from "./components/TimePanel";
 import {
   applyDrag,
   clampSpeed,
@@ -117,12 +116,26 @@ const drawScene = (
 
   ctx.shadowBlur = 0;
   ctx.strokeStyle = "rgba(248, 250, 252, 0.08)";
-  for (let radius = arena.circleRadius * 0.25; radius < arena.circleRadius; radius += arena.circleRadius * 0.25) {
+  for (
+    let radius = arena.circleRadius * 0.25;
+    radius < arena.circleRadius;
+    radius += arena.circleRadius * 0.25
+  ) {
     ctx.beginPath();
     ctx.arc(0, 0, radius, 0, Math.PI * 2);
     ctx.stroke();
   }
   ctx.restore();
+
+  ctx.fillStyle = "rgba(248, 250, 252, 0.82)";
+  ctx.font = "700 18px Arial, Helvetica, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(
+    "Collision of 2 balls gives birth to new ball",
+    arena.centerX,
+    arena.centerY - arena.circleRadius - 32,
+  );
 
   balls.forEach((ball) => {
     const glow = ctx.createRadialGradient(
@@ -155,7 +168,11 @@ const drawScene = (
     ctx.fillStyle = "rgba(248, 250, 252, 0.78)";
     ctx.font = "700 18px Arial, Helvetica, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("Press Start", arena.centerX, arena.centerY + arena.circleRadius + 42);
+    ctx.fillText(
+      "Press Start",
+      arena.centerX,
+      arena.centerY + arena.circleRadius + 42,
+    );
   }
 };
 
@@ -167,8 +184,6 @@ const PlasmaBounce = () => {
   const runningRef = useRef(false);
   const startTimeRef = useRef<number | null>(null);
   const [running, setRunning] = useState(false);
-  const [startTime, setStartTime] = useState<number | null>(null);
-  const [collisions, setCollisions] = useState<number[]>([]);
 
   const initializeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -196,8 +211,6 @@ const PlasmaBounce = () => {
     const newStartTime = start ? Date.now() : null;
     startTimeRef.current = newStartTime;
     setRunning(start);
-    setStartTime(newStartTime);
-    setCollisions([]);
 
     if (ctx) drawScene(ctx, arena, ballsRef.current, start);
   }, []);
@@ -225,11 +238,21 @@ const PlasmaBounce = () => {
 
         if (runningRef.current) {
           const now = Date.now();
+          let wallCollisionCount = 0;
 
           balls.forEach((ball) => {
             updatePosition(ball);
             applyDrag(ball, DRAG);
             clampSpeed(ball, MAX_SPEED);
+
+            const distanceFromCenter = Math.hypot(
+              ball.x - arena.centerX,
+              ball.y - arena.centerY,
+            );
+            if (distanceFromCenter >= arena.circleRadius - ball.radius) {
+              wallCollisionCount += 1;
+            }
+
             reflectBoundary(ball, {
               centerX: arena.centerX,
               centerY: arena.centerY,
@@ -268,17 +291,12 @@ const PlasmaBounce = () => {
             }
           }
 
-          if (collisionCount > 0) {
-            const elapsed = startTimeRef.current
-              ? (now - startTimeRef.current) / 1000
-              : 0;
-            setCollisions((previous) => [
-              ...previous.slice(-17),
-              ...Array.from({ length: collisionCount }, () => elapsed),
-            ]);
-
+          const totalSoundCollisions = collisionCount + wallCollisionCount;
+          if (totalSoundCollisions > 0) {
             try {
-              playCollisionSound(Math.min(1, 0.35 + collisionCount * 0.08));
+              playCollisionSound(
+                Math.min(1, 0.28 + totalSoundCollisions * 0.06),
+              );
             } catch {
               // Sound is optional; the simulation should keep running without it.
             }
@@ -306,7 +324,6 @@ const PlasmaBounce = () => {
   return (
     <div className="plasma-bounce-root">
       <canvas ref={canvasRef} aria-label="Plasma Bounce simulation" />
-      <TimePanel startTime={startTime} collisions={collisions} />
       <ResetButton onClick={() => resetSimulation(false)} />
       <StartButton onClick={startSimulation} disabled={running} />
       <style jsx>{`
