@@ -16,8 +16,23 @@ const getAudioCtx = () => {
   return audioCtx;
 };
 
+export const prepareCollisionSound = () => {
+  const ctx = getAudioCtx();
+  if (ctx.state === "suspended") {
+    void ctx.resume().catch(() => {
+      // Browsers may require a user gesture before audio can start.
+    });
+  }
+};
+
 export const playCollisionSound = (intensity = 0.4) => {
   const ctx = getAudioCtx();
+  if (ctx.state === "suspended") {
+    void ctx.resume().catch(() => {
+      // Browsers may require a user gesture before audio can start.
+    });
+  }
+
   const now = ctx.currentTime;
 
   const targetVolume = Math.max(0.02, Math.min(0.35, intensity * 0.35));

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import {
   BALL_RADIUS,
   BALL_SPEED,
@@ -14,8 +14,6 @@ import {
   RESTITUTION,
   TANGENTIAL_IMPULSE,
 } from "./config";
-import ResetButton from "./components/ResetButton";
-import StartButton from "./components/StartButton";
 import {
   applyDrag,
   clampSpeed,
@@ -25,7 +23,7 @@ import {
   updatePosition,
   type Ball,
 } from "./physics/ball";
-import { playCollisionSound } from "./sound/sound";
+import { playCollisionSound, prepareCollisionSound } from "./sound/sound";
 
 type Arena = {
   width: number;
@@ -38,8 +36,9 @@ type Arena = {
 
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = window.innerWidth;
-  const height = window.innerHeight;
+  const viewport = window.visualViewport;
+  const width = Math.round(viewport?.width ?? window.innerWidth);
+  const height = Math.round(viewport?.height ?? window.innerHeight);
   const circleRadius = Math.min(CIRCLE_RADIUS, width * 0.42, height * 0.38);
   const ctx = canvas.getContext("2d");
 
@@ -86,7 +85,6 @@ const drawScene = (
   ctx: CanvasRenderingContext2D,
   arena: Arena,
   balls: Ball[],
-  running: boolean,
 ) => {
   ctx.clearRect(0, 0, arena.width, arena.height);
 
@@ -163,17 +161,6 @@ const drawScene = (
     ctx.fill();
     ctx.shadowBlur = 0;
   });
-
-  if (!running) {
-    ctx.fillStyle = "rgba(248, 250, 252, 0.78)";
-    ctx.font = "700 18px Arial, Helvetica, sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText(
-      "Press Start",
-      arena.centerX,
-      arena.centerY + arena.circleRadius + 42,
-    );
-  }
 };
 
 const PlasmaBounce = () => {
@@ -181,11 +168,9 @@ const PlasmaBounce = () => {
   const animationRef = useRef<number | null>(null);
   const arenaRef = useRef<Arena | null>(null);
   const ballsRef = useRef<Ball[]>([]);
-  const runningRef = useRef(false);
-  const startTimeRef = useRef<number | null>(null);
-  const [running, setRunning] = useState(false);
+  const runningRef = useRef(true);
 
-  const initializeCanvas = useCallback(() => {
+  const resetSimulation = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -193,39 +178,26 @@ const PlasmaBounce = () => {
     const ctx = canvas.getContext("2d");
     arenaRef.current = arena;
     ballsRef.current = createInitialBalls(arena);
-    runningRef.current = false;
-    startTimeRef.current = null;
+    runningRef.current = true;
 
-    if (ctx) drawScene(ctx, arena, ballsRef.current, false);
-  }, []);
-
-  const resetSimulation = useCallback((start = false) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const arena = resizeCanvas(canvas);
-    const ctx = canvas.getContext("2d");
-    arenaRef.current = arena;
-    ballsRef.current = createInitialBalls(arena);
-    runningRef.current = start;
-    const newStartTime = start ? Date.now() : null;
-    startTimeRef.current = newStartTime;
-    setRunning(start);
-
-    if (ctx) drawScene(ctx, arena, ballsRef.current, start);
+    if (ctx) drawScene(ctx, arena, ballsRef.current);
   }, []);
 
   useEffect(() => {
-    initializeCanvas();
+    prepareCollisionSound();
+    resetSimulation();
 
     const handleResize = () => {
-      const wasRunning = runningRef.current;
-      resetSimulation(wasRunning);
+      resetSimulation();
     };
 
     window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [initializeCanvas, resetSimulation]);
+    window.visualViewport?.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      window.visualViewport?.removeEventListener("resize", handleResize);
+    };
+  }, [resetSimulation]);
 
   useEffect(() => {
     const tick = () => {
@@ -303,7 +275,7 @@ const PlasmaBounce = () => {
           }
         }
 
-        drawScene(ctx, arena, balls, runningRef.current);
+        drawScene(ctx, arena, balls);
       }
 
       animationRef.current = requestAnimationFrame(tick);
@@ -317,28 +289,29 @@ const PlasmaBounce = () => {
     };
   }, []);
 
-  const startSimulation = () => {
-    resetSimulation(true);
-  };
-
   return (
     <div className="plasma-bounce-root">
-      <canvas ref={canvasRef} aria-label="Plasma Bounce simulation" />
-      <ResetButton onClick={() => resetSimulation(false)} />
-      <StartButton onClick={startSimulation} disabled={running} />
+      <canvas
+        ref={canvasRef}
+        className="plasma-bounce-canvas"
+        aria-label="Plasma Bounce simulation"
+      />
       <style jsx>{`
         .plasma-bounce-root {
-          min-height: 100vh;
+          position: fixed;
+          inset: 0;
           width: 100%;
+          height: 100dvh;
           overflow: hidden;
           background: #020617;
         }
 
-        canvas {
+        .plasma-bounce-canvas {
           position: fixed;
           inset: 0;
-          width: 100%;
-          height: 100%;
+          width: 100dvw !important;
+          height: 100dvh !important;
+          min-height: 100dvh !important;
         }
       `}</style>
     </div>
