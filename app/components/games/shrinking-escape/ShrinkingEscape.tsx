@@ -50,7 +50,7 @@ const SPEED_PER_BOUNDARY_AT_1X = 0.2;
 const INITIAL_SQUARE_COUNT = 9;
 const DEBUG_SETTINGS_LOGS = true;
 const defaultSettings: SimulationSettings = {
-  squareSpeed: 2.25,
+  squareSpeed: 1.125,
   initialSquareSize: 4,
 };
 
