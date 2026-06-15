@@ -47,9 +47,10 @@ const HUD_RESERVED_HEIGHT_MOBILE = 158;
 const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const SPEED_PER_BOUNDARY_AT_1X = 0.2;
+const INITIAL_SQUARE_COUNT = 9;
 const DEBUG_SETTINGS_LOGS = true;
 const defaultSettings: SimulationSettings = {
-  squareSpeed: 6,
+  squareSpeed: 2.25,
   initialSquareSize: 4,
 };
 
@@ -202,33 +203,6 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
 const getSquareSpeed = (arena: Arena, settings: SimulationSettings) =>
   arena.width * SPEED_PER_BOUNDARY_AT_1X * settings.squareSpeed;
 
-const resetSquare = (
-  arena: Arena,
-  settings: SimulationSettings,
-  index = 0,
-  id = index,
-): Square => {
-  const size = arena.width * (settings.initialSquareSize / 100);
-  const speed = getSquareSpeed(arena, settings);
-  let angle = Math.random() * Math.PI * 2 + index * Math.PI;
-
-  if (Math.abs(Math.cos(angle)) < 0.32) {
-    angle += 0.55;
-  }
-
-  return {
-    id,
-    x: arena.x + arena.width * (index === 0 ? 0.42 : 0.58),
-    y: arena.y + arena.height * (index === 0 ? 0.42 : 0.58),
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
-    size,
-    startSize: size,
-    color: "#d77026",
-    cells: [{ x: 0, y: 0 }],
-  };
-};
-
 const getSquarePairKey = (first: Square, second: Square) =>
   first.id < second.id
     ? `${first.id}:${second.id}`
@@ -341,6 +315,44 @@ const findRandomEmptySingleSquarePosition = (
   }
 
   return null;
+};
+
+const createInitialSquares = (
+  arena: Arena,
+  settings: SimulationSettings,
+): Square[] => {
+  const size = arena.width * (settings.initialSquareSize / 100);
+  const speed = getSquareSpeed(arena, settings);
+  const squares: Square[] = [];
+
+  for (let index = 0; index < INITIAL_SQUARE_COUNT; index += 1) {
+    const spawnPosition = findRandomEmptySingleSquarePosition(
+      arena,
+      size,
+      squares,
+    );
+    const fallbackColumn = index % 3;
+    const fallbackRow = Math.floor(index / 3);
+    const x =
+      spawnPosition?.x ?? arena.x + arena.width * (0.25 + fallbackColumn * 0.25);
+    const y =
+      spawnPosition?.y ?? arena.y + arena.height * (0.25 + fallbackRow * 0.25);
+    const angle = Math.random() * Math.PI * 2 + index * 0.7;
+
+    squares.push({
+      id: index,
+      x,
+      y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      size,
+      startSize: size,
+      color: "#d77026",
+      cells: [{ x: 0, y: 0 }],
+    });
+  }
+
+  return squares;
 };
 
 const drawWallSegment = (
@@ -489,12 +501,9 @@ const ShrinkingEscape = () => {
       const arena = resizeCanvas(canvas);
       const startedAt = performance.now();
       arenaRef.current = arena;
-      nextSquareIdRef.current = 2;
+      nextSquareIdRef.current = INITIAL_SQUARE_COUNT;
       activeSquareCollisionPairsRef.current = new Set();
-      squaresRef.current = [
-        resetSquare(arena, activeSettings, 0, 0),
-        resetSquare(arena, activeSettings, 1, 1),
-      ];
+      squaresRef.current = createInitialSquares(arena, activeSettings);
       const squares = squaresRef.current;
       mergesRef.current = 0;
       simulationStateRef.current = "running";
@@ -541,66 +550,55 @@ const ShrinkingEscape = () => {
 
     const getNearestMergeShift = (target: Square, source: Square) => {
       const candidates: Array<{ score: number; shift: Cell }> = [];
+      const occupied = new Set(target.cells.map((cell) => `${cell.x}:${cell.y}`));
+      const targetMinX = Math.min(...target.cells.map((cell) => cell.x));
+      const targetMaxX = Math.max(...target.cells.map((cell) => cell.x));
+      const targetMinY = Math.min(...target.cells.map((cell) => cell.y));
+      const targetMaxY = Math.max(...target.cells.map((cell) => cell.y));
+      const possibleSlots = new Map<string, Cell>();
 
       for (const targetCell of target.cells) {
-        for (const sourceCell of source.cells) {
-          const targetWorld = getCellWorldPosition(target, targetCell);
-          const sourceWorld = getCellWorldPosition(source, sourceCell);
-          const targetBounds = {
-            left: targetWorld.x - target.size / 2,
-            right: targetWorld.x + target.size / 2,
-            top: targetWorld.y - target.size / 2,
-            bottom: targetWorld.y + target.size / 2,
-          };
-          const sourceBounds = {
-            left: sourceWorld.x - source.size / 2,
-            right: sourceWorld.x + source.size / 2,
-            top: sourceWorld.y - source.size / 2,
-            bottom: sourceWorld.y + source.size / 2,
-          };
+        [
+          { x: targetCell.x + 1, y: targetCell.y },
+          { x: targetCell.x - 1, y: targetCell.y },
+          { x: targetCell.x, y: targetCell.y + 1 },
+          { x: targetCell.x, y: targetCell.y - 1 },
+        ].forEach((slot) => {
+          const key = `${slot.x}:${slot.y}`;
+          if (!occupied.has(key)) {
+            possibleSlots.set(key, slot);
+          }
+        });
+      }
 
-          candidates.push(
-            {
-              score:
-                Math.abs(sourceBounds.left - targetBounds.right) +
-                Math.abs(sourceWorld.y - targetWorld.y) * 1.4,
-              shift: {
-                x: targetCell.x + 1 - sourceCell.x,
-                y: targetCell.y - sourceCell.y,
-              },
-            },
-            {
-              score:
-                Math.abs(sourceBounds.right - targetBounds.left) +
-                Math.abs(sourceWorld.y - targetWorld.y) * 1.4,
-              shift: {
-                x: targetCell.x - 1 - sourceCell.x,
-                y: targetCell.y - sourceCell.y,
-              },
-            },
-            {
-              score:
-                Math.abs(sourceBounds.top - targetBounds.bottom) +
-                Math.abs(sourceWorld.x - targetWorld.x) * 1.4,
-              shift: {
-                x: targetCell.x - sourceCell.x,
-                y: targetCell.y + 1 - sourceCell.y,
-              },
-            },
-            {
-              score:
-                Math.abs(sourceBounds.bottom - targetBounds.top) +
-                Math.abs(sourceWorld.x - targetWorld.x) * 1.4,
-              shift: {
-                x: targetCell.x - sourceCell.x,
-                y: targetCell.y - 1 - sourceCell.y,
-              },
-            },
+      for (const slot of possibleSlots.values()) {
+        const slotWorld = {
+          x: target.x + slot.x * target.size,
+          y: target.y + slot.y * target.size,
+        };
+        const fillsExistingBounds =
+          slot.x >= targetMinX &&
+          slot.x <= targetMaxX &&
+          slot.y >= targetMinY &&
+          slot.y <= targetMaxY;
+
+        for (const sourceCell of source.cells) {
+          const sourceWorld = getCellWorldPosition(source, sourceCell);
+          const distance = Math.hypot(
+            sourceWorld.x - slotWorld.x,
+            sourceWorld.y - slotWorld.y,
           );
+
+          candidates.push({
+            score: distance - (fillsExistingBounds ? target.size * 0.6 : 0),
+            shift: {
+              x: slot.x - sourceCell.x,
+              y: slot.y - sourceCell.y,
+            },
+          });
         }
       }
 
-      const occupied = new Set(target.cells.map((cell) => `${cell.x}:${cell.y}`));
       const orderedCandidates = candidates.sort((a, b) => a.score - b.score);
 
       for (const candidate of orderedCandidates) {
@@ -808,12 +806,9 @@ const ShrinkingEscape = () => {
           );
         });
       } else {
-        nextSquareIdRef.current = 2;
+        nextSquareIdRef.current = INITIAL_SQUARE_COUNT;
         activeSquareCollisionPairsRef.current = new Set();
-        squaresRef.current = [
-          resetSquare(arena, activeSettings, 0, 0),
-          resetSquare(arena, activeSettings, 1, 1),
-        ];
+        squaresRef.current = createInitialSquares(arena, activeSettings);
       }
 
       if (squaresRef.current.length > 0) {
