@@ -19,17 +19,19 @@ type ConnectorSide = {
   index: number;
   kind: "plain";
   matchKey: string;
+  color: string;
   attached: boolean;
 };
 
 type TrianglePiece = {
   id: number;
+  role: number;
   color: string;
   localX: number;
   localY: number;
   localRotation: number;
   vertices: Point[];
-  connector: ConnectorSide;
+  connectors: ConnectorSide[];
 };
 
 type RigidBody = {
@@ -54,6 +56,7 @@ type Collision = {
 type EdgeInfo = {
   body: RigidBody;
   piece: TrianglePiece;
+  connector: ConnectorSide;
   start: Point;
   end: Point;
   direction: Point;
@@ -83,10 +86,17 @@ const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const HOLD_DURATION = 1;
 const BREAK_DURATION = 0.42;
 const PHYSICS_SUBSTEPS = 3;
-const RESTITUTION = 0.96;
+const RESTITUTION = 1;
+const BODY_SPEED_RATIO = 0.32;
 const CONNECTOR_TOLERANCE_RADIANS = (15 * Math.PI) / 180;
 const SAFFRON = "#f97316";
 const TRIANGLE_COLORS = [SAFFRON, SAFFRON, SAFFRON, SAFFRON];
+const CONNECTOR_COLORS = {
+  blue: "#38bdf8",
+  red: "#ef4444",
+  green: "#22c55e",
+  purple: "#a855f7",
+} as const;
 
 let sharedAudioContext: AudioContext | null = null;
 
@@ -129,6 +139,23 @@ const normalize = (point: Point): Point => {
 
 const dot = (a: Point, b: Point) => a.x * b.x + a.y * b.y;
 
+const getBodySpeed = (arena: Arena) => arena.width * BODY_SPEED_RATIO;
+
+const preserveBodySpeed = (body: RigidBody, arena: Arena) => {
+  const targetSpeed = getBodySpeed(arena);
+  const currentSpeed = Math.hypot(body.vx, body.vy);
+
+  if (currentSpeed < 0.001) {
+    const angle = randomBetween(0, Math.PI * 2);
+    body.vx = Math.cos(angle) * targetSpeed;
+    body.vy = Math.sin(angle) * targetSpeed;
+    return;
+  }
+
+  body.vx = (body.vx / currentSpeed) * targetSpeed;
+  body.vy = (body.vy / currentSpeed) * targetSpeed;
+};
+
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const width = window.innerWidth;
@@ -168,6 +195,7 @@ const createAudio = (): BrokenSquareAudio => {
   let audio: AudioContext | null = null;
   let masterGain: GainNode | null = null;
   let lastCollisionAt = 0;
+  const pianoNotes = [261.63, 293.66, 329.63, 392, 440, 523.25, 587.33];
 
   const ensureAudio = () => {
     if (audio) return audio;
@@ -214,6 +242,57 @@ const createAudio = (): BrokenSquareAudio => {
     };
   };
 
+  const playPianoNote = (frequency: number) => {
+    const context = ensureAudio();
+    if (!context || context.state !== "running" || !masterGain) return;
+
+    const now = context.currentTime;
+    const outputGain = context.createGain();
+    const filter = context.createBiquadFilter();
+    const harmonics = [
+      { ratio: 1, gain: 0.18 },
+      { ratio: 2, gain: 0.075 },
+      { ratio: 3, gain: 0.035 },
+      { ratio: 4.01, gain: 0.014 },
+    ];
+
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(3600, now);
+    filter.frequency.exponentialRampToValueAtTime(1250, now + 0.42);
+    outputGain.gain.setValueAtTime(0.0001, now);
+    outputGain.gain.linearRampToValueAtTime(0.42, now + 0.006);
+    outputGain.gain.exponentialRampToValueAtTime(0.13, now + 0.07);
+    outputGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.58);
+    outputGain.connect(filter);
+    filter.connect(masterGain);
+
+    harmonics.forEach((harmonic, index) => {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+
+      oscillator.type = index === 0 ? "triangle" : "sine";
+      oscillator.frequency.setValueAtTime(
+        frequency * harmonic.ratio * randomBetween(0.998, 1.002),
+        now,
+      );
+      gain.gain.setValueAtTime(harmonic.gain, now);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.45 + index * 0.04);
+      oscillator.connect(gain);
+      gain.connect(outputGain);
+      oscillator.start(now);
+      oscillator.stop(now + 0.64);
+      oscillator.onended = () => {
+        oscillator.disconnect();
+        gain.disconnect();
+      };
+    });
+
+    window.setTimeout(() => {
+      outputGain.disconnect();
+      filter.disconnect();
+    }, 700);
+  };
+
   return {
     unlock: async () => {
       const context = ensureAudio();
@@ -230,9 +309,9 @@ const createAudio = (): BrokenSquareAudio => {
       const context = ensureAudio();
       if (!context) return;
       const now = context.currentTime;
-      if (now - lastCollisionAt < 0.045) return;
+      if (now - lastCollisionAt < 0.06) return;
       lastCollisionAt = now;
-      playTone(randomBetween(220, 360), 0.13, 0.08);
+      playPianoNote(pianoNotes[Math.floor(Math.random() * pianoNotes.length)]);
     },
     playSuccess: () => {
       playTone(440, 0.18, 0.11);
@@ -251,14 +330,70 @@ const centroidOf = (points: Point[]) => ({
   y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
 });
 
+const createTriangleConnectors = (triangleIndex: number): ConnectorSide[] => {
+  const connectorPairs = [
+    [
+      { index: 1, key: "blue", color: CONNECTOR_COLORS.blue },
+      { index: 2, key: "purple", color: CONNECTOR_COLORS.purple },
+    ],
+    [
+      { index: 1, key: "red", color: CONNECTOR_COLORS.red },
+      { index: 2, key: "blue", color: CONNECTOR_COLORS.blue },
+    ],
+    [
+      { index: 1, key: "green", color: CONNECTOR_COLORS.green },
+      { index: 2, key: "red", color: CONNECTOR_COLORS.red },
+    ],
+    [
+      { index: 1, key: "purple", color: CONNECTOR_COLORS.purple },
+      { index: 2, key: "green", color: CONNECTOR_COLORS.green },
+    ],
+  ];
+
+  return connectorPairs[triangleIndex].map((connector) => ({
+    index: connector.index,
+    kind: "plain",
+    matchKey: connector.key,
+    color: connector.color,
+    attached: false,
+  }));
+};
+
+const canCombineAsSingleSquare = (first: RigidBody, second: RigidBody) => {
+  const roles = new Set<number>();
+  const combinedPieces = [...first.pieces, ...second.pieces];
+
+  if (combinedPieces.length > 4) return false;
+
+  for (const piece of combinedPieces) {
+    if (roles.has(piece.role)) return false;
+    roles.add(piece.role);
+  }
+
+  return true;
+};
+
+const getSquareSize = (arena: Arena) => arena.width * 0.18;
+
+const getLaunchSquareCenters = (arena: Arena) => {
+  const spacing = arena.width * 0.25;
+  const centerY = arena.y + arena.height / 2;
+  const centerX = arena.x + arena.width / 2;
+
+  return [
+    { x: centerX - spacing, y: centerY - spacing },
+    { x: centerX + spacing, y: centerY - spacing },
+    { x: centerX, y: centerY },
+    { x: centerX - spacing, y: centerY + spacing },
+    { x: centerX + spacing, y: centerY + spacing },
+  ];
+};
+
 const createInitialBodies = (arena: Arena): RigidBody[] => {
-  const size = arena.width * 0.18;
+  const size = getSquareSize(arena);
   const half = size / 2;
-  const center = {
-    x: arena.x + arena.width / 2,
-    y: arena.y + arena.height / 2,
-  };
-  const speed = arena.width * 0.22;
+  const squareCenters = getLaunchSquareCenters(arena);
+  const speed = getBodySpeed(arena);
   const triangles = [
     [
       { x: -half, y: -half },
@@ -282,44 +417,44 @@ const createInitialBodies = (arena: Arena): RigidBody[] => {
     ],
   ];
 
-  return triangles.map((points, index) => {
-    const centroid = centroidOf(points);
-    const direction = Math.atan2(centroid.y, centroid.x);
-    const launchAngle = direction + randomBetween(-0.38, 0.38);
-    const launchSpeed = speed * randomBetween(0.86, 1.16);
+  return squareCenters.flatMap((center, squareIndex) =>
+    triangles.map((points, triangleIndex) => {
+      const id = squareIndex * triangles.length + triangleIndex;
+      const centroid = centroidOf(points);
+      const direction = Math.atan2(centroid.y, centroid.x);
+      const outwardBias = squareIndex === 0 ? -0.22 : 0.22;
+      const launchAngle = direction + outwardBias + randomBetween(-0.38, 0.38);
+      const launchSpeed = speed;
 
-    return {
-      id: index,
-      x: center.x + centroid.x,
-      y: center.y + centroid.y,
-      vx: Math.cos(launchAngle) * launchSpeed,
-      vy: Math.sin(launchAngle) * launchSpeed,
-      rotation: 0,
-      angularVelocity: randomBetween(-2.2, 2.2),
-      pieces: [
-        {
-          id: index,
-          color: TRIANGLE_COLORS[index],
-          localX: 0,
-          localY: 0,
-          localRotation: 0,
-          vertices: points.map((point) => ({
-            x: point.x - centroid.x,
-            y: point.y - centroid.y,
-          })),
-          connector: {
-            index: 2,
-            kind: "plain",
-            matchKey: "square-diagonal",
-            attached: false,
+      return {
+        id,
+        x: center.x + centroid.x,
+        y: center.y + centroid.y,
+        vx: Math.cos(launchAngle) * launchSpeed,
+        vy: Math.sin(launchAngle) * launchSpeed,
+        rotation: 0,
+        angularVelocity: 0,
+        pieces: [
+          {
+            id,
+            role: triangleIndex,
+            color: TRIANGLE_COLORS[triangleIndex],
+            localX: 0,
+            localY: 0,
+            localRotation: 0,
+            vertices: points.map((point) => ({
+              x: point.x - centroid.x,
+              y: point.y - centroid.y,
+            })),
+            connectors: createTriangleConnectors(triangleIndex),
           },
-        },
-      ],
-      glowColor: "none",
-      glowTime: 0,
-      attachPulse: 0,
-    };
-  });
+        ],
+        glowColor: "none",
+        glowTime: 0,
+        attachPulse: 0,
+      };
+    }),
+  );
 };
 
 const getPieceWorldTransform = (body: RigidBody, piece: TrianglePiece) => {
@@ -429,18 +564,20 @@ const getBodyCollision = (first: RigidBody, second: RigidBody): Collision | null
 const getConnectorEdge = (
   body: RigidBody,
   piece: TrianglePiece,
+  connector: ConnectorSide,
 ): EdgeInfo | null => {
-  if (piece.connector.attached) return null;
+  if (connector.attached) return null;
 
   const vertices = getPieceWorldVertices(body, piece);
-  const start = vertices[piece.connector.index];
-  const end = vertices[(piece.connector.index + 1) % vertices.length];
+  const start = vertices[connector.index];
+  const end = vertices[(connector.index + 1) % vertices.length];
   const direction = normalize(subPoints(end, start));
   const normal = normalize({ x: -direction.y, y: direction.x });
 
   return {
     body,
     piece,
+    connector,
     start,
     end,
     direction,
@@ -450,9 +587,11 @@ const getConnectorEdge = (
 };
 
 const getOpenConnectorEdges = (body: RigidBody) =>
-  body.pieces
-    .map((piece) => getConnectorEdge(body, piece))
-    .filter((edge): edge is EdgeInfo => edge !== null);
+  body.pieces.flatMap((piece) =>
+    piece.connectors
+      .map((connector) => getConnectorEdge(body, piece, connector))
+      .filter((edge): edge is EdgeInfo => edge !== null),
+  );
 
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
@@ -461,6 +600,48 @@ const getEndpointDistance = (first: EdgeInfo, second: EdgeInfo) => {
     distance(first.start, second.end) + distance(first.end, second.start);
   const same = distance(first.start, second.start) + distance(first.end, second.end);
   return Math.min(reversed, same);
+};
+
+const isInternalConnectorEdge = (
+  body: RigidBody,
+  sourcePiece: TrianglePiece,
+  connector: ConnectorSide,
+) => {
+  const sourceVertices = getPieceWorldVertices(body, sourcePiece);
+  const sourceEdge = {
+    start: sourceVertices[connector.index],
+    end: sourceVertices[(connector.index + 1) % sourceVertices.length],
+    midpoint: scalePoint(
+      addPoints(
+        sourceVertices[connector.index],
+        sourceVertices[(connector.index + 1) % sourceVertices.length],
+      ),
+      0.5,
+    ),
+  };
+  const tolerance = 2.5;
+
+  return body.pieces.some((piece) => {
+    if (piece.id === sourcePiece.id) return false;
+
+    const vertices = getPieceWorldVertices(body, piece);
+
+    return vertices.some((start, index) => {
+      const end = vertices[(index + 1) % vertices.length];
+      const edge = {
+        start,
+        end,
+        midpoint: scalePoint(addPoints(start, end), 0.5),
+      };
+      const endpointsMatch =
+        distance(sourceEdge.start, edge.end) + distance(sourceEdge.end, edge.start) <=
+          tolerance ||
+        distance(sourceEdge.start, edge.start) + distance(sourceEdge.end, edge.end) <=
+          tolerance;
+
+      return endpointsMatch && distance(sourceEdge.midpoint, edge.midpoint) <= tolerance;
+    });
+  });
 };
 
 const getAngleDiff = (first: EdgeInfo, second: EdgeInfo) => {
@@ -473,8 +654,8 @@ const checkAttachment = (
   second: RigidBody,
   arena: Arena,
 ): AttachmentCheck => {
-  const maxEndpointDistance = arena.width * 0.085;
-  const maxMidpointDistance = arena.width * 0.07;
+  const maxEndpointDistance = arena.width * 0.14;
+  const maxMidpointDistance = arena.width * 0.11;
   let best: AttachmentCheck = {
     first: null,
     second: null,
@@ -484,29 +665,33 @@ const checkAttachment = (
 
   for (const firstEdge of getOpenConnectorEdges(first)) {
     for (const secondEdge of getOpenConnectorEdges(second)) {
-      if (firstEdge.piece.connector.matchKey !== secondEdge.piece.connector.matchKey) {
-        continue;
-      }
-
       const angleDiff = getAngleDiff(firstEdge, secondEdge);
       const endpointDistance = getEndpointDistance(firstEdge, secondEdge);
       const midpointDistance = distance(firstEdge.midpoint, secondEdge.midpoint);
-      const score = angleDiff + endpointDistance / Math.max(1, arena.width);
+      const score = endpointDistance + midpointDistance * 0.75;
       const bestScore =
-        best.angleDiff +
-        (best.first && best.second
-          ? getEndpointDistance(best.first, best.second) / Math.max(1, arena.width)
-          : 10);
+        best.first && best.second
+          ? getEndpointDistance(best.first, best.second) +
+            distance(best.first.midpoint, best.second.midpoint) * 0.75
+          : Number.POSITIVE_INFINITY;
 
       if (score < bestScore) {
+        const colorsMatch =
+          firstEdge.connector.matchKey === secondEdge.connector.matchKey;
+        const edgesAreTouching =
+          endpointDistance <= maxEndpointDistance &&
+          midpointDistance <= maxMidpointDistance;
+        const canFormSquareStructure = canCombineAsSingleSquare(first, second);
+
         best = {
           first: firstEdge,
           second: secondEdge,
           angleDiff,
           valid:
-            angleDiff <= CONNECTOR_TOLERANCE_RADIANS &&
-            endpointDistance <= maxEndpointDistance &&
-            midpointDistance <= maxMidpointDistance,
+            colorsMatch &&
+            edgesAreTouching &&
+            canFormSquareStructure &&
+            angleDiff <= CONNECTOR_TOLERANCE_RADIANS,
         };
       }
     }
@@ -516,6 +701,7 @@ const checkAttachment = (
 };
 
 const snapAndAttachBodies = (
+  arena: Arena,
   bodies: RigidBody[],
   first: RigidBody,
   second: RigidBody,
@@ -528,7 +714,11 @@ const snapAndAttachBodies = (
     Math.atan2(-check.second.direction.y, -check.second.direction.x);
   second.rotation += angleCorrection;
 
-  const refreshedSecondEdge = getConnectorEdge(second, check.second.piece);
+  const refreshedSecondEdge = getConnectorEdge(
+    second,
+    check.second.piece,
+    check.second.connector,
+  );
   if (!refreshedSecondEdge) return;
 
   const translation = subPoints(check.first.midpoint, refreshedSecondEdge.midpoint);
@@ -553,17 +743,28 @@ const snapAndAttachBodies = (
       localX: relativePosition.x,
       localY: relativePosition.y,
       localRotation: worldTransform.rotation - first.rotation,
+      connectors: piece.connectors.map((connector) => ({ ...connector })),
     });
   });
 
-  check.first.piece.connector.attached = true;
+  check.first.connector.attached = true;
+  const secondConnectorIndex = check.second.connector.index;
+  const secondConnectorMatchKey = check.second.connector.matchKey;
   const mergedPiece = first.pieces.find((piece) => piece.id === check.second?.piece.id);
   if (mergedPiece) {
-    mergedPiece.connector.attached = true;
+    const mergedConnector = mergedPiece.connectors.find(
+      (connector) =>
+        connector.index === secondConnectorIndex &&
+        connector.matchKey === secondConnectorMatchKey,
+    );
+    if (mergedConnector) {
+      mergedConnector.attached = true;
+    }
   }
 
   first.vx = mergedVx;
   first.vy = mergedVy;
+  preserveBodySpeed(first, arena);
   first.angularVelocity = mergedAngularVelocity;
   first.glowColor = "green";
   first.glowTime = 0.5;
@@ -598,7 +799,7 @@ const resolveBodyCollisions = (
         first.glowTime = 0.5;
         second.glowTime = 0.5;
         audio?.playSuccess();
-        snapAndAttachBodies(bodies, first, second, attachment);
+        snapAndAttachBodies(arena, bodies, first, second, attachment);
         return;
       }
 
@@ -624,11 +825,8 @@ const resolveBodyCollisions = (
         first.vy -= (impulse * normal.y) / firstMass;
         second.vx += (impulse * normal.x) / secondMass;
         second.vy += (impulse * normal.y) / secondMass;
-
-        const tangent = { x: -normal.y, y: normal.x };
-        const tangentSpeed = dot(relativeVelocity, tangent);
-        first.angularVelocity -= tangentSpeed * 0.006 + randomBetween(-0.16, 0.16);
-        second.angularVelocity += tangentSpeed * 0.006 + randomBetween(-0.16, 0.16);
+        preserveBodySpeed(first, arena);
+        preserveBodySpeed(second, arena);
       }
 
       first.glowColor = "red";
@@ -661,29 +859,26 @@ const resolveWallCollisions = (
     if (minX < left) {
       body.x += left - minX;
       body.vx = Math.abs(body.vx) * RESTITUTION;
-      body.angularVelocity += randomBetween(-0.22, 0.22);
       collided = true;
     }
     if (maxX > right) {
       body.x -= maxX - right;
       body.vx = -Math.abs(body.vx) * RESTITUTION;
-      body.angularVelocity += randomBetween(-0.22, 0.22);
       collided = true;
     }
     if (minY < top) {
       body.y += top - minY;
       body.vy = Math.abs(body.vy) * RESTITUTION;
-      body.angularVelocity += randomBetween(-0.22, 0.22);
       collided = true;
     }
     if (maxY > bottom) {
       body.y -= maxY - bottom;
       body.vy = -Math.abs(body.vy) * RESTITUTION;
-      body.angularVelocity += randomBetween(-0.22, 0.22);
       collided = true;
     }
 
     if (collided) {
+      preserveBodySpeed(body, arena);
       body.glowColor = "red";
       body.glowTime = Math.max(body.glowTime, 0.16);
       playCollision();
@@ -745,8 +940,8 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.fillText("BROKEN SQUARE", arena.x + arena.width / 2, arena.y - (isMobile ? 42 : 52));
   ctx.font = `800 ${isMobile ? 10 : 15}px Arial, Helvetica, sans-serif`;
   const subtitle = isMobile
-    ? ["WHAT HAPPENS AFTER A PERFECT", "SQUARE BREAKS APART?"]
-    : ["WHAT HAPPENS AFTER A PERFECT SQUARE BREAKS APART?"];
+    ? ["HOW MANY SQUARES GET", "RECOMBINED IN 60 SECS?"]
+    : ["HOW MANY SQUARES GET RECOMBINED IN 60 SECS?"];
   subtitle.forEach((line, index) => {
     ctx.fillText(
       line,
@@ -799,22 +994,22 @@ const drawBody = (
     ctx.fillStyle = piece.color;
     ctx.fill();
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = `rgba(255, 255, 255, ${0.42 + body.glowTime * 0.5})`;
-    ctx.lineWidth = 2;
-    ctx.stroke();
 
-    const start = piece.vertices[piece.connector.index];
-    const end = piece.vertices[(piece.connector.index + 1) % piece.vertices.length];
-    ctx.beginPath();
-    ctx.moveTo(start.x, start.y);
-    ctx.lineTo(end.x, end.y);
-    ctx.shadowColor = "rgba(255, 255, 255, 0.95)";
-    ctx.shadowBlur = piece.connector.attached ? 5 : 14;
-    ctx.strokeStyle = piece.connector.attached
-      ? "rgba(187, 247, 208, 0.78)"
-      : "rgba(255, 255, 255, 0.96)";
-    ctx.lineWidth = debugEnabled ? 5 : 4;
-    ctx.stroke();
+    piece.connectors.forEach((connector) => {
+      if (connector.attached) return;
+      if (isInternalConnectorEdge(body, piece, connector)) return;
+
+      const start = piece.vertices[connector.index];
+      const end = piece.vertices[(connector.index + 1) % piece.vertices.length];
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      ctx.shadowColor = connector.color;
+      ctx.shadowBlur = 9;
+      ctx.strokeStyle = connector.color;
+      ctx.lineWidth = debugEnabled ? 2.2 : 1.4;
+      ctx.stroke();
+    });
     ctx.restore();
   });
 };
@@ -824,28 +1019,28 @@ const drawWholeSquare = (
   arena: Arena,
   elapsed: number,
 ) => {
-  const size = arena.width * 0.18;
+  const size = getSquareSize(arena);
   const pulse = elapsed >= HOLD_DURATION ? 1.08 : 1;
   const flash = clamp((elapsed - HOLD_DURATION) / 0.1, 0, 1);
-  const x = arena.x + arena.width / 2;
-  const y = arena.y + arena.height / 2;
 
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(pulse, pulse);
-  ctx.shadowColor = "rgba(249, 115, 22, 0.68)";
-  ctx.shadowBlur = 24 + flash * 34;
-  ctx.fillStyle = SAFFRON;
-  ctx.fillRect(-size / 2, -size / 2, size, size);
-  ctx.shadowBlur = 0;
-  ctx.strokeStyle = "rgba(255, 247, 237, 0.52)";
-  ctx.strokeRect(-size / 2 + 1, -size / 2 + 1, size - 2, size - 2);
-  if (flash > 0) {
-    ctx.globalAlpha = flash * 0.34;
-    ctx.fillStyle = "#ffffff";
+  getLaunchSquareCenters(arena).forEach((center) => {
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.scale(pulse, pulse);
+    ctx.shadowColor = "rgba(249, 115, 22, 0.68)";
+    ctx.shadowBlur = 24 + flash * 34;
+    ctx.fillStyle = SAFFRON;
     ctx.fillRect(-size / 2, -size / 2, size, size);
-  }
-  ctx.restore();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(255, 247, 237, 0.52)";
+    ctx.strokeRect(-size / 2 + 1, -size / 2 + 1, size - 2, size - 2);
+    if (flash > 0) {
+      ctx.globalAlpha = flash * 0.34;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(-size / 2, -size / 2, size, size);
+    }
+    ctx.restore();
+  });
 };
 
 const drawBreakAnimation = (
@@ -858,7 +1053,7 @@ const drawBreakAnimation = (
   const flash = 1 - clamp(progress / 0.24, 0, 1);
   const separation = arena.width * 0.075 * eased;
   const scale = 1 + Math.sin(progress * Math.PI) * 0.06;
-  const center = { x: arena.x + arena.width / 2, y: arena.y + arena.height / 2 };
+  const squareCenters = getLaunchSquareCenters(arena);
 
   if (flash > 0) {
     ctx.save();
@@ -869,8 +1064,9 @@ const drawBreakAnimation = (
   }
 
   bodies.forEach((body) => {
-    const dx = body.x - center.x;
-    const dy = body.y - center.y;
+    const squareCenter = squareCenters[Math.floor(body.id / 4)] ?? squareCenters[0];
+    const dx = body.x - squareCenter.x;
+    const dy = body.y - squareCenter.y;
     const length = Math.hypot(dx, dy) || 1;
     const piece = body.pieces[0];
 
@@ -879,17 +1075,13 @@ const drawBreakAnimation = (
       body.x + (dx / length) * separation,
       body.y + (dy / length) * separation,
     );
-    ctx.rotate((body.id - 1.5) * 0.05 * easeOutCubic(progress));
+    ctx.rotate(((body.id % 4) - 1.5) * 0.05 * easeOutCubic(progress));
     ctx.scale(scale, scale);
     drawTrianglePath(ctx, piece.vertices);
     ctx.shadowColor = piece.color;
     ctx.shadowBlur = 18;
     ctx.fillStyle = piece.color;
     ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.46)";
-    ctx.lineWidth = 2;
-    ctx.stroke();
     ctx.restore();
   });
 };
@@ -902,10 +1094,10 @@ const drawDebugOverlay = (
 ) => {
   bodies.flatMap(getOpenConnectorEdges).forEach((edge) => {
     ctx.save();
-    ctx.shadowColor = "rgba(255, 255, 255, 0.8)";
+    ctx.shadowColor = edge.connector.color;
     ctx.shadowBlur = 9;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-    ctx.lineWidth = 3;
+    ctx.strokeStyle = edge.connector.color;
+    ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(edge.start.x, edge.start.y);
     ctx.lineTo(edge.end.x, edge.end.y);
@@ -974,11 +1166,12 @@ const BrokenSquare = () => {
     };
 
     const activatePhysicsPositions = (arena: Arena) => {
-      const center = { x: arena.x + arena.width / 2, y: arena.y + arena.height / 2 };
+      const squareCenters = getLaunchSquareCenters(arena);
       const separation = arena.width * 0.075;
       bodiesRef.current.forEach((body) => {
-        const dx = body.x - center.x;
-        const dy = body.y - center.y;
+        const squareCenter = squareCenters[Math.floor(body.id / 4)] ?? squareCenters[0];
+        const dx = body.x - squareCenter.x;
+        const dy = body.y - squareCenter.y;
         const length = Math.hypot(dx, dy) || 1;
         body.x += (dx / length) * separation;
         body.y += (dy / length) * separation;
@@ -992,8 +1185,7 @@ const BrokenSquare = () => {
         bodiesRef.current.forEach((body) => {
           body.x += body.vx * subDt;
           body.y += body.vy * subDt;
-          body.rotation += body.angularVelocity * subDt;
-          body.angularVelocity *= 0.999;
+          body.angularVelocity = 0;
           body.glowTime = Math.max(0, body.glowTime - subDt);
           body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
           if (body.glowTime <= 0) {
