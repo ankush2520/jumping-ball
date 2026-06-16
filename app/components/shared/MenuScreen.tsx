@@ -9,47 +9,6 @@ interface Props {
 }
 
 const renderSimulationIcon = (icon: Simulation["icon"]) => {
-  if (icon === "gravity-well") {
-    return (
-      <svg
-        viewBox="0 0 64 64"
-        width="48"
-        height="48"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      >
-        <circle cx="32" cy="32" r="24" opacity="0.4" />
-        <circle cx="32" cy="32" r="16" />
-        <circle cx="32" cy="32" r="6" fill="currentColor" />
-        <circle cx="48" cy="20" r="3" fill="currentColor" opacity="0.6" />
-        <circle cx="20" cy="44" r="4" fill="currentColor" opacity="0.5" />
-      </svg>
-    );
-  }
-
-  if (icon === "ecosystem-arena") {
-    return (
-      <svg
-        viewBox="0 0 64 64"
-        width="48"
-        height="48"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-      >
-        <circle cx="20" cy="25" r="6" fill="currentColor" opacity="0.8" />
-        <circle cx="42" cy="20" r="5" fill="currentColor" opacity="0.55" />
-        <circle cx="36" cy="43" r="7" fill="currentColor" opacity="0.35" />
-        <circle cx="48" cy="40" r="8" opacity="0.7" />
-        <path d="M24 28c5 7 9 10 18 10" opacity="0.55" />
-        <path d="M38 22c-8 1-13 4-17 12" opacity="0.45" />
-      </svg>
-    );
-  }
-
   if (icon === "shrinking-escape") {
     return (
       <svg
@@ -137,7 +96,7 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
-  if (icon === "vortex-escape") {
+  if (icon === "broken-square") {
     return (
       <svg
         viewBox="0 0 72 72"
@@ -147,7 +106,13 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
         aria-hidden="true"
       >
         <defs>
-          <filter id="vortex-thumb-glow" x="-40%" y="-40%" width="180%" height="180%">
+          <filter
+            id="broken-square-glow"
+            x="-45%"
+            y="-45%"
+            width="190%"
+            height="190%"
+          >
             <feGaussianBlur stdDeviation="2.6" result="blur" />
             <feMerge>
               <feMergeNode in="blur" />
@@ -161,34 +126,35 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
           width="48"
           height="48"
           rx="5"
-          fill="rgba(2, 6, 23, 0.68)"
-          stroke="rgba(148, 163, 184, 0.36)"
+          fill="rgba(2, 6, 23, 0.72)"
+          stroke="rgba(148, 163, 184, 0.34)"
         />
         <path
-          d="M36 19a17 17 0 1 1-12.02 4.98"
-          stroke="rgba(34, 211, 238, 0.72)"
-          strokeWidth="3"
-          strokeLinecap="round"
-          filter="url(#vortex-thumb-glow)"
+          d="M36 14 47 36 36 36Z"
+          fill="#3b82f6"
+          filter="url(#broken-square-glow)"
         />
         <path
-          d="M43.78 28.22a11 11 0 1 1-15.56 0"
-          stroke="rgba(168, 85, 247, 0.82)"
-          strokeWidth="3"
-          strokeLinecap="round"
-          filter="url(#vortex-thumb-glow)"
+          d="M58 36 36 47 36 36Z"
+          fill="#22c55e"
+          filter="url(#broken-square-glow)"
         />
         <path
-          d="M36 31a5 5 0 1 1-3.54 1.46"
-          stroke="rgba(244, 114, 182, 0.9)"
-          strokeWidth="3"
-          strokeLinecap="round"
-          filter="url(#vortex-thumb-glow)"
+          d="M36 58 25 36 36 36Z"
+          fill="#f97316"
+          filter="url(#broken-square-glow)"
         />
-        <circle cx="36" cy="36" r="3.5" fill="#bbf7d0" filter="url(#vortex-thumb-glow)" />
-        <circle cx="23" cy="26" r="3.8" fill="#67e8f9" filter="url(#vortex-thumb-glow)" />
-        <circle cx="48" cy="45" r="3.4" fill="#fde68a" filter="url(#vortex-thumb-glow)" />
-        <circle cx="27" cy="50" r="3.1" fill="#f9a8d4" filter="url(#vortex-thumb-glow)" />
+        <path
+          d="M14 36 36 25 36 36Z"
+          fill="#a855f7"
+          filter="url(#broken-square-glow)"
+        />
+        <path
+          d="M24 24 48 48M48 24 24 48"
+          stroke="rgba(255, 255, 255, 0.68)"
+          strokeWidth="2"
+          strokeLinecap="round"
+        />
       </svg>
     );
   }
@@ -311,9 +277,6 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
                 <div className="button-text">
                   <div className="button-title">
                     {simulation.title}
-                    {simulation.id === "vortex-escape" ? (
-                      <span className="simulation-badge">NEW</span>
-                    ) : null}
                   </div>
                   <div className="button-subtitle">{simulation.subtitle}</div>
                   <div className="button-description">
