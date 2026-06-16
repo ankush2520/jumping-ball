@@ -18,14 +18,11 @@ type Point = {
 type ConnectorSide = {
   index: number;
   kind: "plain";
-  matchKey: string;
-  color: string;
   attached: boolean;
 };
 
 type TrianglePiece = {
   id: number;
-  role: number;
   color: string;
   localX: number;
   localY: number;
@@ -74,7 +71,6 @@ type AttachmentCheck = {
 type BrokenSquareAudio = {
   unlock: () => Promise<void>;
   playCollision: () => void;
-  playBreak: () => void;
   playSuccess: () => void;
   dispose: () => void;
 };
@@ -83,20 +79,12 @@ const HUD_RESERVED_HEIGHT_DESKTOP = 142;
 const HUD_RESERVED_HEIGHT_MOBILE = 158;
 const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
-const HOLD_DURATION = 1;
-const BREAK_DURATION = 0.42;
 const PHYSICS_SUBSTEPS = 3;
 const RESTITUTION = 1;
 const BODY_SPEED_RATIO = 0.32;
 const CONNECTOR_TOLERANCE_RADIANS = (15 * Math.PI) / 180;
 const SAFFRON = "#f97316";
 const TRIANGLE_COLORS = [SAFFRON, SAFFRON, SAFFRON, SAFFRON];
-const CONNECTOR_COLORS = {
-  blue: "#38bdf8",
-  red: "#ef4444",
-  green: "#22c55e",
-  purple: "#a855f7",
-} as const;
 
 let sharedAudioContext: AudioContext | null = null;
 
@@ -105,14 +93,6 @@ const clamp = (value: number, min: number, max: number) =>
 
 const randomBetween = (min: number, max: number) =>
   min + Math.random() * (max - min);
-
-const easeOutBack = (value: number) => {
-  const c1 = 1.70158;
-  const c3 = c1 + 1;
-  return 1 + c3 * (value - 1) ** 3 + c1 * (value - 1) ** 2;
-};
-
-const easeOutCubic = (value: number) => 1 - (1 - value) ** 3;
 
 const rotatePoint = (point: Point, rotation: number): Point => {
   const cos = Math.cos(rotation);
@@ -301,10 +281,6 @@ const createAudio = (): BrokenSquareAudio => {
         await context.resume();
       }
     },
-    playBreak: () => {
-      playTone(620, 0.18, 0.18);
-      window.setTimeout(() => playTone(930, 0.16, 0.12), 48);
-    },
     playCollision: () => {
       const context = ensureAudio();
       if (!context) return;
@@ -331,68 +307,22 @@ const centroidOf = (points: Point[]) => ({
 });
 
 const createTriangleConnectors = (triangleIndex: number): ConnectorSide[] => {
-  const connectorPairs = [
-    [
-      { index: 1, key: "blue", color: CONNECTOR_COLORS.blue },
-      { index: 2, key: "purple", color: CONNECTOR_COLORS.purple },
-    ],
-    [
-      { index: 1, key: "red", color: CONNECTOR_COLORS.red },
-      { index: 2, key: "blue", color: CONNECTOR_COLORS.blue },
-    ],
-    [
-      { index: 1, key: "green", color: CONNECTOR_COLORS.green },
-      { index: 2, key: "red", color: CONNECTOR_COLORS.red },
-    ],
-    [
-      { index: 1, key: "purple", color: CONNECTOR_COLORS.purple },
-      { index: 2, key: "green", color: CONNECTOR_COLORS.green },
-    ],
-  ];
+  void triangleIndex;
 
-  return connectorPairs[triangleIndex].map((connector) => ({
-    index: connector.index,
+  return [0, 1, 2].map((index) => ({
+    index,
     kind: "plain",
-    matchKey: connector.key,
-    color: connector.color,
     attached: false,
   }));
 };
 
-const canCombineAsSingleSquare = (first: RigidBody, second: RigidBody) => {
-  const roles = new Set<number>();
-  const combinedPieces = [...first.pieces, ...second.pieces];
-
-  if (combinedPieces.length > 4) return false;
-
-  for (const piece of combinedPieces) {
-    if (roles.has(piece.role)) return false;
-    roles.add(piece.role);
-  }
-
-  return true;
-};
-
 const getSquareSize = (arena: Arena) => arena.width * 0.18;
-
-const getLaunchSquareCenters = (arena: Arena) => {
-  const spacing = arena.width * 0.25;
-  const centerY = arena.y + arena.height / 2;
-  const centerX = arena.x + arena.width / 2;
-
-  return [
-    { x: centerX - spacing, y: centerY - spacing },
-    { x: centerX + spacing, y: centerY - spacing },
-    { x: centerX, y: centerY },
-    { x: centerX - spacing, y: centerY + spacing },
-    { x: centerX + spacing, y: centerY + spacing },
-  ];
-};
 
 const createInitialBodies = (arena: Arena): RigidBody[] => {
   const size = getSquareSize(arena);
   const half = size / 2;
-  const squareCenters = getLaunchSquareCenters(arena);
+  const triangleCount = 20;
+  const margin = half * 1.25;
   const speed = getBodySpeed(arena);
   const triangles = [
     [
@@ -417,44 +347,62 @@ const createInitialBodies = (arena: Arena): RigidBody[] => {
     ],
   ];
 
-  return squareCenters.flatMap((center, squareIndex) =>
-    triangles.map((points, triangleIndex) => {
-      const id = squareIndex * triangles.length + triangleIndex;
-      const centroid = centroidOf(points);
-      const direction = Math.atan2(centroid.y, centroid.x);
-      const outwardBias = squareIndex === 0 ? -0.22 : 0.22;
-      const launchAngle = direction + outwardBias + randomBetween(-0.38, 0.38);
-      const launchSpeed = speed;
+  const bodies: RigidBody[] = [];
 
-      return {
-        id,
-        x: center.x + centroid.x,
-        y: center.y + centroid.y,
-        vx: Math.cos(launchAngle) * launchSpeed,
-        vy: Math.sin(launchAngle) * launchSpeed,
-        rotation: 0,
-        angularVelocity: 0,
-        pieces: [
+  for (let index = 0; index < triangleCount; index += 1) {
+    const triangleIndex = index % triangles.length;
+    const points = triangles[triangleIndex];
+    const centroid = centroidOf(points);
+    const angle = randomBetween(0, Math.PI * 2);
+    const launchSpeed = speed;
+    let x = arena.x + margin + Math.random() * (arena.width - margin * 2);
+    let y = arena.y + margin + Math.random() * (arena.height - margin * 2);
+
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const candidateX =
+        arena.x + margin + Math.random() * (arena.width - margin * 2);
+      const candidateY =
+        arena.y + margin + Math.random() * (arena.height - margin * 2);
+      const separated = bodies.every(
+        (body) => Math.hypot(body.x - candidateX, body.y - candidateY) > half * 1.35,
+      );
+
+      if (separated) {
+        x = candidateX;
+        y = candidateY;
+        break;
+      }
+    }
+
+    bodies.push({
+      id: index,
+      x,
+      y,
+      vx: Math.cos(angle) * launchSpeed,
+      vy: Math.sin(angle) * launchSpeed,
+      rotation: 0,
+      angularVelocity: 0,
+      pieces: [
           {
-            id,
-            role: triangleIndex,
+            id: index,
             color: TRIANGLE_COLORS[triangleIndex],
-            localX: 0,
-            localY: 0,
-            localRotation: 0,
-            vertices: points.map((point) => ({
-              x: point.x - centroid.x,
-              y: point.y - centroid.y,
-            })),
-            connectors: createTriangleConnectors(triangleIndex),
-          },
-        ],
-        glowColor: "none",
-        glowTime: 0,
-        attachPulse: 0,
-      };
-    }),
-  );
+          localX: 0,
+          localY: 0,
+          localRotation: 0,
+          vertices: points.map((point) => ({
+            x: point.x - centroid.x,
+            y: point.y - centroid.y,
+          })),
+          connectors: createTriangleConnectors(triangleIndex),
+        },
+      ],
+      glowColor: "none",
+      glowTime: 0,
+      attachPulse: 0,
+    });
+  }
+
+  return bodies;
 };
 
 const getPieceWorldTransform = (body: RigidBody, piece: TrianglePiece) => {
@@ -602,48 +550,6 @@ const getEndpointDistance = (first: EdgeInfo, second: EdgeInfo) => {
   return Math.min(reversed, same);
 };
 
-const isInternalConnectorEdge = (
-  body: RigidBody,
-  sourcePiece: TrianglePiece,
-  connector: ConnectorSide,
-) => {
-  const sourceVertices = getPieceWorldVertices(body, sourcePiece);
-  const sourceEdge = {
-    start: sourceVertices[connector.index],
-    end: sourceVertices[(connector.index + 1) % sourceVertices.length],
-    midpoint: scalePoint(
-      addPoints(
-        sourceVertices[connector.index],
-        sourceVertices[(connector.index + 1) % sourceVertices.length],
-      ),
-      0.5,
-    ),
-  };
-  const tolerance = 2.5;
-
-  return body.pieces.some((piece) => {
-    if (piece.id === sourcePiece.id) return false;
-
-    const vertices = getPieceWorldVertices(body, piece);
-
-    return vertices.some((start, index) => {
-      const end = vertices[(index + 1) % vertices.length];
-      const edge = {
-        start,
-        end,
-        midpoint: scalePoint(addPoints(start, end), 0.5),
-      };
-      const endpointsMatch =
-        distance(sourceEdge.start, edge.end) + distance(sourceEdge.end, edge.start) <=
-          tolerance ||
-        distance(sourceEdge.start, edge.start) + distance(sourceEdge.end, edge.end) <=
-          tolerance;
-
-      return endpointsMatch && distance(sourceEdge.midpoint, edge.midpoint) <= tolerance;
-    });
-  });
-};
-
 const getAngleDiff = (first: EdgeInfo, second: EdgeInfo) => {
   const oppositeDot = clamp(dot(first.direction, scalePoint(second.direction, -1)), -1, 1);
   return Math.acos(oppositeDot);
@@ -676,22 +582,15 @@ const checkAttachment = (
           : Number.POSITIVE_INFINITY;
 
       if (score < bestScore) {
-        const colorsMatch =
-          firstEdge.connector.matchKey === secondEdge.connector.matchKey;
         const edgesAreTouching =
           endpointDistance <= maxEndpointDistance &&
           midpointDistance <= maxMidpointDistance;
-        const canFormSquareStructure = canCombineAsSingleSquare(first, second);
 
         best = {
           first: firstEdge,
           second: secondEdge,
           angleDiff,
-          valid:
-            colorsMatch &&
-            edgesAreTouching &&
-            canFormSquareStructure &&
-            angleDiff <= CONNECTOR_TOLERANCE_RADIANS,
+          valid: edgesAreTouching && angleDiff <= CONNECTOR_TOLERANCE_RADIANS,
         };
       }
     }
@@ -749,13 +648,10 @@ const snapAndAttachBodies = (
 
   check.first.connector.attached = true;
   const secondConnectorIndex = check.second.connector.index;
-  const secondConnectorMatchKey = check.second.connector.matchKey;
   const mergedPiece = first.pieces.find((piece) => piece.id === check.second?.piece.id);
   if (mergedPiece) {
     const mergedConnector = mergedPiece.connectors.find(
-      (connector) =>
-        connector.index === secondConnectorIndex &&
-        connector.matchKey === secondConnectorMatchKey,
+      (connector) => connector.index === secondConnectorIndex,
     );
     if (mergedConnector) {
       mergedConnector.attached = true;
@@ -994,94 +890,7 @@ const drawBody = (
     ctx.fillStyle = piece.color;
     ctx.fill();
     ctx.shadowBlur = 0;
-
-    piece.connectors.forEach((connector) => {
-      if (connector.attached) return;
-      if (isInternalConnectorEdge(body, piece, connector)) return;
-
-      const start = piece.vertices[connector.index];
-      const end = piece.vertices[(connector.index + 1) % piece.vertices.length];
-      ctx.beginPath();
-      ctx.moveTo(start.x, start.y);
-      ctx.lineTo(end.x, end.y);
-      ctx.shadowColor = connector.color;
-      ctx.shadowBlur = 9;
-      ctx.strokeStyle = connector.color;
-      ctx.lineWidth = debugEnabled ? 2.2 : 1.4;
-      ctx.stroke();
-    });
-    ctx.restore();
-  });
-};
-
-const drawWholeSquare = (
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  elapsed: number,
-) => {
-  const size = getSquareSize(arena);
-  const pulse = elapsed >= HOLD_DURATION ? 1.08 : 1;
-  const flash = clamp((elapsed - HOLD_DURATION) / 0.1, 0, 1);
-
-  getLaunchSquareCenters(arena).forEach((center) => {
-    ctx.save();
-    ctx.translate(center.x, center.y);
-    ctx.scale(pulse, pulse);
-    ctx.shadowColor = "rgba(249, 115, 22, 0.68)";
-    ctx.shadowBlur = 24 + flash * 34;
-    ctx.fillStyle = SAFFRON;
-    ctx.fillRect(-size / 2, -size / 2, size, size);
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = "rgba(255, 247, 237, 0.52)";
-    ctx.strokeRect(-size / 2 + 1, -size / 2 + 1, size - 2, size - 2);
-    if (flash > 0) {
-      ctx.globalAlpha = flash * 0.34;
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(-size / 2, -size / 2, size, size);
-    }
-    ctx.restore();
-  });
-};
-
-const drawBreakAnimation = (
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  bodies: RigidBody[],
-  progress: number,
-) => {
-  const eased = easeOutBack(progress);
-  const flash = 1 - clamp(progress / 0.24, 0, 1);
-  const separation = arena.width * 0.075 * eased;
-  const scale = 1 + Math.sin(progress * Math.PI) * 0.06;
-  const squareCenters = getLaunchSquareCenters(arena);
-
-  if (flash > 0) {
-    ctx.save();
-    ctx.globalAlpha = flash * 0.34;
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(arena.x, arena.y, arena.width, arena.height);
-    ctx.restore();
-  }
-
-  bodies.forEach((body) => {
-    const squareCenter = squareCenters[Math.floor(body.id / 4)] ?? squareCenters[0];
-    const dx = body.x - squareCenter.x;
-    const dy = body.y - squareCenter.y;
-    const length = Math.hypot(dx, dy) || 1;
-    const piece = body.pieces[0];
-
-    ctx.save();
-    ctx.translate(
-      body.x + (dx / length) * separation,
-      body.y + (dy / length) * separation,
-    );
-    ctx.rotate(((body.id % 4) - 1.5) * 0.05 * easeOutCubic(progress));
-    ctx.scale(scale, scale);
-    drawTrianglePath(ctx, piece.vertices);
-    ctx.shadowColor = piece.color;
-    ctx.shadowBlur = 18;
-    ctx.fillStyle = piece.color;
-    ctx.fill();
+    void debugEnabled;
     ctx.restore();
   });
 };
@@ -1094,9 +903,9 @@ const drawDebugOverlay = (
 ) => {
   bodies.flatMap(getOpenConnectorEdges).forEach((edge) => {
     ctx.save();
-    ctx.shadowColor = edge.connector.color;
+    ctx.shadowColor = "rgba(255, 255, 255, 0.76)";
     ctx.shadowBlur = 9;
-    ctx.strokeStyle = edge.connector.color;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.76)";
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(edge.start.x, edge.start.y);
@@ -1134,9 +943,6 @@ const BrokenSquare = () => {
   const bodiesRef = useRef<RigidBody[]>([]);
   const animationRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
-  const startedAtRef = useRef(0);
-  const breakSoundPlayedRef = useRef(false);
-  const physicsActivatedRef = useRef(false);
   const debugEnabledRef = useRef(false);
   const lastAttachmentCheckRef = useRef<AttachmentCheck | null>(null);
 
@@ -1158,24 +964,8 @@ const BrokenSquare = () => {
       arenaRef.current = arena;
       syncBodiesToArena(arena);
       const now = performance.now();
-      startedAtRef.current = now;
       lastTimeRef.current = now;
-      breakSoundPlayedRef.current = false;
-      physicsActivatedRef.current = false;
       lastAttachmentCheckRef.current = null;
-    };
-
-    const activatePhysicsPositions = (arena: Arena) => {
-      const squareCenters = getLaunchSquareCenters(arena);
-      const separation = arena.width * 0.075;
-      bodiesRef.current.forEach((body) => {
-        const squareCenter = squareCenters[Math.floor(body.id / 4)] ?? squareCenters[0];
-        const dx = body.x - squareCenter.x;
-        const dy = body.y - squareCenter.y;
-        const length = Math.hypot(dx, dy) || 1;
-        body.x += (dx / length) * separation;
-        body.y += (dy / length) * separation;
-      });
     };
 
     const stepPhysics = (dt: number, arena: Arena) => {
@@ -1209,42 +999,22 @@ const BrokenSquare = () => {
       const arena = arenaRef.current;
       if (!arena) return;
 
-      const elapsed = (time - startedAtRef.current) / 1000;
       const dt = Math.min((time - lastTimeRef.current) / 1000, 0.033);
       lastTimeRef.current = time;
 
       drawArenaFrame(ctx, arena);
 
-      if (elapsed < HOLD_DURATION) {
-        drawWholeSquare(ctx, arena, elapsed);
-      } else if (elapsed < HOLD_DURATION + BREAK_DURATION) {
-        if (!breakSoundPlayedRef.current) {
-          breakSoundPlayedRef.current = true;
-          audioRef.current?.playBreak();
-        }
-        const progress = clamp((elapsed - HOLD_DURATION) / BREAK_DURATION, 0, 1);
-        drawBreakAnimation(ctx, arena, bodiesRef.current, progress);
-        if (progress >= 0.99 && !physicsActivatedRef.current) {
-          activatePhysicsPositions(arena);
-          physicsActivatedRef.current = true;
-        }
-      } else {
-        if (!physicsActivatedRef.current) {
-          activatePhysicsPositions(arena);
-          physicsActivatedRef.current = true;
-        }
-        stepPhysics(dt, arena);
-        bodiesRef.current.forEach((body) =>
-          drawBody(ctx, body, debugEnabledRef.current),
+      stepPhysics(dt, arena);
+      bodiesRef.current.forEach((body) =>
+        drawBody(ctx, body, debugEnabledRef.current),
+      );
+      if (debugEnabledRef.current) {
+        drawDebugOverlay(
+          ctx,
+          arena,
+          bodiesRef.current,
+          lastAttachmentCheckRef.current,
         );
-        if (debugEnabledRef.current) {
-          drawDebugOverlay(
-            ctx,
-            arena,
-            bodiesRef.current,
-            lastAttachmentCheckRef.current,
-          );
-        }
       }
 
       animationRef.current = requestAnimationFrame(draw);
@@ -1254,11 +1024,6 @@ const BrokenSquare = () => {
       const arena = resizeCanvas(canvas);
       arenaRef.current = arena;
       syncBodiesToArena(arena);
-      const elapsed = (performance.now() - startedAtRef.current) / 1000;
-      if (elapsed >= HOLD_DURATION + BREAK_DURATION) {
-        activatePhysicsPositions(arena);
-        physicsActivatedRef.current = true;
-      }
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
