@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 type Arena = {
   x: number;
@@ -81,10 +81,12 @@ const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const PHYSICS_SUBSTEPS = 3;
 const RESTITUTION = 1;
-const BODY_SPEED_RATIO = 0.32;
+const SPEED_SCALE = 1;
+const BODY_SPEED_RATIO = 0.32 * SPEED_SCALE;
 const CONNECTOR_TOLERANCE_RADIANS = (15 * Math.PI) / 180;
 const SAFFRON = "#f97316";
 const TRIANGLE_COLORS = [SAFFRON, SAFFRON, SAFFRON, SAFFRON];
+const SQUARE_SIZE_SCALE = 0.75 * 0.8; // reduced by 0.8x (0.6)
 
 let sharedAudioContext: AudioContext | null = null;
 
@@ -103,9 +105,15 @@ const rotatePoint = (point: Point, rotation: number): Point => {
   };
 };
 
-const addPoints = (a: Point, b: Point): Point => ({ x: a.x + b.x, y: a.y + b.y });
+const addPoints = (a: Point, b: Point): Point => ({
+  x: a.x + b.x,
+  y: a.y + b.y,
+});
 
-const subPoints = (a: Point, b: Point): Point => ({ x: a.x - b.x, y: a.y - b.y });
+const subPoints = (a: Point, b: Point): Point => ({
+  x: a.x - b.x,
+  y: a.y - b.y,
+});
 
 const scalePoint = (point: Point, scale: number): Point => ({
   x: point.x * scale,
@@ -146,9 +154,14 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
     ? HUD_RESERVED_HEIGHT_MOBILE
     : HUD_RESERVED_HEIGHT_DESKTOP;
   const horizontalPadding = isMobile ? width * 0.12 : 28;
-  const bottomSpacing = isMobile ? MOBILE_BOTTOM_SAFE_SPACING : ARENA_SAFE_SPACING;
+  const bottomSpacing = isMobile
+    ? MOBILE_BOTTOM_SAFE_SPACING
+    : ARENA_SAFE_SPACING;
   const availableWidth = Math.max(220, width - horizontalPadding);
-  const availableHeight = Math.max(220, height - hudReservedHeight - bottomSpacing);
+  const availableHeight = Math.max(
+    220,
+    height - hudReservedHeight - bottomSpacing,
+  );
   const arenaSize = clamp(Math.min(availableWidth, availableHeight), 220, 920);
 
   canvas.style.width = `${width}px`;
@@ -316,12 +329,12 @@ const createTriangleConnectors = (triangleIndex: number): ConnectorSide[] => {
   }));
 };
 
-const getSquareSize = (arena: Arena) => arena.width * 0.18;
+const getSquareSize = (arena: Arena) => arena.width * 0.18 * SQUARE_SIZE_SCALE;
 
 const createInitialBodies = (arena: Arena): RigidBody[] => {
   const size = getSquareSize(arena);
   const half = size / 2;
-  const triangleCount = 20;
+  const triangleCount = 60;
   const margin = half * 1.25;
   const speed = getBodySpeed(arena);
   const triangles = [
@@ -364,7 +377,8 @@ const createInitialBodies = (arena: Arena): RigidBody[] => {
       const candidateY =
         arena.y + margin + Math.random() * (arena.height - margin * 2);
       const separated = bodies.every(
-        (body) => Math.hypot(body.x - candidateX, body.y - candidateY) > half * 1.35,
+        (body) =>
+          Math.hypot(body.x - candidateX, body.y - candidateY) > half * 1.35,
       );
 
       if (separated) {
@@ -383,9 +397,9 @@ const createInitialBodies = (arena: Arena): RigidBody[] => {
       rotation: 0,
       angularVelocity: 0,
       pieces: [
-          {
-            id: index,
-            color: TRIANGLE_COLORS[triangleIndex],
+        {
+          id: index,
+          color: TRIANGLE_COLORS[triangleIndex],
           localX: 0,
           localY: 0,
           localRotation: 0,
@@ -485,7 +499,10 @@ const getPolygonCollision = (
   return { normal: smallestAxis, overlap: smallestOverlap };
 };
 
-const getBodyCollision = (first: RigidBody, second: RigidBody): Collision | null => {
+const getBodyCollision = (
+  first: RigidBody,
+  second: RigidBody,
+): Collision | null => {
   let bestCollision: Collision | null = null;
 
   for (const firstPiece of first.pieces) {
@@ -546,12 +563,17 @@ const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const getEndpointDistance = (first: EdgeInfo, second: EdgeInfo) => {
   const reversed =
     distance(first.start, second.end) + distance(first.end, second.start);
-  const same = distance(first.start, second.start) + distance(first.end, second.end);
+  const same =
+    distance(first.start, second.start) + distance(first.end, second.end);
   return Math.min(reversed, same);
 };
 
 const getAngleDiff = (first: EdgeInfo, second: EdgeInfo) => {
-  const oppositeDot = clamp(dot(first.direction, scalePoint(second.direction, -1)), -1, 1);
+  const oppositeDot = clamp(
+    dot(first.direction, scalePoint(second.direction, -1)),
+    -1,
+    1,
+  );
   return Math.acos(oppositeDot);
 };
 
@@ -573,7 +595,10 @@ const checkAttachment = (
     for (const secondEdge of getOpenConnectorEdges(second)) {
       const angleDiff = getAngleDiff(firstEdge, secondEdge);
       const endpointDistance = getEndpointDistance(firstEdge, secondEdge);
-      const midpointDistance = distance(firstEdge.midpoint, secondEdge.midpoint);
+      const midpointDistance = distance(
+        firstEdge.midpoint,
+        secondEdge.midpoint,
+      );
       const score = endpointDistance + midpointDistance * 0.75;
       const bestScore =
         best.first && best.second
@@ -620,7 +645,10 @@ const snapAndAttachBodies = (
   );
   if (!refreshedSecondEdge) return;
 
-  const translation = subPoints(check.first.midpoint, refreshedSecondEdge.midpoint);
+  const translation = subPoints(
+    check.first.midpoint,
+    refreshedSecondEdge.midpoint,
+  );
   second.x += translation.x;
   second.y += translation.y;
 
@@ -648,7 +676,9 @@ const snapAndAttachBodies = (
 
   check.first.connector.attached = true;
   const secondConnectorIndex = check.second.connector.index;
-  const mergedPiece = first.pieces.find((piece) => piece.id === check.second?.piece.id);
+  const mergedPiece = first.pieces.find(
+    (piece) => piece.id === check.second?.piece.id,
+  );
   if (mergedPiece) {
     const mergedConnector = mergedPiece.connectors.find(
       (connector) => connector.index === secondConnectorIndex,
@@ -677,6 +707,7 @@ const resolveBodyCollisions = (
   bodies: RigidBody[],
   audio: BrokenSquareAudio | null,
   debugRef: React.MutableRefObject<AttachmentCheck | null>,
+  allowMerge: boolean,
 ) => {
   for (let i = 0; i < bodies.length; i += 1) {
     for (let j = i + 1; j < bodies.length; j += 1) {
@@ -690,13 +721,16 @@ const resolveBodyCollisions = (
       debugRef.current = attachment;
 
       if (attachment.valid) {
+        // indicate potential attachment but only actually merge when allowed
         first.glowColor = "green";
         second.glowColor = "green";
         first.glowTime = 0.5;
         second.glowTime = 0.5;
-        audio?.playSuccess();
-        snapAndAttachBodies(arena, bodies, first, second, attachment);
-        return;
+        if (allowMerge) {
+          audio?.playSuccess();
+          snapAndAttachBodies(arena, bodies, first, second, attachment);
+          return;
+        }
       }
 
       const { normal, overlap } = collision;
@@ -716,7 +750,8 @@ const resolveBodyCollisions = (
         const firstMass = first.pieces.length;
         const secondMass = second.pieces.length;
         const impulse =
-          (-(1 + RESTITUTION) * velocityAlongNormal) / (1 / firstMass + 1 / secondMass);
+          (-(1 + RESTITUTION) * velocityAlongNormal) /
+          (1 / firstMass + 1 / secondMass);
         first.vx -= (impulse * normal.x) / firstMass;
         first.vy -= (impulse * normal.y) / firstMass;
         second.vx += (impulse * normal.x) / secondMass;
@@ -811,7 +846,12 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.strokeRect(arena.x + 6, arena.y + 6, arena.width - 12, arena.height - 12);
   ctx.strokeStyle = "rgba(124, 143, 163, 0.12)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(arena.x + 10, arena.y + 10, arena.width - 20, arena.height - 20);
+  ctx.strokeRect(
+    arena.x + 10,
+    arena.y + 10,
+    arena.width - 20,
+    arena.height - 20,
+  );
   ctx.restore();
 
   ctx.save();
@@ -833,11 +873,15 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.font = `900 ${isMobile ? 25 : 38}px Arial, Helvetica, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
-  ctx.fillText("BROKEN SQUARE", arena.x + arena.width / 2, arena.y - (isMobile ? 42 : 52));
+  ctx.fillText(
+    "BROKEN SQUARE",
+    arena.x + arena.width / 2,
+    arena.y - (isMobile ? 42 : 52),
+  );
   ctx.font = `800 ${isMobile ? 10 : 15}px Arial, Helvetica, sans-serif`;
   const subtitle = isMobile
-    ? ["HOW MANY SQUARES GET", "RECOMBINED IN 60 SECS?"]
-    : ["HOW MANY SQUARES GET RECOMBINED IN 60 SECS?"];
+    ? ["What weird shape will", "these triangles create?"]
+    : ["What weird shape will these triangles create?"];
   subtitle.forEach((line, index) => {
     ctx.fillText(
       line,
@@ -848,10 +892,7 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.restore();
 };
 
-const drawTrianglePath = (
-  ctx: CanvasRenderingContext2D,
-  vertices: Point[],
-) => {
+const drawTrianglePath = (ctx: CanvasRenderingContext2D, vertices: Point[]) => {
   ctx.beginPath();
   vertices.forEach((vertex, index) => {
     if (index === 0) {
@@ -945,6 +986,10 @@ const BrokenSquare = () => {
   const lastTimeRef = useRef(0);
   const debugEnabledRef = useRef(false);
   const lastAttachmentCheckRef = useRef<AttachmentCheck | null>(null);
+  const mergeStartRef = useRef<number | null>(null);
+  const allowMergeRef = useRef(false);
+  const [mergeRemaining, setMergeRemaining] = useState<number | null>(null);
+  const lastMergeDisplayedRef = useRef<number | null>(null);
 
   if (audioRef.current === null) {
     audioRef.current = createAudio();
@@ -966,6 +1011,9 @@ const BrokenSquare = () => {
       const now = performance.now();
       lastTimeRef.current = now;
       lastAttachmentCheckRef.current = null;
+      // start 5s countdown before merging
+      mergeStartRef.current = now + 5000;
+      allowMergeRef.current = false;
     };
 
     const stepPhysics = (dt: number, arena: Arena) => {
@@ -991,6 +1039,7 @@ const BrokenSquare = () => {
           bodiesRef.current,
           audioRef.current,
           lastAttachmentCheckRef,
+          allowMergeRef.current,
         );
       }
     };
@@ -1001,6 +1050,24 @@ const BrokenSquare = () => {
 
       const dt = Math.min((time - lastTimeRef.current) / 1000, 0.033);
       lastTimeRef.current = time;
+
+      // compute merging countdown and update overlay state
+      let remaining: number | null = null;
+      if (mergeStartRef.current !== null && !allowMergeRef.current) {
+        remaining = Math.max(
+          0,
+          Math.ceil((mergeStartRef.current - time) / 1000),
+        );
+        if (remaining === 0) {
+          allowMergeRef.current = true;
+          remaining = null;
+        }
+      }
+
+      if (lastMergeDisplayedRef.current !== remaining) {
+        lastMergeDisplayedRef.current = remaining;
+        setMergeRemaining(remaining);
+      }
 
       drawArenaFrame(ctx, arena);
 
@@ -1057,6 +1124,14 @@ const BrokenSquare = () => {
   return (
     <div className="broken-square-root">
       <canvas ref={canvasRef} className="broken-square-canvas" />
+      {mergeRemaining !== null && (
+        <div className="merge-overlay">
+          <div className="merge-box">
+            <div className="merge-msg">Merging will begin in</div>
+            <div className="merge-counter">{mergeRemaining}</div>
+          </div>
+        </div>
+      )}
       <style jsx>{`
         .broken-square-root {
           position: relative;
@@ -1074,6 +1149,34 @@ const BrokenSquare = () => {
           height: 100dvh;
           min-height: 100dvh;
           max-height: 100dvh;
+        }
+        .merge-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          pointer-events: none;
+        }
+        .merge-box {
+          text-align: center;
+          color: #f8fafc;
+          background: rgba(2, 6, 23, 0.36);
+          padding: 14px 22px;
+          border-radius: 10px;
+          backdrop-filter: blur(4px);
+        }
+        .merge-msg {
+          font-weight: 700;
+          font-size: 16px;
+          margin-bottom: 6px;
+        }
+        .merge-counter {
+          font-weight: 900;
+          font-size: 28px;
         }
       `}</style>
     </div>
