@@ -79,14 +79,53 @@ const COUNTRY_POOL: Country[] = [
 const COUNTRY_COUNT = 5;
 
 const ROUND_LIMIT = 4;
-const GAP_SIZE_RATIO = 0.067;
+const GAP_SIZE_RATIO = 0.0536;
+const GAP_ROTATION_SPEED = 0.7;
 const BALL_SPEED_RATIO = 2;
 const MAX_DT = 1 / 30;
+const TRAIL_MAX_POINTS = 100;
+const TRAIL_FADE_SPEED = 0.42;
+
+const COUNTRY_TRAIL_COLORS: Record<string, string> = {
+  India: "#ff9f45",
+  USA: "#7dd3fc",
+  Japan: "#f9a8d4",
+  Brazil: "#86efac",
+  Germany: "#f6c453",
+  France: "#93c5fd",
+  Canada: "#fb7185",
+  Australia: "#818cf8",
+  "South Korea": "#c4b5fd",
+  Italy: "#4ade80",
+  Spain: "#fbbf24",
+  Mexico: "#34d399",
+  Argentina: "#67e8f9",
+  China: "#f87171",
+  "United Kingdom": "#60a5fa",
+  "South Africa": "#a3e635",
+  Netherlands: "#fb923c",
+  Sweden: "#38bdf8",
+  Norway: "#f43f5e",
+  Turkey: "#ef4444",
+  Egypt: "#fca5a5",
+};
 
 let sharedAudioContext: AudioContext | null = null;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
+
+const hexToRgba = (hex: string, alpha: number) => {
+  const normalized = hex.replace("#", "");
+  const value = Number.parseInt(normalized, 16);
+  const red = (value >> 16) & 255;
+  const green = (value >> 8) & 255;
+  const blue = value & 255;
+  return `rgba(${red}, ${green}, ${blue}, ${clamp(alpha, 0, 1)})`;
+};
+
+const getTrailColor = (country: Country) =>
+  COUNTRY_TRAIL_COLORS[country.name] ?? country.color;
 
 const getRandomCountries = () =>
   [...COUNTRY_POOL].sort(() => Math.random() - 0.5).slice(0, COUNTRY_COUNT);
@@ -279,7 +318,7 @@ const createAudio = (): ChallengeAudio => {
   };
 };
 
-const getBallRadius = (arena: Arena) => clamp(arena.radius * 0.084, 13, 22);
+const getBallRadius = (arena: Arena) => clamp(arena.radius * 0.063, 10, 17);
 
 const getHudTop = (arena: Arena) =>
   Math.round(arena.y - arena.radius - getBallRadius(arena) * 4 - 86);
@@ -385,7 +424,8 @@ const drawArena = (
   exitOrder: Result[],
   countries: Country[],
   escapePulse: number,
-  trail: TrailPoint[],
+  trails: TrailPoint[][],
+  trailFades: number[],
 ) => {
   ctx.clearRect(0, 0, arena.canvasWidth, arena.canvasHeight);
   ctx.fillStyle = "#020617";
@@ -428,28 +468,72 @@ const drawArena = (
 
   // exit gap intentionally left empty (no glow)
 
-  const activeBall = activeIndex >= 0 ? balls[activeIndex] : null;
-  const activeCountry = activeIndex >= 0 ? countries[activeIndex] : null;
-  if (activeBall && activeCountry && !activeBall.escaped && trail.length > 1) {
+  const drawTrailPass = (
+    glow: boolean,
+    trail: TrailPoint[],
+    trailBall: Ball,
+    color: string,
+    fade: number,
+  ) => {
+    if (trail.length <= 1 || fade <= 0) return;
+
     ctx.save();
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
-    ctx.lineWidth = activeBall.radius * 0.7;
-    for (let index = 1; index < trail.length; index += 1) {
+    ctx.shadowColor = color;
+
+    if (trail.length === 2) {
+      const width = trailBall.radius * 0.7;
+      const opacity = 0.28 * fade;
+      ctx.lineWidth = glow ? width * 1.7 : width * 0.58;
+      ctx.shadowBlur = glow ? width * 2 : 0;
+      ctx.strokeStyle = hexToRgba(color, glow ? opacity * 0.42 : opacity);
+      ctx.beginPath();
+      ctx.moveTo(trail[0].x, trail[0].y);
+      ctx.lineTo(trail[1].x, trail[1].y);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
+
+    for (let index = 1; index < trail.length - 1; index += 1) {
       const previous = trail[index - 1];
       const current = trail[index];
-      const progress = index / (trail.length - 1);
-      const alpha = 0.05 + progress * 0.65;
-      ctx.strokeStyle = `${activeCountry.color}${Math.round(alpha * 255)
-        .toString(16)
-        .padStart(2, "0")}`;
+      const next = trail[index + 1];
+      const startPoint = {
+        x: (previous.x + current.x) / 2,
+        y: (previous.y + current.y) / 2,
+      };
+      const endPoint = {
+        x: (current.x + next.x) / 2,
+        y: (current.y + next.y) / 2,
+      };
+      const progress = index / Math.max(1, trail.length - 1);
+      const width = trailBall.radius * (0.1 + progress * 0.6);
+      const opacity = progress ** 0.85 * 0.28 * fade;
+
+      ctx.lineWidth = glow ? width * 1.7 : width * 0.58;
+      ctx.shadowBlur = glow ? width * 2 : 0;
+      ctx.strokeStyle = hexToRgba(color, glow ? opacity * 0.42 : opacity);
       ctx.beginPath();
-      ctx.moveTo(previous.x, previous.y);
-      ctx.lineTo(current.x, current.y);
+      ctx.moveTo(startPoint.x, startPoint.y);
+      ctx.quadraticCurveTo(current.x, current.y, endPoint.x, endPoint.y);
       ctx.stroke();
     }
+
     ctx.restore();
-  }
+  };
+
+  trails.forEach((trail, trailIndex) => {
+    const trailBall = balls[trailIndex];
+    const trailCountry = countries[trailIndex];
+    if (!trailBall || !trailCountry || trail.length <= 1) return;
+
+    const color = getTrailColor(trailCountry);
+    const fade = trailFades[trailIndex] ?? 1;
+    drawTrailPass(true, trail, trailBall, color, fade);
+    drawTrailPass(false, trail, trailBall, color, fade);
+  });
 
   balls.forEach((ball, index) => {
     if (!ball || ball.escaped) return;
@@ -504,7 +588,8 @@ const CountryEscapeChallenge = () => {
   const activeIndexRef = useRef(0);
   const phaseRef = useRef<RoundUi["phase"]>("intro");
   const escapePulseRef = useRef(0);
-  const trailRef = useRef<TrailPoint[]>([]);
+  const trailsRef = useRef<TrailPoint[][]>([]);
+  const trailFadesRef = useRef<number[]>([]);
   const [ui, setUi] = useState<RoundUi>({
     phase: "intro",
     countryIndex: 0,
@@ -549,7 +634,10 @@ const CountryEscapeChallenge = () => {
       const speed = arena.radius * BALL_SPEED_RATIO;
       const angle = getLaunchAngleAwayFromExit();
       activeIndexRef.current = index;
-      trailRef.current = [{ x: ball.x, y: ball.y }];
+      if (!trailsRef.current[index]?.length) {
+        trailsRef.current[index] = [{ x: ball.x, y: ball.y }];
+      }
+      trailFadesRef.current[index] = 1;
       ball.vx = Math.cos(angle) * speed;
       ball.vy = Math.sin(angle) * speed;
       roundStartedAtRef.current = performance.now();
@@ -607,9 +695,11 @@ const CountryEscapeChallenge = () => {
 
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
-      trailRef.current = [...trailRef.current, { x: ball.x, y: ball.y }].slice(
-        -72,
-      );
+      trailsRef.current[activeIndex] = [
+        ...(trailsRef.current[activeIndex] ?? []),
+        { x: ball.x, y: ball.y },
+      ].slice(-TRAIL_MAX_POINTS);
+      trailFadesRef.current[activeIndex] = 1;
 
       const dx = ball.x - arena.x;
       const dy = ball.y - arena.y;
@@ -619,7 +709,6 @@ const CountryEscapeChallenge = () => {
 
       if (insideGap && distanceFromCenter - ball.radius > arena.radius) {
         ball.escaped = true;
-        trailRef.current = [];
         recordEscape(activeIndex, elapsed);
         advanceTurn(arena, activeIndex);
         return;
@@ -650,7 +739,6 @@ const CountryEscapeChallenge = () => {
         ball.vx = 0;
         ball.vy = 0;
         ball.stuck = true;
-        trailRef.current = [];
         advanceTurn(arena, activeIndex);
       }
     };
@@ -662,6 +750,20 @@ const CountryEscapeChallenge = () => {
       const dt = Math.min((time - lastFrameAtRef.current) / 1000, MAX_DT);
       lastFrameAtRef.current = time;
       escapePulseRef.current = Math.max(0, escapePulseRef.current - dt * 1.8);
+      gapAngleRef.current = normalizeAngle(
+        gapAngleRef.current + dt * GAP_ROTATION_SPEED,
+      );
+      const currentActiveIndex =
+        phaseRef.current === "playing" ? activeIndexRef.current : -1;
+      trailFadesRef.current = trailFadesRef.current.map((fade, index) => {
+        const trail = trailsRef.current[index];
+        const ball = ballsRef.current[index];
+        if (!trail?.length || !ball) return 0;
+        if (index === currentActiveIndex && !ball.escaped && !ball.stuck) {
+          return 1;
+        }
+        return Math.max(0, fade - dt * TRAIL_FADE_SPEED);
+      });
 
       if (phaseRef.current === "playing") {
         const elapsed = (time - roundStartedAtRef.current) / 1000;
@@ -683,7 +785,8 @@ const CountryEscapeChallenge = () => {
         resultsRef.current,
         countriesRef.current,
         escapePulseRef.current,
-        trailRef.current,
+        trailsRef.current,
+        trailFadesRef.current,
       );
 
       animationRef.current = requestAnimationFrame(draw);
@@ -712,6 +815,10 @@ const CountryEscapeChallenge = () => {
 
     arenaRef.current = resizeCanvas(canvas);
     ballsRef.current = new Array(countriesRef.current.length).fill(null);
+    trailsRef.current = new Array(countriesRef.current.length).fill(null).map(
+      () => [],
+    );
+    trailFadesRef.current = new Array(countriesRef.current.length).fill(0);
     setResultsPos({
       left: Math.round(arenaRef.current.x + arenaRef.current.radius + 12),
       top: Math.round(arenaRef.current.y),
@@ -746,11 +853,16 @@ const CountryEscapeChallenge = () => {
     countriesRef.current = nextCountries;
     setCountries(nextCountries);
     ballsRef.current = new Array(nextCountries.length).fill(null);
+    trailsRef.current = new Array(nextCountries.length).fill(null).map(
+      () => [],
+    );
+    trailFadesRef.current = new Array(nextCountries.length).fill(0);
     phaseRef.current = "playing";
     activeIndexRef.current = 0;
     const first = createBall(arena);
     ballsRef.current[0] = first;
-    trailRef.current = [{ x: first.x, y: first.y }];
+    trailsRef.current[0] = [{ x: first.x, y: first.y }];
+    trailFadesRef.current[0] = 1;
     const speed = arena.radius * BALL_SPEED_RATIO;
     const angle = getLaunchAngleAwayFromExit();
     first.vx = Math.cos(angle) * speed;
@@ -836,23 +948,23 @@ const CountryEscapeChallenge = () => {
           position: fixed;
           left: 50%;
           z-index: 6;
-          width: min(820px, calc(100% - 40px));
+          width: min(560px, calc(100% - 40px));
           transform: translateX(-50%);
           pointer-events: none;
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 8px;
+          gap: 10px;
           text-align: center;
         }
 
         .hud h1 {
           margin: 0 auto;
-          max-width: 90vw;
-          width: min(90vw, 720px);
+          max-width: 92vw;
+          width: min(92vw, 500px);
           font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
           font-size: clamp(1.3rem, 3.6vw, 1.8rem);
-          line-height: 1.15;
+          line-height: 1.24;
           font-weight: 900;
           color: #ffffff;
           text-align: center;
@@ -877,8 +989,8 @@ const CountryEscapeChallenge = () => {
           padding: 4px 8px;
           border-radius: 6px;
           background: rgba(255, 255, 255, 0.02);
-          transform: translateY(-4px);
-          margin-bottom: 8px;
+          transform: none;
+          margin-bottom: 0;
         }
 
         /* Results stack (left) */
@@ -967,8 +1079,8 @@ const CountryEscapeChallenge = () => {
           align-items: center;
           justify-content: center;
           gap: 18px;
-          min-height: 72px;
-          padding: 13px 16px;
+          min-height: 60px;
+          padding: 8px 14px;
           border-radius: 8px;
         }
 
@@ -993,10 +1105,6 @@ const CountryEscapeChallenge = () => {
             flex-direction: column;
             gap: 10px;
             align-items: center;
-          }
-
-          .timer {
-            margin-bottom: 12px;
           }
 
           .results-card {
