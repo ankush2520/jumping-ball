@@ -551,13 +551,13 @@ const drawArena = (
     ctx.shadowBlur = isActive ? 18 + escapePulse * 30 : 8;
     ctx.beginPath();
     ctx.arc(0, 0, ball.radius, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(248, 250, 252, 0.96)";
+    ctx.fillStyle = country.color;
     ctx.fill();
     ctx.clip();
-    ctx.font = `${ball.radius * 2.05}px Arial, Helvetica, sans-serif`;
+    ctx.font = `${ball.radius * 2.85}px "Apple Color Emoji", "Segoe UI Emoji", Arial, Helvetica, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(country.flag, 0, 1);
+    ctx.fillText(country.flag, 0, ball.radius * 0.02);
     ctx.restore();
 
     ctx.save();
