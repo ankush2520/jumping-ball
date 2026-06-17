@@ -307,16 +307,16 @@ const createAudio = (): ChallengeAudio => {
   };
 };
 
-const getBallRadius = (arena: Arena) => clamp(arena.radius * 0.063, 10, 17);
+const getBallRadius = () => 12.75;
 
 const getHudTop = (arena: Arena) =>
-  Math.round(arena.y - arena.radius - getBallRadius(arena) * 4 - 86);
+  Math.round(arena.y - arena.radius - getBallRadius() * 4 - 86);
 
 const getStartTop = (arena: Arena) =>
-  Math.round(arena.y + arena.radius + getBallRadius(arena) * 1.55);
+  Math.round(arena.y + arena.radius + getBallRadius() * 1.55);
 
 const createBall = (arena: Arena): Ball => {
-  const radius = getBallRadius(arena);
+  const radius = getBallRadius();
   const spawnAngle = Math.random() * Math.PI * 2;
   const spawnRadius = Math.sqrt(Math.random()) * (arena.radius - radius * 2.4);
 
@@ -548,6 +548,7 @@ const CountryEscapeChallenge = () => {
   });
   const [startTop, setStartTop] = useState(0);
   const [hudTop, setHudTop] = useState(0);
+  const [escapedCount, setEscapedCount] = useState(0);
 
   if (audioRef.current === null) {
     audioRef.current = createAudio();
@@ -616,6 +617,7 @@ const CountryEscapeChallenge = () => {
       };
 
       resultsRef.current = [...resultsRef.current, result];
+      setEscapedCount(resultsRef.current.length);
       escapePulseRef.current = 1;
       void country;
       audioRef.current?.playEscape();
@@ -762,6 +764,7 @@ const CountryEscapeChallenge = () => {
     if (!arena) return;
 
     resultsRef.current = [];
+    setEscapedCount(0);
     const nextCountries = getRandomCountries();
     countriesRef.current = nextCountries;
     ballsRef.current = new Array(nextCountries.length).fill(null);
@@ -793,7 +796,8 @@ const CountryEscapeChallenge = () => {
       <canvas ref={canvasRef} className="country-canvas" />
 
       <div className="hud" aria-live="polite" style={{ top: `${hudTop}px` }}>
-        <h1>How Many Balls Can Escape in 4 Seconds?</h1>
+        <h1>Can a ball escape in 4 seconds ?</h1>
+        <div className="escaped-count">Escaped: {escapedCount}</div>
 
         <div className="hud-main">
           <div className="timer" role="timer" aria-live="polite">
@@ -863,6 +867,15 @@ const CountryEscapeChallenge = () => {
           display: flex;
           align-items: center;
           justify-content: center;
+        }
+
+        .escaped-count {
+          font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
+          font-size: clamp(0.82rem, 2.2vw, 1rem);
+          line-height: 1;
+          font-weight: 800;
+          color: rgba(248, 250, 252, 0.86);
+          text-shadow: 0 0 10px rgba(255, 255, 255, 0.16);
         }
 
         .timer {
