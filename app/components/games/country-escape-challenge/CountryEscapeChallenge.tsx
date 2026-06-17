@@ -307,7 +307,7 @@ const createAudio = (): ChallengeAudio => {
   };
 };
 
-const getBallRadius = () => 12.75;
+const getBallRadius = () => 7.5;
 
 const getHudTop = (arena: Arena) =>
   Math.round(arena.y - arena.radius - getBallRadius() * 4 - 86);
@@ -456,7 +456,11 @@ const drawArena = (
 
   // exit gap intentionally left empty (no glow)
 
-  const drawPaintStroke = (trail: TrailPoint[], trailBall: Ball, color: string) => {
+  const drawPaintStroke = (
+    trail: TrailPoint[],
+    trailBall: Ball,
+    color: string,
+  ) => {
     if (trail.length <= 1) return;
 
     ctx.save();
@@ -736,9 +740,9 @@ const CountryEscapeChallenge = () => {
 
     arenaRef.current = resizeCanvas(canvas);
     ballsRef.current = new Array(countriesRef.current.length).fill(null);
-    trailsRef.current = new Array(countriesRef.current.length).fill(null).map(
-      () => [],
-    );
+    trailsRef.current = new Array(countriesRef.current.length)
+      .fill(null)
+      .map(() => []);
     setStartTop(getStartTop(arenaRef.current));
     setHudTop(getHudTop(arenaRef.current));
     lastFrameAtRef.current = performance.now();
@@ -768,9 +772,9 @@ const CountryEscapeChallenge = () => {
     const nextCountries = getRandomCountries();
     countriesRef.current = nextCountries;
     ballsRef.current = new Array(nextCountries.length).fill(null);
-    trailsRef.current = new Array(nextCountries.length).fill(null).map(
-      () => [],
-    );
+    trailsRef.current = new Array(nextCountries.length)
+      .fill(null)
+      .map(() => []);
     phaseRef.current = "playing";
     activeIndexRef.current = 0;
     const first = createBall(arena);
