@@ -28,6 +28,7 @@ type Ball = {
   vy: number;
   radius: number;
   escaped: boolean;
+  stuck: boolean;
 };
 
 type RoundUi = {
@@ -46,24 +47,44 @@ type ChallengeAudio = {
   dispose: () => void;
 };
 
-const COUNTRIES: Country[] = [
+const COUNTRY_POOL: Country[] = [
   { name: "India", flag: "🇮🇳", color: "#f97316" },
   { name: "USA", flag: "🇺🇸", color: "#38bdf8" },
   { name: "Japan", flag: "🇯🇵", color: "#f8fafc" },
   { name: "Brazil", flag: "🇧🇷", color: "#22c55e" },
   { name: "Germany", flag: "🇩🇪", color: "#facc15" },
+  { name: "France", flag: "🇫🇷", color: "#60a5fa" },
+  { name: "Canada", flag: "🇨🇦", color: "#ef4444" },
+  { name: "Australia", flag: "🇦🇺", color: "#2563eb" },
+  { name: "South Korea", flag: "🇰🇷", color: "#f8fafc" },
+  { name: "Italy", flag: "🇮🇹", color: "#22c55e" },
+  { name: "Spain", flag: "🇪🇸", color: "#facc15" },
+  { name: "Mexico", flag: "🇲🇽", color: "#16a34a" },
+  { name: "Argentina", flag: "🇦🇷", color: "#7dd3fc" },
+  { name: "China", flag: "🇨🇳", color: "#ef4444" },
+  { name: "United Kingdom", flag: "🇬🇧", color: "#60a5fa" },
+  { name: "South Africa", flag: "🇿🇦", color: "#22c55e" },
+  { name: "Netherlands", flag: "🇳🇱", color: "#f97316" },
+  { name: "Sweden", flag: "🇸🇪", color: "#38bdf8" },
+  { name: "Norway", flag: "🇳🇴", color: "#ef4444" },
+  { name: "Turkey", flag: "🇹🇷", color: "#dc2626" },
+  { name: "Egypt", flag: "🇪🇬", color: "#f8fafc" },
 ];
 
-const ROUND_LIMIT = 5;
-const GAP_SIZE_RATIO = 0.2;
-const GAP_ROTATION_SPEED = 0.72;
-const BALL_SPEED_RATIO = 0.9;
+const COUNTRY_COUNT = 12;
+
+const ROUND_LIMIT = 4;
+const GAP_SIZE_RATIO = 0.13;
+const BALL_SPEED_RATIO = 1.8;
 const MAX_DT = 1 / 30;
 
 let sharedAudioContext: AudioContext | null = null;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
+
+const getRandomCountries = () =>
+  [...COUNTRY_POOL].sort(() => Math.random() - 0.5).slice(0, COUNTRY_COUNT);
 
 const normalizeAngle = (angle: number) => {
   const full = Math.PI * 2;
@@ -254,46 +275,19 @@ const createAudio = (): ChallengeAudio => {
 };
 
 const createBall = (arena: Arena): Ball => {
-  const radius = clamp(arena.radius * 0.105, 16, 28);
-  const speed = arena.radius * BALL_SPEED_RATIO;
-  const angle = Math.random() * Math.PI * 2;
+  const radius = clamp(arena.radius * 0.084, 13, 22);
   const spawnAngle = Math.random() * Math.PI * 2;
   const spawnRadius = Math.sqrt(Math.random()) * (arena.radius - radius * 2.4);
 
   return {
     x: arena.x + Math.cos(spawnAngle) * spawnRadius,
     y: arena.y + Math.sin(spawnAngle) * spawnRadius,
-    vx: Math.cos(angle) * speed,
-    vy: Math.sin(angle) * speed,
+    vx: 0,
+    vy: 0,
     radius,
     escaped: false,
+    stuck: false,
   };
-};
-
-const createBalls = (arena: Arena) => {
-  const balls: Ball[] = [];
-
-  for (let index = 0; index < COUNTRIES.length; index += 1) {
-    let ball = createBall(arena);
-
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const candidate = createBall(arena);
-      const separated = balls.every(
-        (existing) =>
-          Math.hypot(existing.x - candidate.x, existing.y - candidate.y) >
-          existing.radius + candidate.radius + 8,
-      );
-
-      if (separated) {
-        ball = candidate;
-        break;
-      }
-    }
-
-    balls.push(ball);
-  }
-
-  return balls;
 };
 
 const isAngleInsideGap = (angle: number, gapCenter: number, gapSize: number) =>
@@ -304,6 +298,20 @@ const preserveSpeed = (ball: Ball, arena: Arena, multiplier = 1) => {
   const current = Math.hypot(ball.vx, ball.vy) || 1;
   ball.vx = (ball.vx / current) * speed;
   ball.vy = (ball.vy / current) * speed;
+};
+
+const getLaunchAngleAwayFromExit = () => {
+  const exitAngle = 0;
+  let angle = Math.random() * Math.PI * 2;
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    angle = Math.random() * Math.PI * 2;
+    if (angleDistance(angle, exitAngle) > Math.PI / 3) {
+      return angle;
+    }
+  }
+
+  return Math.PI + (Math.random() - 0.5) * Math.PI;
 };
 
 const applyRandomBounce = (ball: Ball, angleRange = 0.6) => {
@@ -317,16 +325,16 @@ const applyRandomBounce = (ball: Ball, angleRange = 0.6) => {
 };
 
 const resolveCountryCollisions = (
-  balls: Ball[],
+  balls: Array<Ball | null>,
   activeIndex: number,
   arena: Arena,
   playBounce: () => void,
 ) => {
   const activeBall = balls[activeIndex];
-  if (!activeBall || activeBall.escaped) return;
+  if (!activeBall || activeBall.escaped || activeBall.stuck) return;
 
   balls.forEach((otherBall, index) => {
-    if (index === activeIndex || otherBall.escaped) return;
+    if (index === activeIndex || !otherBall || otherBall.escaped) return;
 
     const dx = activeBall.x - otherBall.x;
     const dy = activeBall.y - otherBall.y;
@@ -347,8 +355,8 @@ const resolveCountryCollisions = (
     if (velocityAlongNormal < 0) {
       activeBall.vx -= 2 * velocityAlongNormal * nx;
       activeBall.vy -= 2 * velocityAlongNormal * ny;
-      preserveSpeed(activeBall, arena, 2);
-      applyRandomBounce(activeBall, 0.6);
+      preserveSpeed(activeBall, arena);
+      applyRandomBounce(activeBall, 1.2);
       playBounce();
     }
   });
@@ -359,9 +367,10 @@ const drawArena = (
   arena: Arena,
   gapCenter: number,
   gapSize: number,
-  balls: Ball[],
+  balls: Array<Ball | null>,
   activeIndex: number,
   exitOrder: Result[],
+  countries: Country[],
   escapePulse: number,
 ) => {
   ctx.clearRect(0, 0, arena.canvasWidth, arena.canvasHeight);
@@ -403,30 +412,20 @@ const drawArena = (
   ctx.stroke();
   ctx.restore();
 
-  // draw glowing exit gap to make exit more visible
-  ctx.save();
-  const gapStart = gapCenter - gapSize / 2;
-  const gapEnd = gapCenter + gapSize / 2;
-  ctx.beginPath();
-  ctx.strokeStyle = "rgba(34, 197, 94, 0.98)";
-  ctx.shadowColor = "rgba(34, 197, 94, 0.9)";
-  ctx.shadowBlur = 26;
-  ctx.lineWidth = clamp(arena.radius * 0.04, 10, 24);
-  ctx.lineCap = "round";
-  ctx.arc(arena.x, arena.y, arena.radius + 1, gapStart, gapEnd, false);
-  ctx.stroke();
-  ctx.restore();
+  // exit gap intentionally left empty (no glow)
 
   balls.forEach((ball, index) => {
-    if (ball.escaped) return;
+    if (!ball || ball.escaped) return;
 
-    const country = COUNTRIES[index];
+    const country = countries[index];
+    if (!country) return;
     const isActive = activeIndex < 0 || index === activeIndex;
+    const alpha = 1;
     const pulse = isActive ? 1 + escapePulse * 0.22 : 1;
     ctx.save();
     ctx.translate(ball.x, ball.y);
     ctx.scale(pulse, pulse);
-    ctx.globalAlpha = isActive ? 1 : 0.72;
+    ctx.globalAlpha = alpha;
     ctx.shadowColor = country.color;
     ctx.shadowBlur = isActive ? 18 + escapePulse * 30 : 8;
     ctx.beginPath();
@@ -443,7 +442,7 @@ const drawArena = (
     ctx.save();
     ctx.translate(ball.x, ball.y);
     ctx.scale(pulse, pulse);
-    ctx.globalAlpha = isActive ? 1 : 0.72;
+    ctx.globalAlpha = alpha;
     ctx.shadowBlur = 0;
     ctx.strokeStyle = "rgba(255, 255, 255, 0.72)";
     ctx.lineWidth = 2;
@@ -452,16 +451,16 @@ const drawArena = (
     ctx.stroke();
     ctx.restore();
   });
-
-  };
+};
 
 const CountryEscapeChallenge = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<ChallengeAudio | null>(null);
   const animationRef = useRef<number | null>(null);
   const arenaRef = useRef<Arena | null>(null);
-  const ballsRef = useRef<Ball[]>([]);
-  const gapAngleRef = useRef(-Math.PI / 2);
+  const ballsRef = useRef<Array<Ball | null>>([]);
+  const countriesRef = useRef<Country[]>(getRandomCountries());
+  const gapAngleRef = useRef(0);
   const roundStartedAtRef = useRef(0);
   const lastFrameAtRef = useRef(0);
   const resultsRef = useRef<Result[]>([]);
@@ -475,6 +474,16 @@ const CountryEscapeChallenge = () => {
     message: "",
   });
   const [results, setResults] = useState<Result[]>([]);
+  const [countries, setCountries] = useState<Country[]>(countriesRef.current);
+  const [resultsPos, setResultsPos] = useState<{ left: number; top: number }>(
+    () => ({
+      left: 16,
+      top: Math.floor(
+        (typeof window !== "undefined" ? window.innerHeight : 600) / 2,
+      ),
+    }),
+  );
+  const [startTop, setStartTop] = useState(0);
 
   if (audioRef.current === null) {
     audioRef.current = createAudio();
@@ -490,11 +499,16 @@ const CountryEscapeChallenge = () => {
     };
 
     const activateBall = (index: number, arena: Arena) => {
-      const ball = ballsRef.current[index];
-      if (!ball || ball.escaped) return;
+      let ball = ballsRef.current[index];
+      // create ball for this slot if missing
+      if (!ball) {
+        ball = createBall(arena);
+        ballsRef.current[index] = ball;
+      }
+      if (ball.escaped || ball.stuck) return false;
 
       const speed = arena.radius * BALL_SPEED_RATIO;
-      const angle = Math.random() * Math.PI * 2;
+      const angle = getLaunchAngleAwayFromExit();
       activeIndexRef.current = index;
       ball.vx = Math.cos(angle) * speed;
       ball.vy = Math.sin(angle) * speed;
@@ -505,14 +519,15 @@ const CountryEscapeChallenge = () => {
         elapsed: ROUND_LIMIT,
         message: "",
       });
+      return true;
     };
 
     const advanceTurn = (arena: Arena, fromIndex = activeIndexRef.current) => {
       for (let offset = 1; offset <= ballsRef.current.length; offset += 1) {
         const nextIndex = (fromIndex + offset) % ballsRef.current.length;
-        if (!ballsRef.current[nextIndex]?.escaped) {
-          activateBall(nextIndex, arena);
-          return;
+        const candidate = ballsRef.current[nextIndex];
+        if (!candidate || (!candidate.escaped && !candidate.stuck)) {
+          if (activateBall(nextIndex, arena)) return;
         }
       }
 
@@ -526,7 +541,8 @@ const CountryEscapeChallenge = () => {
     };
 
     const recordEscape = (index: number, elapsed: number) => {
-      const country = COUNTRIES[index];
+      const country = countriesRef.current[index];
+      if (!country) return;
       const result: Result = {
         country,
         time: elapsed,
@@ -544,7 +560,7 @@ const CountryEscapeChallenge = () => {
       const activeIndex = activeIndexRef.current;
       const ball = ballsRef.current[activeIndex];
 
-      if (!ball || ball.escaped) {
+      if (!ball || ball.escaped || ball.stuck) {
         advanceTurn(arena, activeIndex);
         return;
       }
@@ -573,8 +589,8 @@ const CountryEscapeChallenge = () => {
         if (velocityAlongNormal > 0) {
           ball.vx -= 2 * velocityAlongNormal * nx;
           ball.vy -= 2 * velocityAlongNormal * ny;
-          preserveSpeed(ball, arena, 2);
-          applyRandomBounce(ball, 0.6);
+          preserveSpeed(ball, arena);
+          applyRandomBounce(ball, 1.2);
           audioRef.current?.playBounce();
         }
 
@@ -587,6 +603,9 @@ const CountryEscapeChallenge = () => {
       );
 
       if (elapsed >= ROUND_LIMIT) {
+        ball.vx = 0;
+        ball.vy = 0;
+        ball.stuck = true;
         advanceTurn(arena, activeIndex);
       }
     };
@@ -597,9 +616,6 @@ const CountryEscapeChallenge = () => {
 
       const dt = Math.min((time - lastFrameAtRef.current) / 1000, MAX_DT);
       lastFrameAtRef.current = time;
-      gapAngleRef.current = normalizeAngle(
-        gapAngleRef.current + GAP_ROTATION_SPEED * dt,
-      );
       escapePulseRef.current = Math.max(0, escapePulseRef.current - dt * 1.8);
 
       if (phaseRef.current === "playing") {
@@ -620,6 +636,7 @@ const CountryEscapeChallenge = () => {
         ballsRef.current,
         phaseRef.current === "playing" ? activeIndexRef.current : -1,
         resultsRef.current,
+        countriesRef.current,
         escapePulseRef.current,
       );
 
@@ -629,10 +646,17 @@ const CountryEscapeChallenge = () => {
     const handleResize = () => {
       const arena = resizeCanvas(canvas);
       arenaRef.current = arena;
-      ballsRef.current = createBalls(arena).map((ball, index) => ({
-        ...ball,
-        escaped: ballsRef.current[index]?.escaped ?? false,
-      }));
+      // preserve existing balls but ensure array length matches countries
+      const newBalls = new Array(countriesRef.current.length)
+        .fill(null)
+        .map((_, i) => ballsRef.current[i] ?? null);
+      ballsRef.current = newBalls;
+      // position results panel to the right side of the arena
+      setResultsPos({
+        left: Math.round(arena.x + arena.radius + 12),
+        top: Math.round(arena.y),
+      });
+      setStartTop(Math.round(arena.y + arena.radius + 14));
     };
 
     const unlockSound = () => {
@@ -640,7 +664,14 @@ const CountryEscapeChallenge = () => {
     };
 
     arenaRef.current = resizeCanvas(canvas);
-    ballsRef.current = createBalls(arenaRef.current);
+    ballsRef.current = new Array(countriesRef.current.length).fill(null);
+    setResultsPos({
+      left: Math.round(arenaRef.current.x + arenaRef.current.radius + 12),
+      top: Math.round(arenaRef.current.y),
+    });
+    setStartTop(
+      Math.round(arenaRef.current.y + arenaRef.current.radius + 14),
+    );
     lastFrameAtRef.current = performance.now();
     window.addEventListener("resize", handleResize);
     window.addEventListener("pointerdown", unlockSound, { passive: true });
@@ -665,10 +696,18 @@ const CountryEscapeChallenge = () => {
 
     resultsRef.current = [];
     setResults([]);
-    ballsRef.current = createBalls(arena);
+    const nextCountries = getRandomCountries();
+    countriesRef.current = nextCountries;
+    setCountries(nextCountries);
+    ballsRef.current = new Array(nextCountries.length).fill(null);
     phaseRef.current = "playing";
     activeIndexRef.current = 0;
-    preserveSpeed(ballsRef.current[0], arena);
+    const first = createBall(arena);
+    ballsRef.current[0] = first;
+    const speed = arena.radius * BALL_SPEED_RATIO;
+    const angle = getLaunchAngleAwayFromExit();
+    first.vx = Math.cos(angle) * speed;
+    first.vy = Math.sin(angle) * speed;
     roundStartedAtRef.current = performance.now();
     escapePulseRef.current = 0;
     setUi({
@@ -685,47 +724,42 @@ const CountryEscapeChallenge = () => {
       <canvas ref={canvasRef} className="country-canvas" />
 
       <div className="hud" aria-live="polite">
-        <h1>COUNTRY ESCAPE CHALLENGE</h1>
-        <div className="subtitle">WHICH COUNTRY ESCAPES FIRST?</div>
+        <h1>how many country balls can escape in 4 secs</h1>
 
         <div className="hud-main">
-          <div className="current-country">
-            <div className="flag">{COUNTRIES[ui.countryIndex]?.flag}</div>
-            <div className="name">
-              {COUNTRIES[ui.countryIndex]?.name.toUpperCase()}
-            </div>
-          </div>
-
           <div className="timer" role="timer" aria-live="polite">
             {ui.phase === "complete" ? "0.0" : ui.elapsed.toFixed(1)}s
           </div>
         </div>
       </div>
 
-      <div className="results-card" aria-hidden={ui.phase === "intro"}>
-        <div className="title">🏆 RESULTS</div>
-        {COUNTRIES.map((country, index) => {
-          const escaped = results.some((r) => r.country.name === country.name);
-          const isPlaying = ui.phase === "playing" && ui.countryIndex === index;
-          const cls = escaped ? "escaped" : isPlaying ? "playing" : "waiting";
-          return (
-            <div key={country.name} className={`row ${cls}`}>
-              <span>{country.flag}</span>
-              <span>
-                {escaped ? "Escape" : isPlaying ? "Playing" : "Waiting"}
-              </span>
-            </div>
-          );
-        })}
+      <div
+        className="results-card"
+        aria-hidden={ui.phase === "intro"}
+        style={{
+          left: `${resultsPos.left}px`,
+          top: `${resultsPos.top}px`,
+          transform: "translateY(-50%)",
+        }}
+      >
+        <div className="rank-stack" aria-hidden={ui.phase === "intro"}>
+          {Array.from({ length: countries.length }).map((_, slotIndex) => {
+            const filled = !!results[slotIndex];
+            const res = results[slotIndex];
+            return (
+              <div key={slotIndex} className={`slot ${filled ? "filled" : ""}`}>
+                <div className="circle">{filled ? res.country.flag : ""}</div>
+                {filled ? (
+                  <div className="country-name">{res.country.name}</div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {ui.phase === "intro" ? (
-        <div className="start-panel">
-          <div className="flag-row" aria-label="Countries">
-            {COUNTRIES.map((country) => (
-              <span key={country.name}>{country.flag}</span>
-            ))}
-          </div>
+        <div className="start-panel" style={{ top: `${startTop}px` }}>
           <button type="button" onClick={startChallenge}>
             START
           </button>
@@ -768,8 +802,8 @@ const CountryEscapeChallenge = () => {
         .hud h1 {
           margin: 0;
           font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
-          font-size: clamp(1.5rem, 6.4vw, 2.6rem);
-          line-height: 1;
+          font-size: clamp(1.3rem, 3.6vw, 1.8rem);
+          line-height: 1.15;
           font-weight: 900;
           color: #ffffff;
           text-shadow:
@@ -777,92 +811,90 @@ const CountryEscapeChallenge = () => {
             0 10px 28px rgba(2, 6, 23, 0.72);
         }
 
-        .subtitle {
-          font-size: clamp(0.9rem, 2.2vw, 1.1rem);
-          color: rgba(248, 250, 252, 0.88);
-          font-weight: 700;
-          letter-spacing: 0.06em;
-        }
-
         .hud-main {
           display: flex;
-          gap: 18px;
           align-items: center;
-          margin-top: 6px;
-        }
-
-        .current-country {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 8px 12px;
-          border-radius: 10px;
-          background: rgba(2, 6, 23, 0.5);
-          box-shadow: 0 8px 24px rgba(2, 6, 23, 0.55);
-        }
-
-        .current-country .flag {
-          font-size: clamp(1.6rem, 5vw, 2.6rem);
-        }
-
-        .current-country .name {
-          font-size: clamp(1rem, 2.6vw, 1.6rem);
-          font-weight: 900;
-          color: #ffffff;
-          text-transform: uppercase;
+          justify-content: center;
         }
 
         .timer {
           font-weight: 900;
           color: #ffffff;
-          font-size: clamp(2.8rem, 12vw, 6rem);
+          font-size: clamp(1rem, 4vw, 1.6rem);
           line-height: 1;
-          text-shadow:
-            0 0 28px rgba(255, 255, 255, 0.95),
-            0 20px 40px rgba(2, 6, 23, 0.8);
-          padding: 6px 10px;
-          border-radius: 8px;
+          text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
+          padding: 4px 8px;
+          border-radius: 6px;
           background: rgba(255, 255, 255, 0.02);
+          transform: translateY(4px);
         }
 
-        /* Results card on the left */
+        /* Results stack (left) */
         .results-card {
           position: fixed;
-          left: 16px;
           top: 50%;
           transform: translateY(-50%);
           z-index: 6;
-          background: rgba(2, 6, 23, 0.6);
-          border: 1px solid rgba(148, 163, 184, 0.12);
-          padding: 12px 14px;
+          background: rgba(2, 6, 23, 0.36);
+          border: 1px solid rgba(148, 163, 184, 0.08);
+          padding: 7px 7px;
           border-radius: 12px;
-          min-width: 120px;
-          box-shadow: 0 12px 40px rgba(2, 6, 23, 0.5);
+          min-width: 108px;
+          max-width: 150px;
+          box-shadow: 0 12px 30px rgba(2, 6, 23, 0.45);
           pointer-events: auto;
-        }
-
-        .results-card .title {
-          font-weight: 900;
-          margin-bottom: 8px;
-          font-size: 0.9rem;
-        }
-
-        .results-card .row {
           display: flex;
           align-items: center;
-          gap: 8px;
-          padding: 6px 0;
-          font-weight: 700;
+          justify-content: center;
         }
 
-        .results-card .escaped {
-          color: #16a34a;
+        .rank-stack {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          padding: 3px 0;
+          align-items: stretch;
         }
-        .results-card .playing {
-          color: #f59e0b;
+
+        .slot {
+          display: flex;
+          align-items: center;
+          justify-content: flex-start;
+          gap: 6px;
+          min-height: 28px;
         }
-        .results-card .waiting {
-          color: #94a3b8;
+
+        .circle {
+          flex: 0 0 auto;
+          width: 28px;
+          height: 28px;
+          border-radius: 999px;
+          border: 1px solid rgba(148, 163, 184, 0.12);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.82rem;
+          color: rgba(255, 255, 255, 0.9);
+          background: rgba(255, 255, 255, 0.02);
+        }
+
+        .slot.filled .circle {
+          background: rgba(255, 255, 255, 0.96);
+          color: #000000;
+          border-color: rgba(255, 255, 255, 0.9);
+        }
+
+        .country-name {
+          min-width: 0;
+          max-width: 98px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 0.68rem;
+          line-height: 1;
+          font-weight: 800;
+          color: rgba(248, 250, 252, 0.88);
+          text-shadow: 0 1px 8px rgba(2, 6, 23, 0.8);
         }
 
         .start-panel {
@@ -879,7 +911,6 @@ const CountryEscapeChallenge = () => {
         }
 
         .start-panel {
-          bottom: calc(30px + env(safe-area-inset-bottom, 0px));
           display: flex;
           align-items: center;
           justify-content: center;
@@ -887,13 +918,6 @@ const CountryEscapeChallenge = () => {
           min-height: 72px;
           padding: 13px 16px;
           border-radius: 8px;
-        }
-
-        .flag-row {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          font-size: clamp(1.55rem, 5vw, 2.25rem);
         }
 
         button {
