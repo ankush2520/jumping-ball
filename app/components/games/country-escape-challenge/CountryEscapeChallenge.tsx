@@ -669,9 +669,7 @@ const CountryEscapeChallenge = () => {
       left: Math.round(arenaRef.current.x + arenaRef.current.radius + 12),
       top: Math.round(arenaRef.current.y),
     });
-    setStartTop(
-      Math.round(arenaRef.current.y + arenaRef.current.radius + 14),
-    );
+    setStartTop(Math.round(arenaRef.current.y + arenaRef.current.radius + 14));
     lastFrameAtRef.current = performance.now();
     window.addEventListener("resize", handleResize);
     window.addEventListener("pointerdown", unlockSound, { passive: true });
@@ -724,7 +722,7 @@ const CountryEscapeChallenge = () => {
       <canvas ref={canvasRef} className="country-canvas" />
 
       <div className="hud" aria-live="polite">
-        <h1>how many country balls can escape in 4 secs</h1>
+        <h1>How Many Country Balls Can Escape in 4 Seconds?</h1>
 
         <div className="hud-main">
           <div className="timer" role="timer" aria-live="polite">
@@ -797,18 +795,23 @@ const CountryEscapeChallenge = () => {
           flex-direction: column;
           align-items: center;
           gap: 8px;
+          text-align: center;
         }
 
         .hud h1 {
-          margin: 0;
+          margin: 0 auto;
+          max-width: 90vw;
+          width: min(90vw, 720px);
           font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
           font-size: clamp(1.3rem, 3.6vw, 1.8rem);
           line-height: 1.15;
           font-weight: 900;
           color: #ffffff;
+          text-align: center;
           text-shadow:
             0 0 18px rgba(255, 255, 255, 0.12),
             0 10px 28px rgba(2, 6, 23, 0.72);
+          word-break: keep-all;
         }
 
         .hud-main {
@@ -826,7 +829,8 @@ const CountryEscapeChallenge = () => {
           padding: 4px 8px;
           border-radius: 6px;
           background: rgba(255, 255, 255, 0.02);
-          transform: translateY(4px);
+          transform: translateY(-4px);
+          margin-bottom: 8px;
         }
 
         /* Results stack (left) */
@@ -935,7 +939,7 @@ const CountryEscapeChallenge = () => {
         @media (max-width: 680px) {
           .hud {
             top: calc(46px + env(safe-area-inset-top, 0px));
-            width: min(390px, calc(100% - 36px));
+            width: min(90vw, calc(100% - 36px));
           }
 
           .hud-main {
@@ -944,14 +948,33 @@ const CountryEscapeChallenge = () => {
             align-items: center;
           }
 
+          .timer {
+            margin-bottom: 12px;
+          }
+
           .results-card {
-            left: 50%;
-            top: auto;
-            bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-            transform: translateX(-50%);
-            width: calc(100% - 32px);
-            display: flex;
+            left: 50% !important;
+            right: auto !important;
+            top: auto !important;
+            bottom: 16px !important;
+            transform: translateX(-50%) !important;
+            width: min(90vw, 360px) !important;
+            max-width: calc(100% - 32px);
+          }
+
+          .rank-stack {
+            flex-direction: row;
+            flex-wrap: wrap;
             justify-content: center;
+            gap: 10px;
+          }
+
+          .slot {
+            justify-content: center;
+          }
+
+          .country-name {
+            display: none;
           }
 
           .start-panel {
