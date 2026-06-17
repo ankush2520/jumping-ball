@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import BrokenSquare from "../components/games/broken-square/BrokenSquare";
+import CountryEscapeChallenge from "../components/games/country-escape-challenge/CountryEscapeChallenge";
 import PlasmaBounce from "../components/games/plasma-bounce/PlasmaBounce";
 import ShrinkingEscape from "../components/games/shrinking-escape/ShrinkingEscape";
 
@@ -14,6 +15,7 @@ export type Simulation = {
   status: SimulationStatus;
   accentColor: string;
   icon:
+    | "country-escape-challenge"
     | "plasma-bounce"
     | "broken-square"
     | "shrinking-escape";
@@ -21,6 +23,17 @@ export type Simulation = {
 };
 
 export const simulations: Simulation[] = [
+  {
+    id: "country-escape-challenge",
+    title: "Country Escape Challenge",
+    subtitle: "ROTATING EXIT RACE",
+    description: "Five country balls race the same moving gap one at a time.",
+    component: CountryEscapeChallenge,
+    status: "experimental",
+    accentColor: "#22c55e",
+    icon: "country-escape-challenge",
+    glow: "card-emerald",
+  },
   {
     id: "broken-square",
     title: "Broken Square",

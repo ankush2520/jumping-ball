@@ -9,6 +9,64 @@ interface Props {
 }
 
 const renderSimulationIcon = (icon: Simulation["icon"]) => {
+  if (icon === "country-escape-challenge") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter
+            id="country-escape-glow"
+            x="-45%"
+            y="-45%"
+            width="190%"
+            height="190%"
+          >
+            <feGaussianBlur stdDeviation="2.8" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <path
+          d="M36 13a23 23 0 1 1-20.1 11.8"
+          stroke="rgba(125, 211, 252, 0.75)"
+          strokeWidth="4"
+          strokeLinecap="round"
+          filter="url(#country-escape-glow)"
+        />
+        <path
+          d="M16 24a23 23 0 0 1 15-10.4"
+          stroke="#22c55e"
+          strokeWidth="6"
+          strokeLinecap="round"
+          filter="url(#country-escape-glow)"
+        />
+        <circle
+          cx="39"
+          cy="39"
+          r="10"
+          fill="#f97316"
+          filter="url(#country-escape-glow)"
+        />
+        <text
+          x="39"
+          y="43"
+          textAnchor="middle"
+          fontSize="14"
+          fontFamily="Arial, Helvetica, sans-serif"
+        >
+          🇮🇳
+        </text>
+      </svg>
+    );
+  }
+
   if (icon === "shrinking-escape") {
     return (
       <svg
