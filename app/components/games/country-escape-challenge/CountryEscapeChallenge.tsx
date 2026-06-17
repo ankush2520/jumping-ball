@@ -76,12 +76,12 @@ const COUNTRY_POOL: Country[] = [
   { name: "Egypt", flag: "🇪🇬", color: "#f8fafc" },
 ];
 
-const COUNTRY_COUNT = 5;
+const COUNTRY_COUNT = 10;
 
 const ROUND_LIMIT = 4;
 const GAP_SIZE_RATIO = 0.0536;
 const GAP_ROTATION_SPEED = 0.7;
-const BALL_SPEED_RATIO = 2;
+const BALL_SPEED_RATIO = 3;
 const MAX_DT = 1 / 30;
 const TRAIL_MAX_POINTS = 100;
 const TRAIL_FADE_SPEED = 0.42;
@@ -1108,20 +1108,22 @@ const CountryEscapeChallenge = () => {
           }
 
           .results-card {
-            left: 50% !important;
+            left: 8px !important;
             right: auto !important;
-            top: auto !important;
-            bottom: 16px !important;
-            transform: translateX(-50%) !important;
-            width: min(90vw, 360px) !important;
-            max-width: calc(100% - 32px);
+            top: 50% !important;
+            bottom: auto !important;
+            transform: translateY(-50%) !important;
+            width: auto !important;
+            min-width: 42px;
+            max-width: 54px;
+            padding: 6px 5px;
           }
 
           .rank-stack {
-            flex-direction: row;
-            flex-wrap: wrap;
+            flex-direction: column;
+            flex-wrap: nowrap;
             justify-content: center;
-            gap: 10px;
+            gap: 7px;
           }
 
           .slot {
