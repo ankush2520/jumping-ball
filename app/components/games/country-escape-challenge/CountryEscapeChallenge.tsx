@@ -31,6 +31,11 @@ type Ball = {
   stuck: boolean;
 };
 
+type TrailPoint = {
+  x: number;
+  y: number;
+};
+
 type RoundUi = {
   phase: "intro" | "playing" | "complete";
   countryIndex: number;
@@ -71,11 +76,11 @@ const COUNTRY_POOL: Country[] = [
   { name: "Egypt", flag: "🇪🇬", color: "#f8fafc" },
 ];
 
-const COUNTRY_COUNT = 12;
+const COUNTRY_COUNT = 5;
 
 const ROUND_LIMIT = 4;
-const GAP_SIZE_RATIO = 0.13;
-const BALL_SPEED_RATIO = 1.8;
+const GAP_SIZE_RATIO = 0.067;
+const BALL_SPEED_RATIO = 2;
 const MAX_DT = 1 / 30;
 
 let sharedAudioContext: AudioContext | null = null;
@@ -274,8 +279,16 @@ const createAudio = (): ChallengeAudio => {
   };
 };
 
+const getBallRadius = (arena: Arena) => clamp(arena.radius * 0.084, 13, 22);
+
+const getHudTop = (arena: Arena) =>
+  Math.round(arena.y - arena.radius - getBallRadius(arena) * 4 - 86);
+
+const getStartTop = (arena: Arena) =>
+  Math.round(arena.y + arena.radius + getBallRadius(arena) * 1.55);
+
 const createBall = (arena: Arena): Ball => {
-  const radius = clamp(arena.radius * 0.084, 13, 22);
+  const radius = getBallRadius(arena);
   const spawnAngle = Math.random() * Math.PI * 2;
   const spawnRadius = Math.sqrt(Math.random()) * (arena.radius - radius * 2.4);
 
@@ -372,6 +385,7 @@ const drawArena = (
   exitOrder: Result[],
   countries: Country[],
   escapePulse: number,
+  trail: TrailPoint[],
 ) => {
   ctx.clearRect(0, 0, arena.canvasWidth, arena.canvasHeight);
   ctx.fillStyle = "#020617";
@@ -405,7 +419,7 @@ const drawArena = (
   ctx.shadowColor = "rgba(125, 211, 252, 0.42)";
   ctx.shadowBlur = 18;
   ctx.strokeStyle = "rgba(148, 163, 184, 0.78)";
-  ctx.lineWidth = clamp(arena.radius * 0.035, 9, 18);
+  ctx.lineWidth = clamp(arena.radius * 0.013, 3, 6);
   ctx.lineCap = "round";
   ctx.beginPath();
   ctx.arc(arena.x, arena.y, arena.radius, start, end, false);
@@ -413,6 +427,29 @@ const drawArena = (
   ctx.restore();
 
   // exit gap intentionally left empty (no glow)
+
+  const activeBall = activeIndex >= 0 ? balls[activeIndex] : null;
+  const activeCountry = activeIndex >= 0 ? countries[activeIndex] : null;
+  if (activeBall && activeCountry && !activeBall.escaped && trail.length > 1) {
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = activeBall.radius * 0.7;
+    for (let index = 1; index < trail.length; index += 1) {
+      const previous = trail[index - 1];
+      const current = trail[index];
+      const progress = index / (trail.length - 1);
+      const alpha = 0.05 + progress * 0.65;
+      ctx.strokeStyle = `${activeCountry.color}${Math.round(alpha * 255)
+        .toString(16)
+        .padStart(2, "0")}`;
+      ctx.beginPath();
+      ctx.moveTo(previous.x, previous.y);
+      ctx.lineTo(current.x, current.y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   balls.forEach((ball, index) => {
     if (!ball || ball.escaped) return;
@@ -467,6 +504,7 @@ const CountryEscapeChallenge = () => {
   const activeIndexRef = useRef(0);
   const phaseRef = useRef<RoundUi["phase"]>("intro");
   const escapePulseRef = useRef(0);
+  const trailRef = useRef<TrailPoint[]>([]);
   const [ui, setUi] = useState<RoundUi>({
     phase: "intro",
     countryIndex: 0,
@@ -484,6 +522,7 @@ const CountryEscapeChallenge = () => {
     }),
   );
   const [startTop, setStartTop] = useState(0);
+  const [hudTop, setHudTop] = useState(0);
 
   if (audioRef.current === null) {
     audioRef.current = createAudio();
@@ -510,6 +549,7 @@ const CountryEscapeChallenge = () => {
       const speed = arena.radius * BALL_SPEED_RATIO;
       const angle = getLaunchAngleAwayFromExit();
       activeIndexRef.current = index;
+      trailRef.current = [{ x: ball.x, y: ball.y }];
       ball.vx = Math.cos(angle) * speed;
       ball.vy = Math.sin(angle) * speed;
       roundStartedAtRef.current = performance.now();
@@ -567,6 +607,9 @@ const CountryEscapeChallenge = () => {
 
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
+      trailRef.current = [...trailRef.current, { x: ball.x, y: ball.y }].slice(
+        -72,
+      );
 
       const dx = ball.x - arena.x;
       const dy = ball.y - arena.y;
@@ -576,6 +619,7 @@ const CountryEscapeChallenge = () => {
 
       if (insideGap && distanceFromCenter - ball.radius > arena.radius) {
         ball.escaped = true;
+        trailRef.current = [];
         recordEscape(activeIndex, elapsed);
         advanceTurn(arena, activeIndex);
         return;
@@ -606,6 +650,7 @@ const CountryEscapeChallenge = () => {
         ball.vx = 0;
         ball.vy = 0;
         ball.stuck = true;
+        trailRef.current = [];
         advanceTurn(arena, activeIndex);
       }
     };
@@ -638,6 +683,7 @@ const CountryEscapeChallenge = () => {
         resultsRef.current,
         countriesRef.current,
         escapePulseRef.current,
+        trailRef.current,
       );
 
       animationRef.current = requestAnimationFrame(draw);
@@ -656,7 +702,8 @@ const CountryEscapeChallenge = () => {
         left: Math.round(arena.x + arena.radius + 12),
         top: Math.round(arena.y),
       });
-      setStartTop(Math.round(arena.y + arena.radius + 14));
+      setStartTop(getStartTop(arena));
+      setHudTop(getHudTop(arena));
     };
 
     const unlockSound = () => {
@@ -669,7 +716,8 @@ const CountryEscapeChallenge = () => {
       left: Math.round(arenaRef.current.x + arenaRef.current.radius + 12),
       top: Math.round(arenaRef.current.y),
     });
-    setStartTop(Math.round(arenaRef.current.y + arenaRef.current.radius + 14));
+    setStartTop(getStartTop(arenaRef.current));
+    setHudTop(getHudTop(arenaRef.current));
     lastFrameAtRef.current = performance.now();
     window.addEventListener("resize", handleResize);
     window.addEventListener("pointerdown", unlockSound, { passive: true });
@@ -702,6 +750,7 @@ const CountryEscapeChallenge = () => {
     activeIndexRef.current = 0;
     const first = createBall(arena);
     ballsRef.current[0] = first;
+    trailRef.current = [{ x: first.x, y: first.y }];
     const speed = arena.radius * BALL_SPEED_RATIO;
     const angle = getLaunchAngleAwayFromExit();
     first.vx = Math.cos(angle) * speed;
@@ -721,7 +770,7 @@ const CountryEscapeChallenge = () => {
     <div className="country-root">
       <canvas ref={canvasRef} className="country-canvas" />
 
-      <div className="hud" aria-live="polite">
+      <div className="hud" aria-live="polite" style={{ top: `${hudTop}px` }}>
         <h1>How Many Country Balls Can Escape in 4 Seconds?</h1>
 
         <div className="hud-main">
@@ -785,7 +834,6 @@ const CountryEscapeChallenge = () => {
 
         .hud {
           position: fixed;
-          top: calc(18px + env(safe-area-inset-top, 0px));
           left: 50%;
           z-index: 6;
           width: min(820px, calc(100% - 40px));
@@ -938,7 +986,6 @@ const CountryEscapeChallenge = () => {
 
         @media (max-width: 680px) {
           .hud {
-            top: calc(46px + env(safe-area-inset-top, 0px));
             width: min(90vw, calc(100% - 36px));
           }
 
