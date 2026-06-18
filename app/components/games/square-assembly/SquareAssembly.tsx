@@ -1103,16 +1103,24 @@ const SquareAssembly = () => {
   }, []);
 
   return (
-    <div className="root">
-      <canvas ref={canvasRef} />
+    <div className="assembly-root">
+      <canvas ref={canvasRef} className="assembly-canvas" />
       <style jsx>{`
-        .root {
-          position: fixed;
-          inset: 0;
+        .assembly-root {
+          position: relative;
+          width: 100%;
+          height: 100dvh;
+          min-height: 100dvh;
+          max-height: 100dvh;
           overflow: hidden;
+          background: #020617;
         }
-        canvas {
+        .assembly-canvas {
           display: block;
+          width: 100%;
+          height: 100dvh;
+          min-height: 100dvh;
+          max-height: 100dvh;
           cursor: pointer;
         }
       `}</style>
