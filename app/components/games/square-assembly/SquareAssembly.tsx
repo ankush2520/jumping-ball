@@ -290,9 +290,7 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const availW = Math.max(220, width - hPad);
   const availH = Math.max(220, height - hudH - bot);
 
-  // On mobile use the full available rectangle; on desktop keep a square
-  const arenaW = isMobile ? availW : clamp(Math.min(availW, availH), 220, 920);
-  const arenaH = isMobile ? availH : arenaW;
+  const arenaSize = clamp(Math.min(availW, availH), 220, 920);
 
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
@@ -304,10 +302,10 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
     ctx.imageSmoothingEnabled = true;
   }
   return {
-    x: (width - arenaW) / 2,
+    x: (width - arenaSize) / 2,
     y: hudH,
-    width: arenaW,
-    height: arenaH,
+    width: arenaSize,
+    height: arenaSize,
     dpr,
   };
 };
