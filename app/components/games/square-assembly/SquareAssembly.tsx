@@ -388,8 +388,8 @@ const trySpawnShape = (arena: Arena, bodies: Body[]): Body | null => {
     y: spawnY,
     vx: Math.cos(angle) * speed,
     vy: Math.sin(angle) * speed,
-    rotation: rng(0, Math.PI * 2),
-    angularVelocity: rng(-Math.PI * 0.45, Math.PI * 0.45),
+    rotation: (Math.floor(Math.random() * 4) * Math.PI) / 2,
+    angularVelocity: 0,
     pieces: [
       {
         id: _pieceIdCounter++,
@@ -619,8 +619,7 @@ const snapAndMerge = (
     total = ma + mb;
   bodyA.vx = (bodyA.vx * ma + bodyB.vx * mb) / total;
   bodyA.vy = (bodyA.vy * ma + bodyB.vy * mb) / total;
-  bodyA.angularVelocity =
-    (bodyA.angularVelocity * ma + bodyB.angularVelocity * mb) / total;
+  bodyA.angularVelocity = 0;
   preserveBodySpeed(bodyA, arena);
 
   bodyB.pieces.forEach((piece) => {
@@ -1053,7 +1052,6 @@ const SquareAssembly = () => {
         bodiesRef.current.forEach((body) => {
           body.x += body.vx * subDt;
           body.y += body.vy * subDt;
-          body.rotation += body.angularVelocity * subDt;
           body.glowTime = Math.max(0, body.glowTime - subDt);
           body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
           if (body.glowTime <= 0) body.glowColor = "none";
