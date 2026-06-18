@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 type Country = {
   name: string;
@@ -432,6 +433,7 @@ const drawArena = (
   bg.addColorStop(1, "rgba(2, 6, 23, 0)");
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, arena.canvasWidth, arena.canvasHeight);
+  drawCanvasWatermark(ctx, arena.canvasWidth, arena.canvasHeight);
 
   ctx.save();
   ctx.beginPath();

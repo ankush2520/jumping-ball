@@ -30,7 +30,7 @@ export default function Home() {
       }}
     >
       {ActiveSimulation ? (
-        <>
+        <div className="simulation-viewport">
           <button
             type="button"
             aria-label="Back to menu"
@@ -79,6 +79,14 @@ export default function Home() {
           </button>
           <ActiveSimulation />
           <style jsx>{`
+            .simulation-viewport {
+              position: relative;
+              isolation: isolate;
+              width: 100%;
+              min-height: 100dvh;
+              overflow: hidden;
+            }
+
             .home-button {
               opacity: 1;
             }
@@ -99,7 +107,7 @@ export default function Home() {
               }
             }
           `}</style>
-        </>
+        </div>
       ) : (
         <MenuScreen
           simulations={simulations}

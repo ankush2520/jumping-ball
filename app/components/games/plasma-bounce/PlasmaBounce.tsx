@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef } from "react";
+import { drawCanvasWatermark } from "@/app/lib/watermark";
 import {
   BALL_RADIUS,
   BALL_SPEED,
@@ -101,6 +102,7 @@ const drawScene = (
   background.addColorStop(1, "#020617");
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, arena.width, arena.height);
+  drawCanvasWatermark(ctx, arena.width, arena.height);
 
   ctx.save();
   ctx.translate(arena.centerX, arena.centerY);

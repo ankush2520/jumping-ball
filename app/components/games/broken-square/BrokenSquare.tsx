@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 type Arena = {
   x: number;
@@ -839,6 +840,7 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   bg.addColorStop(1, "rgba(2, 6, 23, 0)");
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+  drawCanvasWatermark(ctx, window.innerWidth, window.innerHeight);
 
   ctx.save();
   ctx.strokeStyle = "rgba(2, 6, 23, 0.5)";
