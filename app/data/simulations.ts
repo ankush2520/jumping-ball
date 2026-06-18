@@ -3,6 +3,7 @@ import BrokenSquare from "../components/games/broken-square/BrokenSquare";
 import CountryEscapeChallenge from "../components/games/country-escape-challenge/CountryEscapeChallenge";
 import PlasmaBounce from "../components/games/plasma-bounce/PlasmaBounce";
 import ShrinkingEscape from "../components/games/shrinking-escape/ShrinkingEscape";
+import SquareAssembly from "../components/games/square-assembly/SquareAssembly";
 
 export type SimulationStatus = "stable" | "experimental" | "coming-soon";
 
@@ -18,8 +19,9 @@ export type Simulation = {
     | "country-escape-challenge"
     | "plasma-bounce"
     | "broken-square"
-    | "shrinking-escape";
-  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet";
+    | "shrinking-escape"
+    | "square-assembly";
+  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose";
 };
 
 export const simulations: Simulation[] = [
@@ -66,6 +68,17 @@ export const simulations: Simulation[] = [
     accentColor: "#67e8f9",
     icon: "plasma-bounce",
     glow: "card-cyan",
+  },
+  {
+    id: "square-assembly",
+    title: "Square Assembly",
+    subtitle: "SHAPE SNAP CHALLENGE",
+    description: "Watch a square and three triangles collide and snap into their final form.",
+    component: SquareAssembly,
+    status: "experimental",
+    accentColor: "#f43f5e",
+    icon: "square-assembly",
+    glow: "card-rose",
   },
 ];
 

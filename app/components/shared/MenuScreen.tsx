@@ -280,6 +280,71 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
+  if (icon === "square-assembly") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter
+            id="assembly-glow"
+            x="-45%"
+            y="-45%"
+            width="190%"
+            height="190%"
+          >
+            <feGaussianBlur stdDeviation="2.6" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        {/* background plate */}
+        <rect
+          x="12"
+          y="12"
+          width="48"
+          height="48"
+          rx="5"
+          fill="rgba(2, 6, 23, 0.72)"
+          stroke="rgba(148, 163, 184, 0.34)"
+        />
+        {/* centre square */}
+        <rect
+          x="26"
+          y="26"
+          width="20"
+          height="20"
+          fill="#f97316"
+          filter="url(#assembly-glow)"
+        />
+        {/* top triangle (cyan) */}
+        <polygon
+          points="36,14 28,26 44,26"
+          fill="#38bdf8"
+          filter="url(#assembly-glow)"
+        />
+        {/* right triangle (violet) */}
+        <polygon
+          points="58,36 46,28 46,44"
+          fill="#a78bfa"
+          filter="url(#assembly-glow)"
+        />
+        {/* bottom triangle (emerald) */}
+        <polygon
+          points="36,58 44,46 28,46"
+          fill="#34d399"
+          filter="url(#assembly-glow)"
+        />
+      </svg>
+    );
+  }
+
   return null;
 };
 
