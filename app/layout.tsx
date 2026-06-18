@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-// @ts-ignore: CSS import declaration missing
 import "./globals.css";
 import AnimatedBackground from "./components/shared/AnimatedBackground";
 import Script from "next/script";
@@ -39,9 +38,9 @@ export default function RootLayout({
         <Script id="gtag-init" strategy="afterInteractive">
           {`
             window.dataLayer = window.dataLayer || [];
-            function gtag(){dataLayer.push(arguments);}
-            gtag('js', new Date());
-            gtag('config', 'G-TQENYKZDV3');
+            window.gtag = window.gtag || function gtag(){window.dataLayer.push(arguments);}
+            window.gtag('js', new Date());
+            window.gtag('config', 'G-TQENYKZDV3');
           `}
         </Script>
       </head>
