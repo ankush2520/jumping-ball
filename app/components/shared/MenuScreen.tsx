@@ -370,7 +370,7 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
 
         {/* Footer */}
         <div className="menu-footer">
-          <p>Powered by React & Canvas | 60 FPS Physics Engine</p>
+          <p>Created by Ankush | 60 FPS Physics Engine</p>
         </div>
       </div>
 
