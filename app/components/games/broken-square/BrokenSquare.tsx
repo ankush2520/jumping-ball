@@ -876,14 +876,14 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
   ctx.fillText(
-    "BROKEN SQUARE",
+    "MERGING TRIANGLES",
     arena.x + arena.width / 2,
     arena.y - (isMobile ? 42 : 52),
   );
   ctx.font = `800 ${isMobile ? 10 : 15}px Arial, Helvetica, sans-serif`;
   const subtitle = isMobile
-    ? ["What weird shape will", "these triangles create?"]
-    : ["What weird shape will these triangles create?"];
+    ? ["Merge the triangles into", "a perfect square!"]
+    : ["Merge the bouncing triangles into a perfect square!"];
   subtitle.forEach((line, index) => {
     ctx.fillText(
       line,

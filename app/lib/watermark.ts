@@ -1,4 +1,5 @@
-const WATERMARK_SRC = "/images/bounce-watermark.jpg";
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || "";
+const WATERMARK_SRC = `${BASE_PATH}/images/bounce-watermark.jpg`;
 
 let watermarkImage: HTMLImageElement | null = null;
 

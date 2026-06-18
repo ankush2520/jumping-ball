@@ -79,6 +79,10 @@ const COUNTRY_POOL: Country[] = [
 
 const COUNTRY_COUNT = 10;
 
+const HUD_RESERVED_HEIGHT_DESKTOP = 160;
+const HUD_RESERVED_HEIGHT_MOBILE = 180;
+const ARENA_BOTTOM_SPACING = 28;
+
 const ROUND_LIMIT = 4;
 const GAP_SIZE_RATIO = 0.0536;
 const GAP_ROTATION_SPEED = 0.7;
@@ -136,17 +140,19 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const height = window.innerHeight;
   const ctx = canvas.getContext("2d");
   const isMobile = width < 680;
-  const topReserve = isMobile ? 120 : 110;
-  const bottomReserve = isMobile ? 118 : 74;
-  const availableHeight = Math.max(260, height - topReserve - bottomReserve);
-  const diameter = clamp(
-    Math.min(width * 0.82, availableHeight * 0.98) * 0.82,
-    210,
-    560,
+  const hudHeight = isMobile
+    ? HUD_RESERVED_HEIGHT_MOBILE
+    : HUD_RESERVED_HEIGHT_DESKTOP;
+  const horizontalPadding = isMobile ? width * 0.06 : 48;
+  const availableWidth = Math.max(220, width - horizontalPadding * 2);
+  const availableHeight = Math.max(
+    220,
+    height - hudHeight - ARENA_BOTTOM_SPACING,
   );
+  const diameter = clamp(Math.min(availableWidth, availableHeight), 210, 560);
   const radius = diameter / 2;
   const x = width / 2;
-  const y = topReserve + availableHeight / 2;
+  const y = hudHeight + availableHeight / 2;
 
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
@@ -308,16 +314,10 @@ const createAudio = (): ChallengeAudio => {
   };
 };
 
-const getBallRadius = () => 7.5;
-
-const getHudTop = (arena: Arena) =>
-  Math.round(arena.y - arena.radius - getBallRadius() * 4 - 86);
-
-const getStartTop = (arena: Arena) =>
-  Math.round(arena.y + arena.radius + getBallRadius() * 1.55);
+const BALL_RADIUS = 7.5;
 
 const createBall = (arena: Arena): Ball => {
-  const radius = getBallRadius();
+  const radius = BALL_RADIUS;
   const spawnAngle = Math.random() * Math.PI * 2;
   const spawnRadius = Math.sqrt(Math.random()) * (arena.radius - radius * 2.4);
 
@@ -552,8 +552,6 @@ const CountryEscapeChallenge = () => {
     elapsed: 0,
     message: "",
   });
-  const [startTop, setStartTop] = useState(0);
-  const [hudTop, setHudTop] = useState(0);
   const [escapedCount, setEscapedCount] = useState(0);
 
   if (audioRef.current === null) {
@@ -732,8 +730,6 @@ const CountryEscapeChallenge = () => {
         .fill(null)
         .map((_, i) => ballsRef.current[i] ?? null);
       ballsRef.current = newBalls;
-      setStartTop(getStartTop(arena));
-      setHudTop(getHudTop(arena));
     };
 
     const unlockSound = () => {
@@ -745,8 +741,6 @@ const CountryEscapeChallenge = () => {
     trailsRef.current = new Array(countriesRef.current.length)
       .fill(null)
       .map(() => []);
-    setStartTop(getStartTop(arenaRef.current));
-    setHudTop(getHudTop(arenaRef.current));
     lastFrameAtRef.current = performance.now();
     window.addEventListener("resize", handleResize);
     window.addEventListener("pointerdown", unlockSound, { passive: true });
@@ -801,19 +795,19 @@ const CountryEscapeChallenge = () => {
     <div className="country-root">
       <canvas ref={canvasRef} className="country-canvas" />
 
-      <div className="hud" aria-live="polite" style={{ top: `${hudTop}px` }}>
-        <h1>Can a ball escape in 4 seconds ?</h1>
-        <div className="escaped-count">Escaped: {escapedCount}</div>
+      <div className="hud" aria-live="polite">
+        <h1>Each ball has 4 seconds to escape</h1>
 
         <div className="hud-main">
+          <div className="escaped-count">Escaped balls: {escapedCount}</div>
           <div className="timer" role="timer" aria-live="polite">
-            {ui.phase === "complete" ? "0.0" : ui.elapsed.toFixed(1)}s
+            Timer: {ui.phase === "complete" ? "0.0" : ui.elapsed.toFixed(1)} s
           </div>
         </div>
       </div>
 
       {ui.phase === "intro" ? (
-        <div className="start-panel" style={{ top: `${startTop}px` }}>
+        <div className="start-panel">
           <button type="button" onClick={startChallenge}>
             START
           </button>
@@ -841,6 +835,7 @@ const CountryEscapeChallenge = () => {
 
         .hud {
           position: fixed;
+          top: 48px;
           left: 50%;
           z-index: 6;
           width: min(560px, calc(100% - 40px));
@@ -854,30 +849,30 @@ const CountryEscapeChallenge = () => {
         }
 
         .hud h1 {
-          margin: 0 auto;
-          max-width: 92vw;
-          width: min(92vw, 500px);
+          margin: 0;
           font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
-          font-size: clamp(1.3rem, 3.6vw, 1.8rem);
-          line-height: 1.24;
+          font-size: clamp(1.4rem, 3.8vw, 2rem);
+          line-height: 1.2;
           font-weight: 900;
           color: #ffffff;
           text-align: center;
           text-shadow:
             0 0 18px rgba(255, 255, 255, 0.12),
             0 10px 28px rgba(2, 6, 23, 0.72);
-          word-break: keep-all;
+          letter-spacing: 0.04em;
         }
 
         .hud-main {
           display: flex;
           align-items: center;
           justify-content: center;
+          gap: 18px;
+          flex-wrap: wrap;
         }
 
         .escaped-count {
           font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
-          font-size: clamp(0.82rem, 2.2vw, 1rem);
+          font-size: clamp(0.9rem, 2.2vw, 1.05rem);
           line-height: 1;
           font-weight: 800;
           color: rgba(248, 250, 252, 0.86);
@@ -885,32 +880,23 @@ const CountryEscapeChallenge = () => {
         }
 
         .timer {
-          font-weight: 900;
+          font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
+          font-weight: 800;
           color: #ffffff;
-          font-size: clamp(1rem, 4vw, 1.6rem);
+          font-size: clamp(0.9rem, 2.2vw, 1.05rem);
           line-height: 1;
           text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
           padding: 4px 8px;
           border-radius: 6px;
           background: rgba(255, 255, 255, 0.02);
-          transform: none;
-          margin-bottom: 0;
         }
 
         .start-panel {
           position: fixed;
+          bottom: 28px;
           left: 50%;
           z-index: 8;
           transform: translateX(-50%);
-          border: 1px solid rgba(148, 163, 184, 0.26);
-          background: rgba(2, 6, 23, 0.76);
-          box-shadow:
-            0 18px 52px rgba(2, 6, 23, 0.48),
-            inset 0 1px 0 rgba(255, 255, 255, 0.12);
-          backdrop-filter: blur(12px);
-        }
-
-        .start-panel {
           display: flex;
           align-items: center;
           justify-content: center;
@@ -918,6 +904,12 @@ const CountryEscapeChallenge = () => {
           min-height: 60px;
           padding: 8px 14px;
           border-radius: 8px;
+          border: 1px solid rgba(148, 163, 184, 0.26);
+          background: rgba(2, 6, 23, 0.76);
+          box-shadow:
+            0 18px 52px rgba(2, 6, 23, 0.48),
+            inset 0 1px 0 rgba(255, 255, 255, 0.12);
+          backdrop-filter: blur(12px);
         }
 
         button {
@@ -934,16 +926,17 @@ const CountryEscapeChallenge = () => {
 
         @media (max-width: 680px) {
           .hud {
+            top: calc(14px + env(safe-area-inset-top, 0px) + 52px);
             width: min(90vw, calc(100% - 36px));
           }
 
           .hud-main {
-            flex-direction: column;
-            gap: 10px;
+            gap: 10px 14px;
             align-items: center;
           }
 
           .start-panel {
+            bottom: max(24px, calc(env(safe-area-inset-bottom, 0px) + 16px));
             width: calc(100% - 32px);
             flex-direction: column;
             gap: 10px;

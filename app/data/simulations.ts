@@ -25,9 +25,9 @@ export type Simulation = {
 export const simulations: Simulation[] = [
   {
     id: "country-escape-challenge",
-    title: "Country Escape Challenge",
+    title: "Ball Escape",
     subtitle: "ROTATING EXIT RACE",
-    description: "Five country balls race the same moving gap one at a time.",
+    description: "Five balls race to escape through the same rotating gap.",
     component: CountryEscapeChallenge,
     status: "experimental",
     accentColor: "#22c55e",
@@ -36,9 +36,9 @@ export const simulations: Simulation[] = [
   },
   {
     id: "broken-square",
-    title: "Broken Square",
-    subtitle: "FRACTURE FIELD",
-    description: "Split one perfect square into restless triangular shards.",
+    title: "Merging Triangles",
+    subtitle: "TRIANGLE MERGE",
+    description: "Merge bouncing triangles back into a perfect square.",
     component: BrokenSquare,
     status: "experimental",
     accentColor: "#a855f7",
