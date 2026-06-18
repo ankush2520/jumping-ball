@@ -58,7 +58,7 @@ body {
 canvas:not(.animated-bg-canvas) {
   display: block;
   width: 100%;
-  min-height: 100vh;
+  min-height: 100dvh;
   height: auto;
   image-rendering: optimizeQuality;
   -webkit-transform: translateZ(0);

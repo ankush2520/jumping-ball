@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "predeploy": "cross-env GITHUB_PAGES=true npm run build && node -e \"require('fs').writeFileSync('out/.nojekyll', '')\"",
-    "deploy": "npx gh-pages-clean && npx gh-pages -d out --dotfiles",
+    "deploy": "npx gh-pages-clean && (npx gh-pages -d out --dotfiles || npx gh-pages -d out --dotfiles || npx gh-pages -d out --dotfiles)",
     "postdeploy": "echo 'Deploy complete: published to gh-pages branch'",
     "start": "next start",
     "lint": "eslint"

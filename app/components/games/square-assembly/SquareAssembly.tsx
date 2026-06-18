@@ -285,11 +285,14 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const hudH = isMobile
     ? HUD_RESERVED_HEIGHT_MOBILE
     : HUD_RESERVED_HEIGHT_DESKTOP;
-  const hPad = isMobile ? width * 0.12 : 28;
+  const hPad = isMobile ? width * 0.06 : 28;
   const bot = isMobile ? MOBILE_BOTTOM_SAFE_SPACING : ARENA_SAFE_SPACING;
   const availW = Math.max(220, width - hPad);
   const availH = Math.max(220, height - hudH - bot);
-  const arenaSize = clamp(Math.min(availW, availH), 220, 920);
+
+  // On mobile use the full available rectangle; on desktop keep a square
+  const arenaW = isMobile ? availW : clamp(Math.min(availW, availH), 220, 920);
+  const arenaH = isMobile ? availH : arenaW;
 
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
@@ -301,10 +304,10 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
     ctx.imageSmoothingEnabled = true;
   }
   return {
-    x: (width - arenaSize) / 2,
+    x: (width - arenaW) / 2,
     y: hudH,
-    width: arenaSize,
-    height: arenaSize,
+    width: arenaW,
+    height: arenaH,
     dpr,
   };
 };
