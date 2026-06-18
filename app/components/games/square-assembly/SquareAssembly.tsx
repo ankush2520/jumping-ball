@@ -35,7 +35,13 @@ type Body = {
   attachPulse: number;
 };
 
-type Arena = { x: number; y: number; width: number; height: number; dpr: number };
+type Arena = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dpr: number;
+};
 
 type Collision = { normal: Point; overlap: number };
 
@@ -80,9 +86,18 @@ const INITIAL_SHAPE_COUNT = 7;
 const SPAWN_INTERVAL_SECS = 0.5;
 
 const SHAPE_PALETTE: string[] = [
-  "#f97316", "#38bdf8", "#a78bfa", "#34d399",
-  "#fb923c", "#f472b6", "#facc15", "#60a5fa",
-  "#4ade80", "#c084fc", "#fbbf24", "#f43f5e",
+  "#f97316",
+  "#38bdf8",
+  "#a78bfa",
+  "#34d399",
+  "#fb923c",
+  "#f472b6",
+  "#facc15",
+  "#60a5fa",
+  "#4ade80",
+  "#c084fc",
+  "#fbbf24",
+  "#f43f5e",
 ];
 
 let sharedAudioContext: AudioContext | null = null;
@@ -91,7 +106,8 @@ let _pieceIdCounter = 0;
 
 // ─── Math helpers ─────────────────────────────────────────────────────────────
 
-const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const clamp = (v: number, lo: number, hi: number) =>
+  Math.min(hi, Math.max(lo, v));
 const rng = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 
 const rotatePoint = ({ x, y }: Point, a: number): Point => ({
@@ -99,8 +115,14 @@ const rotatePoint = ({ x, y }: Point, a: number): Point => ({
   y: x * Math.sin(a) + y * Math.cos(a),
 });
 
-const addPoints = (a: Point, b: Point): Point => ({ x: a.x + b.x, y: a.y + b.y });
-const subPoints = (a: Point, b: Point): Point => ({ x: a.x - b.x, y: a.y - b.y });
+const addPoints = (a: Point, b: Point): Point => ({
+  x: a.x + b.x,
+  y: a.y + b.y,
+});
+const subPoints = (a: Point, b: Point): Point => ({
+  x: a.x - b.x,
+  y: a.y - b.y,
+});
 const scalePoint = (p: Point, s: number): Point => ({ x: p.x * s, y: p.y * s });
 const dotProduct = (a: Point, b: Point) => a.x * b.x + a.y * b.y;
 const distancePt = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -114,7 +136,12 @@ const normalize = ({ x, y }: Point): Point => {
 
 const getSquareVerts = (s: number): Point[] => {
   const h = s / 2;
-  return [{ x: -h, y: -h }, { x: h, y: -h }, { x: h, y: h }, { x: -h, y: h }];
+  return [
+    { x: -h, y: -h },
+    { x: h, y: -h },
+    { x: h, y: h },
+    { x: -h, y: h },
+  ];
 };
 
 const getTriangleVerts = (s: number): Point[] => {
@@ -130,7 +157,10 @@ const getPieceLocalVerts = (kind: PieceKind, s: number): Point[] =>
   kind === "square" ? getSquareVerts(s) : getTriangleVerts(s);
 
 const getEdgeSlots = (kind: PieceKind): EdgeSlot[] =>
-  Array.from({ length: kind === "square" ? 4 : 3 }, (_, i) => ({ index: i, attached: false }));
+  Array.from({ length: kind === "square" ? 4 : 3 }, (_, i) => ({
+    index: i,
+    attached: false,
+  }));
 
 // ─── Audio ────────────────────────────────────────────────────────────────────
 
@@ -142,7 +172,8 @@ const createAudio = (): AssemblyAudio => {
 
   const ensureAudio = () => {
     if (audio) return audio;
-    const w = window as Window & typeof globalThis & { webkitAudioContext?: typeof AudioContext };
+    const w = window as Window &
+      typeof globalThis & { webkitAudioContext?: typeof AudioContext };
     const AudioContextClass = w.AudioContext || w.webkitAudioContext;
     if (!AudioContextClass) return null;
     sharedAudioContext = sharedAudioContext || new AudioContextClass();
@@ -166,9 +197,14 @@ const createAudio = (): AssemblyAudio => {
     g.gain.setValueAtTime(0.0001, now);
     g.gain.linearRampToValueAtTime(gainVal, now + 0.008);
     g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-    osc.connect(g); g.connect(masterGain);
-    osc.start(now); osc.stop(now + dur + 0.02);
-    osc.onended = () => { osc.disconnect(); g.disconnect(); };
+    osc.connect(g);
+    g.connect(masterGain);
+    osc.start(now);
+    osc.stop(now + dur + 0.02);
+    osc.onended = () => {
+      osc.disconnect();
+      g.disconnect();
+    };
   };
 
   const playPianoNote = (freq: number) => {
@@ -184,10 +220,13 @@ const createAudio = (): AssemblyAudio => {
     outGain.gain.linearRampToValueAtTime(0.42, now + 0.006);
     outGain.gain.exponentialRampToValueAtTime(0.13, now + 0.07);
     outGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.58);
-    outGain.connect(filter); filter.connect(masterGain);
+    outGain.connect(filter);
+    filter.connect(masterGain);
     [
-      { ratio: 1, gain: 0.18 }, { ratio: 2, gain: 0.075 },
-      { ratio: 3, gain: 0.035 }, { ratio: 4.01, gain: 0.014 },
+      { ratio: 1, gain: 0.18 },
+      { ratio: 2, gain: 0.075 },
+      { ratio: 3, gain: 0.035 },
+      { ratio: 4.01, gain: 0.014 },
     ].forEach(({ ratio, gain }, i) => {
       const osc = ac.createOscillator();
       const g = ac.createGain();
@@ -195,11 +234,19 @@ const createAudio = (): AssemblyAudio => {
       osc.frequency.setValueAtTime(freq * ratio * rng(0.998, 1.002), now);
       g.gain.setValueAtTime(gain, now);
       g.gain.exponentialRampToValueAtTime(0.0001, now + 0.45 + i * 0.04);
-      osc.connect(g); g.connect(outGain);
-      osc.start(now); osc.stop(now + 0.64);
-      osc.onended = () => { osc.disconnect(); g.disconnect(); };
+      osc.connect(g);
+      g.connect(outGain);
+      osc.start(now);
+      osc.stop(now + 0.64);
+      osc.onended = () => {
+        osc.disconnect();
+        g.disconnect();
+      };
     });
-    window.setTimeout(() => { outGain.disconnect(); filter.disconnect(); }, 700);
+    window.setTimeout(() => {
+      outGain.disconnect();
+      filter.disconnect();
+    }, 700);
   };
 
   return {
@@ -235,7 +282,9 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const height = window.innerHeight;
   const ctx = canvas.getContext("2d");
   const isMobile = width < 600;
-  const hudH = isMobile ? HUD_RESERVED_HEIGHT_MOBILE : HUD_RESERVED_HEIGHT_DESKTOP;
+  const hudH = isMobile
+    ? HUD_RESERVED_HEIGHT_MOBILE
+    : HUD_RESERVED_HEIGHT_DESKTOP;
   const hPad = isMobile ? width * 0.12 : 28;
   const bot = isMobile ? MOBILE_BOTTOM_SAFE_SPACING : ARENA_SAFE_SPACING;
   const availW = Math.max(220, width - hPad);
@@ -251,25 +300,36 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
     ctx.scale(dpr, dpr);
     ctx.imageSmoothingEnabled = true;
   }
-  return { x: (width - arenaSize) / 2, y: hudH, width: arenaSize, height: arenaSize, dpr };
+  return {
+    x: (width - arenaSize) / 2,
+    y: hudH,
+    width: arenaSize,
+    height: arenaSize,
+    dpr,
+  };
 };
 
 // ─── World transforms ─────────────────────────────────────────────────────────
 
 const getPieceWorldTransform = (body: Body, piece: Piece) => {
   const lp = rotatePoint({ x: piece.localX, y: piece.localY }, body.rotation);
-  return { x: body.x + lp.x, y: body.y + lp.y, rotation: body.rotation + piece.localRotation };
+  return {
+    x: body.x + lp.x,
+    y: body.y + lp.y,
+    rotation: body.rotation + piece.localRotation,
+  };
 };
 
 const getPieceWorldVerts = (body: Body, piece: Piece): Point[] => {
   const tr = getPieceWorldTransform(body, piece);
-  return piece.vertices.map(v => {
+  return piece.vertices.map((v) => {
     const r = rotatePoint(v, tr.rotation);
     return { x: tr.x + r.x, y: tr.y + r.y };
   });
 };
 
-const getBodyWorldVerts = (body: Body): Point[] => body.pieces.flatMap(p => getPieceWorldVerts(body, p));
+const getBodyWorldVerts = (body: Body): Point[] =>
+  body.pieces.flatMap((p) => getPieceWorldVerts(body, p));
 
 // ─── Body factory ─────────────────────────────────────────────────────────────
 
@@ -293,18 +353,25 @@ const trySpawnShape = (arena: Arena, bodies: Body[]): Body | null => {
   const s = getShapeSize(arena);
   const clearance = s * 2.2;
   const margin = clearance;
-  let spawnX = 0, spawnY = 0, found = false;
+  let spawnX = 0,
+    spawnY = 0,
+    found = false;
 
   for (let attempt = 0; attempt < 120; attempt++) {
     const cx = arena.x + margin + Math.random() * (arena.width - margin * 2);
     const cy = arena.y + margin + Math.random() * (arena.height - margin * 2);
-    const clear = bodies.every(body =>
-      body.pieces.every(piece => {
+    const clear = bodies.every((body) =>
+      body.pieces.every((piece) => {
         const tr = getPieceWorldTransform(body, piece);
         return distancePt({ x: tr.x, y: tr.y }, { x: cx, y: cy }) > clearance;
-      })
+      }),
     );
-    if (clear) { spawnX = cx; spawnY = cy; found = true; break; }
+    if (clear) {
+      spawnX = cx;
+      spawnY = cy;
+      found = true;
+      break;
+    }
   }
 
   if (!found) return null;
@@ -316,17 +383,27 @@ const trySpawnShape = (arena: Arena, bodies: Body[]): Body | null => {
 
   return {
     id: _bodyIdCounter++,
-    x: spawnX, y: spawnY,
-    vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+    x: spawnX,
+    y: spawnY,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
     rotation: rng(0, Math.PI * 2),
     angularVelocity: rng(-Math.PI * 0.45, Math.PI * 0.45),
-    pieces: [{
-      id: _pieceIdCounter++, kind, color,
-      localX: 0, localY: 0, localRotation: 0,
-      vertices: getPieceLocalVerts(kind, s),
-      edges: getEdgeSlots(kind),
-    }],
-    glowColor: "none", glowTime: 0, attachPulse: 0,
+    pieces: [
+      {
+        id: _pieceIdCounter++,
+        kind,
+        color,
+        localX: 0,
+        localY: 0,
+        localRotation: 0,
+        vertices: getPieceLocalVerts(kind, s),
+        edges: getEdgeSlots(kind),
+      },
+    ],
+    glowColor: "none",
+    glowTime: 0,
+    attachPulse: 0,
   };
 };
 
@@ -344,7 +421,8 @@ const createInitialBodies = (arena: Arena): Body[] => {
 // ─── SAT collision ────────────────────────────────────────────────────────────
 
 const projectPolygon = (verts: Point[], axis: Point) => {
-  let min = dotProduct(verts[0], axis), max = min;
+  let min = dotProduct(verts[0], axis),
+    max = min;
   for (const v of verts) {
     const p = dotProduct(v, axis);
     if (p < min) min = p;
@@ -360,18 +438,30 @@ const getAxes = (verts: Point[]): Point[] =>
     return normalize({ x: -e.y, y: e.x });
   });
 
-const getPolyCollision = (aV: Point[], bV: Point[], aC: Point, bC: Point): Collision | null => {
+const getPolyCollision = (
+  aV: Point[],
+  bV: Point[],
+  aC: Point,
+  bC: Point,
+): Collision | null => {
   const axes = [...getAxes(aV), ...getAxes(bV)];
-  let minOverlap = Infinity, minAxis = axes[0];
+  let minOverlap = Infinity,
+    minAxis = axes[0];
   for (const axis of axes) {
     const a = projectPolygon(aV, axis);
     const b = projectPolygon(bV, axis);
     const overlap = Math.min(a.max, b.max) - Math.max(a.min, b.min);
     if (overlap <= 0) return null;
-    if (overlap < minOverlap) { minOverlap = overlap; minAxis = axis; }
+    if (overlap < minOverlap) {
+      minOverlap = overlap;
+      minAxis = axis;
+    }
   }
   const d = subPoints(bC, aC);
-  return { normal: dotProduct(d, minAxis) < 0 ? scalePoint(minAxis, -1) : minAxis, overlap: minOverlap };
+  return {
+    normal: dotProduct(d, minAxis) < 0 ? scalePoint(minAxis, -1) : minAxis,
+    overlap: minOverlap,
+  };
 };
 
 const getBodyCollision = (a: Body, b: Body): Collision | null => {
@@ -379,8 +469,10 @@ const getBodyCollision = (a: Body, b: Body): Collision | null => {
   for (const ap of a.pieces) {
     for (const bp of b.pieces) {
       const col = getPolyCollision(
-        getPieceWorldVerts(a, ap), getPieceWorldVerts(b, bp),
-        { x: a.x, y: a.y }, { x: b.x, y: b.y }
+        getPieceWorldVerts(a, ap),
+        getPieceWorldVerts(b, bp),
+        { x: a.x, y: a.y },
+        { x: b.x, y: b.y },
       );
       if (col && (!best || col.overlap > best.overlap)) best = col;
     }
@@ -390,7 +482,11 @@ const getBodyCollision = (a: Body, b: Body): Collision | null => {
 
 // ─── Edge / attachment detection ──────────────────────────────────────────────
 
-const getEdgeWorldInfo = (body: Body, piece: Piece, slot: EdgeSlot): EdgeInfo | null => {
+const getEdgeWorldInfo = (
+  body: Body,
+  piece: Piece,
+  slot: EdgeSlot,
+): EdgeInfo | null => {
   if (slot.attached) return null;
   const verts = getPieceWorldVerts(body, piece);
   const start = verts[slot.index];
@@ -401,8 +497,10 @@ const getEdgeWorldInfo = (body: Body, piece: Piece, slot: EdgeSlot): EdgeInfo | 
 };
 
 const getFreeEdges = (body: Body): EdgeInfo[] =>
-  body.pieces.flatMap(p =>
-    p.edges.map(s => getEdgeWorldInfo(body, p, s)).filter((e): e is EdgeInfo => e !== null)
+  body.pieces.flatMap((p) =>
+    p.edges
+      .map((s) => getEdgeWorldInfo(body, p, s))
+      .filter((e): e is EdgeInfo => e !== null),
   );
 
 const getEndpointDistance = (a: EdgeInfo, b: EdgeInfo) => {
@@ -411,24 +509,42 @@ const getEndpointDistance = (a: EdgeInfo, b: EdgeInfo) => {
   return Math.min(rev, same);
 };
 
-const checkAttachment = (bodyA: Body, bodyB: Body, shapeSize: number): AttachCheck => {
+const checkAttachment = (
+  bodyA: Body,
+  bodyB: Body,
+  shapeSize: number,
+): AttachCheck => {
   const maxEp = shapeSize * 0.62;
   const maxMid = shapeSize * 0.54;
-  let best: AttachCheck = { edgeA: null, edgeB: null, angleDiff: Math.PI, valid: false };
+  let best: AttachCheck = {
+    edgeA: null,
+    edgeB: null,
+    angleDiff: Math.PI,
+    valid: false,
+  };
 
   for (const ae of getFreeEdges(bodyA)) {
     for (const be of getFreeEdges(bodyB)) {
-      const angleDiff = Math.acos(clamp(dotProduct(ae.direction, scalePoint(be.direction, -1)), -1, 1));
+      const angleDiff = Math.acos(
+        clamp(dotProduct(ae.direction, scalePoint(be.direction, -1)), -1, 1),
+      );
       const epDist = getEndpointDistance(ae, be);
       const midDist = distancePt(ae.midpoint, be.midpoint);
       const score = epDist + midDist * 0.75;
-      const bestScore = best.edgeA && best.edgeB
-        ? getEndpointDistance(best.edgeA, best.edgeB) + distancePt(best.edgeA.midpoint, best.edgeB.midpoint) * 0.75
-        : Infinity;
+      const bestScore =
+        best.edgeA && best.edgeB
+          ? getEndpointDistance(best.edgeA, best.edgeB) +
+            distancePt(best.edgeA.midpoint, best.edgeB.midpoint) * 0.75
+          : Infinity;
       if (score < bestScore) {
         best = {
-          edgeA: ae, edgeB: be, angleDiff,
-          valid: epDist <= maxEp && midDist <= maxMid && angleDiff <= ATTACH_ANGLE_TOL,
+          edgeA: ae,
+          edgeB: be,
+          angleDiff,
+          valid:
+            epDist <= maxEp &&
+            midDist <= maxMid &&
+            angleDiff <= ATTACH_ANGLE_TOL,
         };
       }
     }
@@ -436,7 +552,13 @@ const checkAttachment = (bodyA: Body, bodyB: Body, shapeSize: number): AttachChe
   return best;
 };
 
-const snapAndMerge = (bodies: Body[], bodyA: Body, bodyB: Body, check: AttachCheck, arena: Arena): boolean => {
+const snapAndMerge = (
+  bodies: Body[],
+  bodyA: Body,
+  bodyB: Body,
+  check: AttachCheck,
+  arena: Arena,
+): boolean => {
   if (!check.edgeA || !check.edgeB) return false;
 
   // Save B's state so we can revert if the snap is geometrically invalid
@@ -449,8 +571,15 @@ const snapAndMerge = (bodies: Body[], bodyA: Body, bodyB: Body, check: AttachChe
     Math.atan2(-check.edgeB.direction.y, -check.edgeB.direction.x);
   bodyB.rotation += angleCorrection;
 
-  const refreshed = getEdgeWorldInfo(bodyB, check.edgeB.piece, check.edgeB.slot);
-  if (!refreshed) { bodyB.rotation = savedRotB; return false; }
+  const refreshed = getEdgeWorldInfo(
+    bodyB,
+    check.edgeB.piece,
+    check.edgeB.slot,
+  );
+  if (!refreshed) {
+    bodyB.rotation = savedRotB;
+    return false;
+  }
 
   const translation = subPoints(check.edgeA.midpoint, refreshed.midpoint);
   bodyB.x += translation.x;
@@ -461,12 +590,18 @@ const snapAndMerge = (bodies: Body[], bodyA: Body, bodyB: Body, check: AttachChe
   const snapOverlapThreshold = 1.5;
   const connectingAPiece = check.edgeA.piece.id;
   const connectingBPiece = check.edgeB.piece.id;
-  const hasConflict = bodyB.pieces.some(bPiece => {
+  const hasConflict = bodyB.pieces.some((bPiece) => {
     const bVerts = getPieceWorldVerts(bodyB, bPiece);
     const bC = { x: bodyB.x, y: bodyB.y };
-    return bodyA.pieces.some(aPiece => {
-      if (aPiece.id === connectingAPiece && bPiece.id === connectingBPiece) return false;
-      const col = getPolyCollision(getPieceWorldVerts(bodyA, aPiece), bVerts, { x: bodyA.x, y: bodyA.y }, bC);
+    return bodyA.pieces.some((aPiece) => {
+      if (aPiece.id === connectingAPiece && bPiece.id === connectingBPiece)
+        return false;
+      const col = getPolyCollision(
+        getPieceWorldVerts(bodyA, aPiece),
+        bVerts,
+        { x: bodyA.x, y: bodyA.y },
+        bC,
+      );
       return col !== null && col.overlap > snapOverlapThreshold;
     });
   });
@@ -478,27 +613,38 @@ const snapAndMerge = (bodies: Body[], bodyA: Body, bodyB: Body, check: AttachChe
     return false;
   }
 
-  const ma = bodyA.pieces.length, mb = bodyB.pieces.length, total = ma + mb;
+  const ma = bodyA.pieces.length,
+    mb = bodyB.pieces.length,
+    total = ma + mb;
   bodyA.vx = (bodyA.vx * ma + bodyB.vx * mb) / total;
   bodyA.vy = (bodyA.vy * ma + bodyB.vy * mb) / total;
-  bodyA.angularVelocity = (bodyA.angularVelocity * ma + bodyB.angularVelocity * mb) / total;
+  bodyA.angularVelocity =
+    (bodyA.angularVelocity * ma + bodyB.angularVelocity * mb) / total;
   preserveBodySpeed(bodyA, arena);
 
-  bodyB.pieces.forEach(piece => {
+  bodyB.pieces.forEach((piece) => {
     const wt = getPieceWorldTransform(bodyB, piece);
-    const rel = rotatePoint(subPoints({ x: wt.x, y: wt.y }, { x: bodyA.x, y: bodyA.y }), -bodyA.rotation);
+    const rel = rotatePoint(
+      subPoints({ x: wt.x, y: wt.y }, { x: bodyA.x, y: bodyA.y }),
+      -bodyA.rotation,
+    );
     bodyA.pieces.push({
       ...piece,
-      localX: rel.x, localY: rel.y,
+      localX: rel.x,
+      localY: rel.y,
       localRotation: wt.rotation - bodyA.rotation,
-      edges: piece.edges.map(e => ({ ...e })),
+      edges: piece.edges.map((e) => ({ ...e })),
     });
   });
 
   check.edgeA.slot.attached = true;
-  const absorbedPiece = bodyA.pieces.find(p => p.id === check.edgeB?.piece.id);
+  const absorbedPiece = bodyA.pieces.find(
+    (p) => p.id === check.edgeB?.piece.id,
+  );
   if (absorbedPiece) {
-    const absorbedSlot = absorbedPiece.edges.find(e => e.index === check.edgeB?.slot.index);
+    const absorbedSlot = absorbedPiece.edges.find(
+      (e) => e.index === check.edgeB?.slot.index,
+    );
     if (absorbedSlot) absorbedSlot.attached = true;
   }
 
@@ -514,20 +660,43 @@ const snapAndMerge = (bodies: Body[], bodyA: Body, bodyB: Body, check: AttachChe
 
 // ─── Physics ──────────────────────────────────────────────────────────────────
 
-const resolveWallCollisions = (arena: Arena, bodies: Body[], onCollide: () => void) => {
-  const L = arena.x, R = arena.x + arena.width, T = arena.y, B = arena.y + arena.height;
-  bodies.forEach(body => {
+const resolveWallCollisions = (
+  arena: Arena,
+  bodies: Body[],
+  onCollide: () => void,
+) => {
+  const L = arena.x,
+    R = arena.x + arena.width,
+    T = arena.y,
+    B = arena.y + arena.height;
+  bodies.forEach((body) => {
     const verts = getBodyWorldVerts(body);
-    const minX = Math.min(...verts.map(v => v.x));
-    const maxX = Math.max(...verts.map(v => v.x));
-    const minY = Math.min(...verts.map(v => v.y));
-    const maxY = Math.max(...verts.map(v => v.y));
+    const minX = Math.min(...verts.map((v) => v.x));
+    const maxX = Math.max(...verts.map((v) => v.x));
+    const minY = Math.min(...verts.map((v) => v.y));
+    const maxY = Math.max(...verts.map((v) => v.y));
     let hit = false;
 
-    if (minX < L) { body.x += L - minX; body.vx = Math.abs(body.vx) * RESTITUTION; hit = true; }
-    if (maxX > R) { body.x -= maxX - R; body.vx = -Math.abs(body.vx) * RESTITUTION; hit = true; }
-    if (minY < T) { body.y += T - minY; body.vy = Math.abs(body.vy) * RESTITUTION; hit = true; }
-    if (maxY > B) { body.y -= maxY - B; body.vy = -Math.abs(body.vy) * RESTITUTION; hit = true; }
+    if (minX < L) {
+      body.x += L - minX;
+      body.vx = Math.abs(body.vx) * RESTITUTION;
+      hit = true;
+    }
+    if (maxX > R) {
+      body.x -= maxX - R;
+      body.vx = -Math.abs(body.vx) * RESTITUTION;
+      hit = true;
+    }
+    if (minY < T) {
+      body.y += T - minY;
+      body.vy = Math.abs(body.vy) * RESTITUTION;
+      hit = true;
+    }
+    if (maxY > B) {
+      body.y -= maxY - B;
+      body.vy = -Math.abs(body.vy) * RESTITUTION;
+      hit = true;
+    }
 
     if (hit) {
       preserveBodySpeed(body, arena);
@@ -538,12 +707,18 @@ const resolveWallCollisions = (arena: Arena, bodies: Body[], onCollide: () => vo
   });
 };
 
-const resolveBodyCollisions = (arena: Arena, bodies: Body[], audio: AssemblyAudio | null, shapeSize: number) => {
+const resolveBodyCollisions = (
+  arena: Arena,
+  bodies: Body[],
+  audio: AssemblyAudio | null,
+  shapeSize: number,
+) => {
   for (let pass = 0; pass < 3; pass++) {
     let merged = false;
     for (let i = 0; i < bodies.length && !merged; i++) {
       for (let j = i + 1; j < bodies.length && !merged; j++) {
-        const a = bodies[i], b = bodies[j];
+        const a = bodies[i],
+          b = bodies[j];
         const col = getBodyCollision(a, b);
         if (!col) continue;
 
@@ -560,22 +735,29 @@ const resolveBodyCollisions = (arena: Arena, bodies: Body[], audio: AssemblyAudi
 
         const { normal, overlap } = col;
         const correction = overlap * 0.6 + 0.5;
-        a.x -= normal.x * correction; a.y -= normal.y * correction;
-        b.x += normal.x * correction; b.y += normal.y * correction;
+        a.x -= normal.x * correction;
+        a.y -= normal.y * correction;
+        b.x += normal.x * correction;
+        b.y += normal.y * correction;
 
         const relV = subPoints({ x: b.vx, y: b.vy }, { x: a.vx, y: a.vy });
         const vn = dotProduct(relV, normal);
         if (vn < 0) {
-          const ma = a.pieces.length, mb = b.pieces.length;
+          const ma = a.pieces.length,
+            mb = b.pieces.length;
           const impulse = (-(1 + RESTITUTION) * vn) / (1 / ma + 1 / mb);
-          a.vx -= (impulse * normal.x) / ma; a.vy -= (impulse * normal.y) / ma;
-          b.vx += (impulse * normal.x) / mb; b.vy += (impulse * normal.y) / mb;
+          a.vx -= (impulse * normal.x) / ma;
+          a.vy -= (impulse * normal.y) / ma;
+          b.vx += (impulse * normal.x) / mb;
+          b.vy += (impulse * normal.y) / mb;
           preserveBodySpeed(a, arena);
           preserveBodySpeed(b, arena);
         }
 
-        a.glowColor = "red"; a.glowTime = 0.25;
-        b.glowColor = "red"; b.glowTime = 0.25;
+        a.glowColor = "red";
+        a.glowTime = 0.25;
+        b.glowColor = "red";
+        b.glowTime = 0.25;
         audio?.playCollision();
       }
     }
@@ -584,18 +766,80 @@ const resolveBodyCollisions = (arena: Arena, bodies: Body[], audio: AssemblyAudi
 
 // ─── Drawing ──────────────────────────────────────────────────────────────────
 
+const getFittedFontSize = (
+  ctx: CanvasRenderingContext2D,
+  lines: string[],
+  maxWidth: number,
+  maxSize: number,
+  minSize: number,
+) => {
+  let size = maxSize;
+
+  while (size > minSize) {
+    ctx.font = `900 ${size}px Arial, Helvetica, sans-serif`;
+    if (lines.every((line) => ctx.measureText(line).width <= maxWidth)) {
+      return size;
+    }
+    size -= 1;
+  }
+
+  return minSize;
+};
+
+const getHeadingLines = (
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  fontSize: number,
+) => {
+  ctx.font = `900 ${fontSize}px Arial, Helvetica, sans-serif`;
+
+  if (ctx.measureText(text).width <= maxWidth) return [text];
+
+  const words = text.split(" ");
+  const midpoint = Math.ceil(words.length / 2);
+  let bestLines = [
+    words.slice(0, midpoint).join(" "),
+    words.slice(midpoint).join(" "),
+  ];
+  let bestWidth = Number.POSITIVE_INFINITY;
+
+  for (let split = 1; split < words.length; split += 1) {
+    const lines = [
+      words.slice(0, split).join(" "),
+      words.slice(split).join(" "),
+    ];
+    const widest = Math.max(
+      ctx.measureText(lines[0]).width,
+      ctx.measureText(lines[1]).width,
+    );
+
+    if (widest < bestWidth) {
+      bestWidth = widest;
+      bestLines = lines;
+    }
+  }
+
+  return bestLines;
+};
+
 const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   const isMobile = window.innerWidth < 600;
   const lineW = isMobile ? 2.25 : 3;
-  const glowB = isMobile ? 7 : 11;
+  const glowB = isMobile ? 11 : 11;
+  const headingText = "WHAT WEIRD STRUCTURE WILL THESE RANDOM SHAPES MAKE?";
 
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
   ctx.fillStyle = "#020617";
   ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
 
   const bg = ctx.createRadialGradient(
-    arena.x + arena.width * 0.58, arena.y + arena.height * 0.46, 20,
-    arena.x + arena.width * 0.5, arena.y + arena.height * 0.5, arena.width * 0.72,
+    arena.x + arena.width * 0.58,
+    arena.y + arena.height * 0.46,
+    20,
+    arena.x + arena.width * 0.5,
+    arena.y + arena.height * 0.5,
+    arena.width * 0.72,
   );
   bg.addColorStop(0, "rgba(244, 63, 94, 0.07)");
   bg.addColorStop(0.48, "rgba(59, 130, 246, 0.06)");
@@ -610,7 +854,12 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.strokeRect(arena.x + 6, arena.y + 6, arena.width - 12, arena.height - 12);
   ctx.strokeStyle = "rgba(124, 143, 163, 0.12)";
   ctx.lineWidth = 1;
-  ctx.strokeRect(arena.x + 10, arena.y + 10, arena.width - 20, arena.height - 20);
+  ctx.strokeRect(
+    arena.x + 10,
+    arena.y + 10,
+    arena.width - 20,
+    arena.height - 20,
+  );
   ctx.restore();
 
   ctx.save();
@@ -631,21 +880,48 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.shadowBlur = isMobile ? 8 : 12;
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
-  ctx.font = `900 ${isMobile ? 17 : 26}px Arial, Helvetica, sans-serif`;
-  ctx.fillText("Random Shapes", arena.x + arena.width / 2, arena.y - (isMobile ? 38 : 48));
-  ctx.font = `800 ${isMobile ? 12 : 18}px Arial, Helvetica, sans-serif`;
-  ctx.fillText("creating beautiful Figures", arena.x + arena.width / 2, arena.y - (isMobile ? 22 : 26));
+  const maxHeadingWidth = Math.min(arena.width - 20, window.innerWidth - 32);
+  const maxHeadingSize = isMobile ? 20 : 26;
+  const headingLines = getHeadingLines(
+    ctx,
+    headingText,
+    maxHeadingWidth,
+    maxHeadingSize,
+  );
+  const headingSize = getFittedFontSize(
+    ctx,
+    headingLines,
+    maxHeadingWidth,
+    maxHeadingSize,
+    isMobile ? 13 : 16,
+  );
+  ctx.font = `900 ${headingSize}px Arial, Helvetica, sans-serif`;
+  const lineHeight = headingSize * 1.14;
+  const bottomY = Math.max(
+    headingSize + 16 + lineHeight * (headingLines.length - 1),
+    arena.y - (isMobile ? 38 : 48),
+  );
+  headingLines.forEach((line, index) => {
+    ctx.fillText(
+      line,
+      arena.x + arena.width / 2,
+      bottomY - (headingLines.length - index - 1) * lineHeight,
+    );
+  });
+
   ctx.restore();
 };
 
 const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
   const glowCol =
-    body.glowColor === "green" ? "rgba(34, 197, 94, 0.9)"
-    : body.glowColor === "red" ? "rgba(239, 68, 68, 0.9)"
-    : "rgba(148, 163, 184, 0.18)";
+    body.glowColor === "green"
+      ? "rgba(34, 197, 94, 0.9)"
+      : body.glowColor === "red"
+        ? "rgba(239, 68, 68, 0.9)"
+        : "rgba(148, 163, 184, 0.18)";
   const pulse = 1 + body.attachPulse * 0.07;
 
-  body.pieces.forEach(piece => {
+  body.pieces.forEach((piece) => {
     const tr = getPieceWorldTransform(body, piece);
     ctx.save();
     ctx.translate(body.x, body.y);
@@ -653,7 +929,10 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
     ctx.translate(tr.x - body.x, tr.y - body.y);
     ctx.rotate(tr.rotation);
     ctx.beginPath();
-    piece.vertices.forEach((v, i) => { if (i === 0) ctx.moveTo(v.x, v.y); else ctx.lineTo(v.x, v.y); });
+    piece.vertices.forEach((v, i) => {
+      if (i === 0) ctx.moveTo(v.x, v.y);
+      else ctx.lineTo(v.x, v.y);
+    });
     ctx.closePath();
     ctx.shadowColor = glowCol;
     ctx.shadowBlur = 12 + body.glowTime * 38;
@@ -667,25 +946,36 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
   });
 };
 
-const isArenaTooCrowded = (arena: Arena, bodies: Body[], shapeSize: number): boolean => {
+const isArenaTooCrowded = (
+  arena: Arena,
+  bodies: Body[],
+  shapeSize: number,
+): boolean => {
   if (bodies.length === 0) return false;
-  let maxW = 0, maxH = 0;
+  let maxW = 0,
+    maxH = 0;
   for (const body of bodies) {
     const verts = getBodyWorldVerts(body);
-    const minX = Math.min(...verts.map(v => v.x));
-    const maxX = Math.max(...verts.map(v => v.x));
-    const minY = Math.min(...verts.map(v => v.y));
-    const maxY = Math.max(...verts.map(v => v.y));
+    const minX = Math.min(...verts.map((v) => v.x));
+    const maxX = Math.max(...verts.map((v) => v.x));
+    const minY = Math.min(...verts.map((v) => v.y));
+    const maxY = Math.max(...verts.map((v) => v.y));
     maxW = Math.max(maxW, maxX - minX);
     maxH = Math.max(maxH, maxY - minY);
   }
   const minClearance = shapeSize * 2.5;
-  return (arena.width - maxW < minClearance) || (arena.height - maxH < minClearance);
+  return (
+    arena.width - maxW < minClearance || arena.height - maxH < minClearance
+  );
 };
 
 const drawStats = (
-  ctx: CanvasRenderingContext2D, arena: Arena,
-  pieceCount: number, bodyCount: number, elapsedSec: number, arenaFull: boolean,
+  ctx: CanvasRenderingContext2D,
+  arena: Arena,
+  pieceCount: number,
+  bodyCount: number,
+  elapsedSec: number,
+  arenaFull: boolean,
 ) => {
   const isMobile = window.innerWidth < 600;
   const mins = Math.floor(elapsedSec / 60);
@@ -759,7 +1049,7 @@ const SquareAssembly = () => {
 
       const subDt = dt / PHYSICS_SUBSTEPS;
       for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
-        bodiesRef.current.forEach(body => {
+        bodiesRef.current.forEach((body) => {
           body.x += body.vx * subDt;
           body.y += body.vy * subDt;
           body.rotation += body.angularVelocity * subDt;
@@ -767,8 +1057,15 @@ const SquareAssembly = () => {
           body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
           if (body.glowTime <= 0) body.glowColor = "none";
         });
-        resolveWallCollisions(arena, bodiesRef.current, () => audioRef.current?.playCollision());
-        resolveBodyCollisions(arena, bodiesRef.current, audioRef.current, shapeSize);
+        resolveWallCollisions(arena, bodiesRef.current, () =>
+          audioRef.current?.playCollision(),
+        );
+        resolveBodyCollisions(
+          arena,
+          bodiesRef.current,
+          audioRef.current,
+          shapeSize,
+        );
       }
 
       const elapsedSec = (time - startTimeRef.current) / 1000;
@@ -776,7 +1073,7 @@ const SquareAssembly = () => {
       const bods = bodiesRef.current.length;
 
       drawArenaFrame(ctx, arena);
-      bodiesRef.current.forEach(b => drawBody(ctx, b));
+      bodiesRef.current.forEach((b) => drawBody(ctx, b));
       drawStats(ctx, arena, pieces, bods, elapsedSec, arenaFullRef.current);
 
       rafRef.current = requestAnimationFrame(draw);
@@ -786,7 +1083,9 @@ const SquareAssembly = () => {
     lastTimeRef.current = performance.now();
     rafRef.current = requestAnimationFrame(draw);
 
-    const handleResize = () => { arenaRef.current = resizeCanvas(canvas); };
+    const handleResize = () => {
+      arenaRef.current = resizeCanvas(canvas);
+    };
     const handleInteract = () => audioRef.current?.unlock();
     window.addEventListener("resize", handleResize);
     canvas.addEventListener("click", handleInteract);
@@ -804,8 +1103,15 @@ const SquareAssembly = () => {
     <div className="root">
       <canvas ref={canvasRef} />
       <style jsx>{`
-        .root { position: fixed; inset: 0; overflow: hidden; }
-        canvas { display: block; cursor: pointer; }
+        .root {
+          position: fixed;
+          inset: 0;
+          overflow: hidden;
+        }
+        canvas {
+          display: block;
+          cursor: pointer;
+        }
       `}</style>
     </div>
   );
