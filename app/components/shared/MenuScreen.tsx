@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import type { Simulation } from "../../data/simulations";
+import { trackEvent } from "../../lib/analytics";
 
 interface Props {
   simulations: Simulation[];
@@ -291,6 +292,12 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
       return;
     }
 
+    trackEvent("simulation_selected", {
+      simulationId: simulation.id,
+      simulationName: simulation.title,
+      simulationStatus: simulation.status,
+    });
+
     onLaunch(simulation.id);
   };
 
@@ -333,9 +340,7 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
                   {renderSimulationIcon(simulation.icon)}
                 </div>
                 <div className="button-text">
-                  <div className="button-title">
-                    {simulation.title}
-                  </div>
+                  <div className="button-title">{simulation.title}</div>
                   <div className="button-subtitle">{simulation.subtitle}</div>
                   <div className="button-description">
                     {simulation.description}
@@ -781,11 +786,7 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
               rgba(34, 197, 94, 0.18),
               transparent 25%
             ),
-            linear-gradient(
-              135deg,
-              rgba(2, 6, 23, 0.9),
-              rgba(8, 13, 31, 0.76)
-            );
+            linear-gradient(135deg, rgba(2, 6, 23, 0.9), rgba(8, 13, 31, 0.76));
           border-color: rgba(34, 211, 238, 0.48);
         }
 

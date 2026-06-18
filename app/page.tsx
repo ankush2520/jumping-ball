@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import MenuScreen from "./components/shared/MenuScreen";
 import { getSimulationById, simulations } from "./data/simulations";
+import { trackEvent, trackWebsiteVisit } from "./lib/analytics";
 
 export default function Home() {
   const [activeSimulationId, setActiveSimulationId] = useState<string | null>(
@@ -12,6 +13,10 @@ export default function Home() {
     ? getSimulationById(activeSimulationId)
     : null;
   const ActiveSimulation = activeSimulation?.component ?? null;
+
+  useEffect(() => {
+    trackWebsiteVisit();
+  }, []);
 
   return (
     <div
@@ -31,7 +36,12 @@ export default function Home() {
             aria-label="Back to menu"
             title="Back to menu"
             className="home-button"
-            onClick={() => setActiveSimulationId(null)}
+            onClick={() => {
+              trackEvent("home_clicked", {
+                button_name: "home",
+              });
+              setActiveSimulationId(null);
+            }}
             style={{
               position: "fixed",
               left: 10,
