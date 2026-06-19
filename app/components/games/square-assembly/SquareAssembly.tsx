@@ -38,8 +38,9 @@ type Body = {
   glowColor: "none" | "green" | "red";
   glowTime: number;
   attachPulse: number;
-  isCluster: boolean; // the moving target body
-  colorIdx: number;   // for loose squares: 0-4; for cluster: -1 (mixed colors)
+  isCluster: boolean;   // true = ghost skeleton (always passable, visual only)
+  isAssembled: boolean; // true = fully assembled solid shape (can collide + attach)
+  colorIdx: number;     // 0-4 for loose/cluster/assembled; -1 for merged multi-color shape
 };
 
 type Arena = {
@@ -65,7 +66,7 @@ type AssemblyAudio = {
 const PHYSICS_SUBSTEPS = 4;
 const RESTITUTION = 1.0;
 const GRID_DIVISIONS = 25;
-const BODY_SPEED_RATIO = 0.225; // 1.5× the previous 0.15
+const BODY_SPEED_RATIO = 0.45; // 2× the previous 0.225
 
 const SELECTOR_COLORS = [
   "#ef4444", // red
@@ -305,9 +306,11 @@ const preserveBodySpeed = (body: Body, arena: Arena) => {
 
 // Build the moving cluster from the user's grid design.
 // Pieces start as ghost (filled=false); loose pieces snap in over time.
+// overrideColorIdx: use -1 for the mega skeleton (all colors), else the specific color
 const createClusterBody = (
   targets: Array<{ col: number; row: number; kind: PieceKind; colorIdx: number }>,
   arena: Arena,
+  overrideColorIdx = -1,
 ): Body => {
   const s = getShapeSize(arena);
   const avgCol = targets.reduce((sum, t) => sum + t.col, 0) / targets.length;
@@ -331,6 +334,10 @@ const createClusterBody = (
   const spawnX = arena.x + arena.width * (0.3 + Math.random() * 0.4);
   const spawnY = arena.y + arena.height * (0.3 + Math.random() * 0.4);
 
+  const bodyColorIdx = overrideColorIdx === -1
+    ? (targets.every((t) => t.colorIdx === targets[0].colorIdx) ? targets[0].colorIdx : -1)
+    : overrideColorIdx;
+
   return {
     id: _bodyIdCounter++,
     x: spawnX,
@@ -344,7 +351,8 @@ const createClusterBody = (
     glowTime: 0,
     attachPulse: 0,
     isCluster: true,
-    colorIdx: targets[0].colorIdx, // single-color cluster
+    isAssembled: false,
+    colorIdx: bodyColorIdx,
   };
 };
 
@@ -409,6 +417,7 @@ const trySpawnShape = (
     glowTime: 0,
     attachPulse: 0,
     isCluster: false,
+    isAssembled: false,
     colorIdx,
   };
 };
@@ -459,13 +468,17 @@ const getPolyCollision = (
   };
 };
 
-const getBodyCollision = (a: Body, b: Body, clusterSolid: boolean): Collision | null => {
-  // Clusters never block each other — they're separate color-group shapes
-  if (a.isCluster && b.isCluster) return null;
-  // Before 20s: cluster is a solid obstacle (all pieces block, including ghost slots).
-  // After 20s: cluster is fully passable — loose squares pass through to reach their slots.
-  const aPieces = a.isCluster ? (clusterSolid ? a.pieces : []) : a.pieces;
-  const bPieces = b.isCluster ? (clusterSolid ? b.pieces : []) : b.pieces;
+const getBodyCollision = (a: Body, b: Body): Collision | null => {
+  // Ghost skeletons are pure visual — they never cause any collision
+  if (a.isCluster || b.isCluster) return null;
+  // A loose square always passes through the assembled shape of its own color
+  if (a.isAssembled !== b.isAssembled) {
+    const assembled = a.isAssembled ? a : b;
+    const loose = a.isAssembled ? b : a;
+    if (assembled.colorIdx === loose.colorIdx) return null;
+  }
+  const aPieces = a.pieces;
+  const bPieces = b.pieces;
   if (aPieces.length === 0 || bPieces.length === 0) return null;
   let best: Collision | null = null;
   for (const ap of aPieces) {
@@ -503,8 +516,8 @@ const snapToCluster = (
     const piece = body.pieces[0];
     const wt = getPieceWorldTransform(body, piece);
 
-    // Each loose square only snaps into its matching-color cluster
-    const cluster = clusters.find((c) => c.colorIdx === body.colorIdx);
+    // Each loose square only snaps into its matching-color GROUP skeleton (not the mega)
+    const cluster = clusters.find((c) => c.colorIdx === body.colorIdx && c.colorIdx !== -1);
     if (!cluster) continue;
 
     for (const cp of cluster.pieces) {
@@ -519,6 +532,39 @@ const snapToCluster = (
         onSnap();
         break;
       }
+    }
+  }
+};
+
+// When a completed color-group body is near its target slot in the mega skeleton,
+// fill all matching ghost slots in mega and remove the assembled group body.
+const snapGroupsIntoMega = (
+  bodies: Body[],
+  mega: Body,
+  groupOffsets: Map<number, { x: number; y: number }>,
+  arena: Arena,
+  onSnap: () => void,
+) => {
+  const s = getShapeSize(arena);
+  const threshold = s * 1.8;
+
+  for (let i = bodies.length - 1; i >= 0; i--) {
+    const body = bodies[i];
+    if (!body.isAssembled) continue;
+    const offset = groupOffsets.get(body.colorIdx);
+    if (!offset) continue;
+    const targetX = mega.x + offset.x;
+    const targetY = mega.y + offset.y;
+    if (Math.hypot(body.x - targetX, body.y - targetY) < threshold) {
+      // Fill all matching ghost slots in the mega skeleton
+      for (const cp of mega.pieces) {
+        if (!cp.filled && cp.colorIdx === body.colorIdx) cp.filled = true;
+      }
+      bodies.splice(i, 1);
+      mega.glowColor = "green";
+      mega.glowTime = GLOW_DURATION;
+      mega.attachPulse = 1;
+      onSnap();
     }
   }
 };
@@ -574,18 +620,16 @@ const resolveBodyCollisions = (
   arena: Arena,
   bodies: Body[],
   audio: AssemblyAudio | null,
-  clusterSolid: boolean,
 ) => {
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
-      const a = bodies[i],
-        b = bodies[j];
-      const col = getBodyCollision(a, b, clusterSolid);
+      const a = bodies[i], b = bodies[j];
+      const col = getBodyCollision(a, b);
       if (!col) continue;
       const { normal, overlap } = col;
       const correction = overlap * 0.6 + 0.5;
-      // Cluster is heavy — push it much less than a loose piece
-      const aShare = a.isCluster ? 0.05 : b.isCluster ? 0.95 : 0.5;
+      // Assembled groups are heavy — absorb less positional correction
+      const aShare = a.isAssembled ? 0.05 : b.isAssembled ? 0.95 : 0.5;
       const bShare = 1 - aShare;
       a.x -= normal.x * correction * aShare;
       a.y -= normal.y * correction * aShare;
@@ -594,7 +638,6 @@ const resolveBodyCollisions = (
       const relV = subPoints({ x: b.vx, y: b.vy }, { x: a.vx, y: a.vy });
       const vn = dotProduct(relV, normal);
       if (vn < 0) {
-        // Cluster mass = total piece count so it barely deflects
         const ma = a.pieces.length;
         const mb = b.pieces.length;
         const impulse = (-(1 + RESTITUTION) * vn) / (1 / ma + 1 / mb);
@@ -605,9 +648,8 @@ const resolveBodyCollisions = (
         preserveBodySpeed(a, arena);
         preserveBodySpeed(b, arena);
       }
-      if (!a.isCluster) { a.glowColor = "red"; a.glowTime = 0.25; }
-      if (!b.isCluster) { b.glowColor = "red"; b.glowTime = 0.25; }
-      // Play for both bodies — each gets its own per-body cooldown and a unique note
+      if (!a.isAssembled) { a.glowColor = "red"; a.glowTime = 0.25; }
+      if (!b.isAssembled) { b.glowColor = "red"; b.glowTime = 0.25; }
       audio?.playCollision(a.id);
       audio?.playCollision(b.id);
     }
@@ -876,10 +918,10 @@ const SquareAssembly = () => {
   const audioRef = useRef<AssemblyAudio | null>(null);
   const arenaRef = useRef<Arena | null>(null);
   const bodiesRef = useRef<Body[]>([]);
-  const clusterBodiesRef = useRef<Body[]>([]);
-  // target arena position for each color's cluster during final merge
-  const clusterTargetsRef = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const isMergingRef = useRef(false);
+  const clusterBodiesRef = useRef<Body[]>([]); // color-group skeletons
+  const megaClusterRef = useRef<Body | null>(null); // the one mega skeleton
+  // per-color offset (px) from mega skeleton center to that color group's center
+  const groupOffsetsRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
   const startTimeRef = useRef(0);
@@ -916,43 +958,48 @@ const SquareAssembly = () => {
     _bodyIdCounter = 0;
     _pieceIdCounter = 0;
 
-    // Group cells by color — each color gets its own cluster body
+    // Group cells by color
     const byColor = new Map<number, typeof targets>();
     for (const t of targets) {
       if (!byColor.has(t.colorIdx)) byColor.set(t.colorIdx, []);
       byColor.get(t.colorIdx)!.push(t);
     }
 
-    // Overall centroid in grid coords — used to compute per-cluster target offsets
     const s = getShapeSize(arena);
     const overallAvgCol = targets.reduce((sum, t) => sum + t.col, 0) / targets.length;
     const overallAvgRow = targets.reduce((sum, t) => sum + t.row, 0) / targets.length;
-    const newTargets = new Map<number, { x: number; y: number }>();
 
-    const allBodies: Body[] = [];
-    const clusters: Body[] = [];
-
+    // Compute per-color offset from mega skeleton center
+    const newGroupOffsets = new Map<number, { x: number; y: number }>();
     for (const [colorIdx, colorTargets] of byColor) {
-      const cluster = createClusterBody(colorTargets, arena);
-      // Final merge target: arena center + this color group's offset from overall centroid
       const subAvgCol = colorTargets.reduce((sum, t) => sum + t.col, 0) / colorTargets.length;
       const subAvgRow = colorTargets.reduce((sum, t) => sum + t.row, 0) / colorTargets.length;
-      newTargets.set(colorIdx, {
-        x: arena.x + arena.width / 2 + (subAvgCol - overallAvgCol) * s,
-        y: arena.y + arena.height / 2 + (subAvgRow - overallAvgRow) * s,
+      newGroupOffsets.set(colorIdx, {
+        x: (subAvgCol - overallAvgCol) * s,
+        y: (subAvgRow - overallAvgRow) * s,
       });
-      clusters.push(cluster);
+    }
+
+    // ONE mega skeleton showing the full combined design
+    const mega = createClusterBody(targets, arena, -1);
+    const allBodies: Body[] = [mega];
+
+    // Color-group skeletons + loose squares
+    const colorClusters: Body[] = [];
+    for (const [colorIdx, colorTargets] of byColor) {
+      const cluster = createClusterBody(colorTargets, arena, colorIdx);
+      colorClusters.push(cluster);
       allBodies.push(cluster);
       for (const t of colorTargets) {
         const b = trySpawnShape(arena, allBodies, cluster, colorIdx);
         if (b) allBodies.push(b);
-        void t; // used only for count
+        void t;
       }
     }
 
-    clusterBodiesRef.current = clusters;
-    clusterTargetsRef.current = newTargets;
-    isMergingRef.current = false;
+    megaClusterRef.current = mega;
+    groupOffsetsRef.current = newGroupOffsets;
+    clusterBodiesRef.current = colorClusters;
     bodiesRef.current = allBodies;
 
     startTimeRef.current = 0;
@@ -966,8 +1013,8 @@ const SquareAssembly = () => {
   const resetToEditor = useCallback(() => {
     bodiesRef.current = [];
     clusterBodiesRef.current = [];
-    clusterTargetsRef.current = new Map();
-    isMergingRef.current = false;
+    megaClusterRef.current = null;
+    groupOffsetsRef.current = new Map();
     completeSoundPlayedRef.current = false;
     phaseRef.current = "editor";
     setPhase("editor");
@@ -1004,41 +1051,33 @@ const SquareAssembly = () => {
         lastTimeRef.current = time;
 
         const clusters = clusterBodiesRef.current;
-        const allClustersComplete =
-          clusters.length > 0 &&
-          clusters.every((c) => c.pieces.every((p) => p.filled));
         const elapsedSec = (time - startTimeRef.current) / 1000;
 
         const MERGE_DELAY = 5;
         const mergingStarted = elapsedSec >= MERGE_DELAY;
-        // Before 20s: clusters are solid obstacles; after 20s: squares pass through
-        const clusterSolid = elapsedSec < 20;
+        const mega = megaClusterRef.current;
 
-        // ── Merge phase: once all clusters complete, home them to designed positions ──
-        if (allClustersComplete && !isMergingRef.current) {
-          isMergingRef.current = true;
-        }
-        if (isMergingRef.current) {
-          let allAtTarget = true;
-          for (const cluster of clusters) {
-            const target = clusterTargetsRef.current.get(cluster.colorIdx);
-            if (!target) continue;
-            const dx = target.x - cluster.x;
-            const dy = target.y - cluster.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist > 3) {
-              allAtTarget = false;
-              const spd = Math.min(dist * 3, 350);
-              cluster.vx = (dx / dist) * spd;
-              cluster.vy = (dy / dist) * spd;
-            } else {
-              cluster.x = target.x;
-              cluster.y = target.y;
-              cluster.vx = 0;
-              cluster.vy = 0;
-            }
+        // ── Transition: color-group skeleton → assembled solid when all its slots filled ──
+        for (const cluster of clusters) {
+          if (cluster.isCluster && cluster.pieces.every((p) => p.filled)) {
+            cluster.isCluster = false;
+            cluster.isAssembled = true;
+            const speed = getBodySpeed(arena);
+            const angle = Math.random() * Math.PI * 2;
+            cluster.vx = Math.cos(angle) * speed;
+            cluster.vy = Math.sin(angle) * speed;
           }
-          if (allAtTarget && !completeSoundPlayedRef.current) {
+        }
+
+        // ── Transition: mega skeleton → assembled when all slots filled ──
+        if (mega && mega.isCluster && mega.pieces.every((p) => p.filled)) {
+          mega.isCluster = false;
+          mega.isAssembled = true;
+          const speed = getBodySpeed(arena);
+          const angle = Math.random() * Math.PI * 2;
+          mega.vx = Math.cos(angle) * speed;
+          mega.vy = Math.sin(angle) * speed;
+          if (!completeSoundPlayedRef.current) {
             completeSoundPlayedRef.current = true;
             audioRef.current?.playComplete();
           }
@@ -1053,15 +1092,22 @@ const SquareAssembly = () => {
             body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
             if (body.glowTime <= 0) body.glowColor = "none";
           });
-          // Clusters still bounce off walls (including during merge animation)
           resolveWallCollisions(arena, bodiesRef.current, (bodyId) =>
             audioRef.current?.playCollision(bodyId),
           );
-          resolveBodyCollisions(arena, bodiesRef.current, audioRef.current, clusterSolid);
-          if (mergingStarted && !allClustersComplete) {
+          resolveBodyCollisions(arena, bodiesRef.current, audioRef.current);
+          if (mergingStarted) {
+            // Level 1: loose squares snap into color-group skeletons
             snapToCluster(bodiesRef.current, clusters, arena, elapsedSec, () =>
               audioRef.current?.playAttach(),
             );
+            // Level 2: assembled color-groups snap into mega skeleton
+            if (mega && mega.isCluster) {
+              snapGroupsIntoMega(
+                bodiesRef.current, mega, groupOffsetsRef.current, arena,
+                () => audioRef.current?.playAttach(),
+              );
+            }
           }
         }
 
