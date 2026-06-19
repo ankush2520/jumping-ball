@@ -51,7 +51,7 @@ type Collision = { normal: Point; overlap: number };
 
 type AssemblyAudio = {
   unlock: () => Promise<void>;
-  playCollision: () => void;
+  playCollision: (bodyId: number) => void;
   playAttach: () => void;
   playComplete: () => void;
   dispose: () => void;
@@ -62,7 +62,7 @@ type AssemblyAudio = {
 const PHYSICS_SUBSTEPS = 4;
 const RESTITUTION = 1.0;
 const GRID_DIVISIONS = 25;
-const BODY_SPEED_RATIO = 0.3;
+const BODY_SPEED_RATIO = 0.15;
 const GLOW_DURATION = 0.5;
 const MAX_DT = 1 / 30;
 
@@ -119,7 +119,9 @@ const getEdgeSlots = (): EdgeSlot[] =>
 const createAudio = (): AssemblyAudio => {
   let audio: AudioContext | null = null;
   let masterGain: GainNode | null = null;
-  let lastCollisionAt = 0;
+  // Per-body cooldown map: bodyId → last play time. Allows simultaneous hits on different bodies.
+  const bodyHitTime = new Map<number, number>();
+  let noteIdx = 0; // rotates through pentatonic so consecutive collisions sound different
   // C major pentatonic — soft, non-jarring at medium octave
   const pentatonic = [261.63, 329.63, 392.0, 440.0, 523.25, 659.25, 783.99];
 
@@ -174,13 +176,17 @@ const createAudio = (): AssemblyAudio => {
       const ac = ensureAudio();
       if (ac?.state === "suspended") await ac.resume();
     },
-    playCollision: () => {
+    playCollision: (bodyId: number) => {
       const ac = ensureAudio();
       if (!ac || ac.state !== "running") return;
       const now = ac.currentTime;
-      if (now - lastCollisionAt < 0.03) return; // prevent same-frame duplicates only
-      lastCollisionAt = now;
-      const freq = pentatonic[Math.floor(Math.random() * pentatonic.length)];
+      // Each body gets its own 100ms cooldown — simultaneous hits on different bodies all play
+      const last = bodyHitTime.get(bodyId) ?? 0;
+      if (now - last < 0.10) return;
+      bodyHitTime.set(bodyId, now);
+      // Advance note index so each collision gets a unique note in sequence
+      const freq = pentatonic[noteIdx % pentatonic.length];
+      noteIdx = (noteIdx + 1) % pentatonic.length;
       playBell(freq * 0.5, 0.055, 0.010, 0.32);
     },
     playAttach: () => {
@@ -477,7 +483,7 @@ const snapToCluster = (
 ) => {
   const s = getShapeSize(arena);
   // 0–50 s: stays at 0.65 cells; 50 s+: grows to 2.5 cells over 40 s
-  const magnetT = elapsedSec > 50 ? Math.min(1, (elapsedSec - 50) / 40) : 0;
+  const magnetT = elapsedSec > 20 ? Math.min(1, (elapsedSec - 20) / 40) : 0;
   const threshold = s * (0.65 + magnetT * 1.85);
 
   for (let i = bodies.length - 1; i >= 0; i--) {
@@ -515,8 +521,8 @@ const applyClusterAttraction = (
   elapsedSec: number,
 ) => {
   const s = getShapeSize(arena);
-  const magnetActive = elapsedSec >= 50;
-  const magnetT = magnetActive ? Math.min(1, (elapsedSec - 50) / 40) : 0;
+  const magnetActive = elapsedSec >= 20;
+  const magnetT = magnetActive ? Math.min(1, (elapsedSec - 20) / 40) : 0;
 
   // Attract radius: 3.5 cells normally, grows to fill entire arena in magnet phase
   const attractRadius = magnetActive
@@ -594,7 +600,7 @@ const applyClusterAttraction = (
 const resolveWallCollisions = (
   arena: Arena,
   bodies: Body[],
-  onCollide: () => void,
+  onCollide: (bodyId: number) => void,
 ) => {
   const L = arena.x,
     R = arena.x + arena.width,
@@ -631,7 +637,7 @@ const resolveWallCollisions = (
       preserveBodySpeed(body, arena);
       body.glowColor = "red";
       body.glowTime = Math.max(body.glowTime, 0.16);
-      onCollide();
+      onCollide(body.id);
     }
   });
 };
@@ -675,7 +681,9 @@ const resolveBodyCollisions = (
       }
       if (!a.isCluster) { a.glowColor = "red"; a.glowTime = 0.25; }
       if (!b.isCluster) { b.glowColor = "red"; b.glowTime = 0.25; }
-      audio?.playCollision();
+      // Play for both bodies — each gets its own per-body cooldown and a unique note
+      audio?.playCollision(a.id);
+      audio?.playCollision(b.id);
     }
   }
 };
@@ -1042,8 +1050,8 @@ const SquareAssembly = () => {
             body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
             if (body.glowTime <= 0) body.glowColor = "none";
           });
-          resolveWallCollisions(arena, bodiesRef.current, () =>
-            audioRef.current?.playCollision(),
+          resolveWallCollisions(arena, bodiesRef.current, (bodyId) =>
+            audioRef.current?.playCollision(bodyId),
           );
           resolveBodyCollisions(arena, bodiesRef.current, audioRef.current, clusterSolid);
           if (cluster && mergingStarted && !allFilled) {
