@@ -378,7 +378,7 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
         <div className="hero-section">
           <div className="hero-accent" />
           <h1 className="hero-title">
-            PHYSICS <span className="gradient-text">LAB</span>
+            BOUNCING <span className="gradient-text">SHAPES</span>
           </h1>
           <p className="hero-subtitle">Interactive Simulation Playground</p>
           <div className="hero-divider" />

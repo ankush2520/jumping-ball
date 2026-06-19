@@ -1,12 +1,14 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Point = { x: number; y: number };
-type PieceKind = "square" | "triangle";
+type PieceKind = "square";
+type CellKind = "empty" | "square";
+type GamePhase = "editor" | "simulation";
 
 type EdgeSlot = { index: number; attached: boolean };
 
@@ -19,6 +21,7 @@ type Piece = {
   localRotation: number;
   vertices: Point[];
   edges: EdgeSlot[];
+  filled: boolean; // false = ghost slot on cluster, true = real piece
 };
 
 type Body = {
@@ -33,6 +36,7 @@ type Body = {
   glowColor: "none" | "green" | "red";
   glowTime: number;
   attachPulse: number;
+  isCluster: boolean; // the moving target body
 };
 
 type Arena = {
@@ -45,27 +49,11 @@ type Arena = {
 
 type Collision = { normal: Point; overlap: number };
 
-type EdgeInfo = {
-  body: Body;
-  piece: Piece;
-  slot: EdgeSlot;
-  start: Point;
-  end: Point;
-  direction: Point;
-  midpoint: Point;
-};
-
-type AttachCheck = {
-  edgeA: EdgeInfo | null;
-  edgeB: EdgeInfo | null;
-  angleDiff: number;
-  valid: boolean;
-};
-
 type AssemblyAudio = {
   unlock: () => Promise<void>;
   playCollision: () => void;
   playAttach: () => void;
+  playComplete: () => void;
   dispose: () => void;
 };
 
@@ -77,28 +65,15 @@ const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const PHYSICS_SUBSTEPS = 4;
 const RESTITUTION = 1.0;
-const SHAPE_SIZE_RATIO = 0.06;
+const GRID_DIVISIONS = 25;
 const BODY_SPEED_RATIO = 0.3;
-const ATTACH_ANGLE_TOL = (22 * Math.PI) / 180;
 const GLOW_DURATION = 0.5;
 const MAX_DT = 1 / 30;
-const INITIAL_SHAPE_COUNT = 7;
-const SPAWN_INTERVAL_SECS = 0.5;
+const INITIAL_SHAPE_COUNT = 6;
+const SPAWN_INTERVAL_SECS = 0.8;
+const MAX_BODIES = 40;
 
-const SHAPE_PALETTE: string[] = [
-  "#f97316",
-  "#38bdf8",
-  "#a78bfa",
-  "#34d399",
-  "#fb923c",
-  "#f472b6",
-  "#facc15",
-  "#60a5fa",
-  "#4ade80",
-  "#c084fc",
-  "#fbbf24",
-  "#f43f5e",
-];
+const SQUARE_COLOR = "#d77026";
 
 let sharedAudioContext: AudioContext | null = null;
 let _bodyIdCounter = 0;
@@ -115,10 +90,6 @@ const rotatePoint = ({ x, y }: Point, a: number): Point => ({
   y: x * Math.sin(a) + y * Math.cos(a),
 });
 
-const addPoints = (a: Point, b: Point): Point => ({
-  x: a.x + b.x,
-  y: a.y + b.y,
-});
 const subPoints = (a: Point, b: Point): Point => ({
   x: a.x - b.x,
   y: a.y - b.y,
@@ -144,23 +115,11 @@ const getSquareVerts = (s: number): Point[] => {
   ];
 };
 
-const getTriangleVerts = (s: number): Point[] => {
-  const h = (s * Math.sqrt(3)) / 2;
-  return [
-    { x: 0, y: (-2 * h) / 3 },
-    { x: s / 2, y: h / 3 },
-    { x: -s / 2, y: h / 3 },
-  ];
-};
+const getPieceLocalVerts = (_kind: PieceKind, s: number): Point[] =>
+  getSquareVerts(s);
 
-const getPieceLocalVerts = (kind: PieceKind, s: number): Point[] =>
-  kind === "square" ? getSquareVerts(s) : getTriangleVerts(s);
-
-const getEdgeSlots = (kind: PieceKind): EdgeSlot[] =>
-  Array.from({ length: kind === "square" ? 4 : 3 }, (_, i) => ({
-    index: i,
-    attached: false,
-  }));
+const getEdgeSlots = (): EdgeSlot[] =>
+  Array.from({ length: 4 }, (_, i) => ({ index: i, attached: false }));
 
 // ─── Audio ────────────────────────────────────────────────────────────────────
 
@@ -168,7 +127,8 @@ const createAudio = (): AssemblyAudio => {
   let audio: AudioContext | null = null;
   let masterGain: GainNode | null = null;
   let lastCollisionAt = 0;
-  const pianoNotes = [261.63, 293.66, 329.63, 392, 440, 523.25, 587.33];
+  // C major pentatonic — soft, non-jarring at medium octave
+  const pentatonic = [261.63, 329.63, 392.0, 440.0, 523.25, 659.25, 783.99];
 
   const ensureAudio = () => {
     if (audio) return audio;
@@ -180,73 +140,40 @@ const createAudio = (): AssemblyAudio => {
     audio = sharedAudioContext;
     if (!audio) return null;
     masterGain = audio.createGain();
-    masterGain.gain.value = 0.28;
+    masterGain.gain.value = 0.18;
     masterGain.connect(audio.destination);
     return audio;
   };
 
-  const playTone = (freq: number, dur: number, gainVal: number) => {
+  // Soft bell-like sine tone: slow attack, long gentle release
+  const playBell = (freq: number, peakGain: number, attackSec: number, releaseSec: number, when = 0) => {
     const ac = ensureAudio();
     if (!ac || ac.state !== "running" || !masterGain) return;
-    const now = ac.currentTime;
-    const osc = ac.createOscillator();
-    const g = ac.createGain();
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(freq, now);
-    osc.frequency.exponentialRampToValueAtTime(freq * 0.62, now + dur);
-    g.gain.setValueAtTime(0.0001, now);
-    g.gain.linearRampToValueAtTime(gainVal, now + 0.008);
-    g.gain.exponentialRampToValueAtTime(0.0001, now + dur);
-    osc.connect(g);
-    g.connect(masterGain);
-    osc.start(now);
-    osc.stop(now + dur + 0.02);
-    osc.onended = () => {
-      osc.disconnect();
-      g.disconnect();
-    };
-  };
-
-  const playPianoNote = (freq: number) => {
-    const ac = ensureAudio();
-    if (!ac || ac.state !== "running" || !masterGain) return;
-    const now = ac.currentTime;
-    const outGain = ac.createGain();
+    const now = ac.currentTime + when;
     const filter = ac.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.setValueAtTime(3600, now);
-    filter.frequency.exponentialRampToValueAtTime(1250, now + 0.42);
-    outGain.gain.setValueAtTime(0.0001, now);
-    outGain.gain.linearRampToValueAtTime(0.42, now + 0.006);
-    outGain.gain.exponentialRampToValueAtTime(0.13, now + 0.07);
-    outGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.58);
-    outGain.connect(filter);
+    filter.frequency.value = 1800;
+    filter.Q.value = 0.5;
     filter.connect(masterGain);
     [
-      { ratio: 1, gain: 0.18 },
-      { ratio: 2, gain: 0.075 },
-      { ratio: 3, gain: 0.035 },
-      { ratio: 4.01, gain: 0.014 },
-    ].forEach(({ ratio, gain }, i) => {
+      { ratio: 1, g: peakGain },
+      { ratio: 2, g: peakGain * 0.3 },
+      { ratio: 3, g: peakGain * 0.08 },
+    ].forEach(({ ratio, g }) => {
       const osc = ac.createOscillator();
-      const g = ac.createGain();
-      osc.type = i === 0 ? "triangle" : "sine";
-      osc.frequency.setValueAtTime(freq * ratio * rng(0.998, 1.002), now);
-      g.gain.setValueAtTime(gain, now);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.45 + i * 0.04);
-      osc.connect(g);
-      g.connect(outGain);
+      const gain = ac.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq * ratio * rng(0.999, 1.001), now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(g, now + attackSec);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + attackSec + releaseSec);
+      osc.connect(gain);
+      gain.connect(filter);
       osc.start(now);
-      osc.stop(now + 0.64);
-      osc.onended = () => {
-        osc.disconnect();
-        g.disconnect();
-      };
+      osc.stop(now + attackSec + releaseSec + 0.05);
+      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
     });
-    window.setTimeout(() => {
-      outGain.disconnect();
-      filter.disconnect();
-    }, 700);
+    window.setTimeout(() => filter.disconnect(), (when + attackSec + releaseSec + 0.2) * 1000);
   };
 
   return {
@@ -256,15 +183,23 @@ const createAudio = (): AssemblyAudio => {
     },
     playCollision: () => {
       const ac = ensureAudio();
-      if (!ac) return;
+      if (!ac || ac.state !== "running") return;
       const now = ac.currentTime;
-      if (now - lastCollisionAt < 0.06) return;
+      if (now - lastCollisionAt < 0.03) return; // prevent same-frame duplicates only
       lastCollisionAt = now;
-      playPianoNote(pianoNotes[Math.floor(Math.random() * pianoNotes.length)]);
+      const freq = pentatonic[Math.floor(Math.random() * pentatonic.length)];
+      playBell(freq * 0.5, 0.055, 0.010, 0.32);
     },
     playAttach: () => {
-      playTone(440, 0.18, 0.11);
-      window.setTimeout(() => playTone(660, 0.2, 0.12), 48);
+      // Two rising notes — a gentle "click-chime"
+      const base = pentatonic[2]; // G4 = 392 Hz
+      playBell(base, 0.14, 0.01, 0.9);
+      playBell(base * 1.5, 0.10, 0.01, 1.1, 0.09);
+    },
+    playComplete: () => {
+      // Soft ascending arpeggio: C-E-G-C
+      const chord = [261.63, 329.63, 392.0, 523.25];
+      chord.forEach((f, i) => playBell(f, 0.18, 0.02, 2.2, i * 0.13));
     },
     dispose: () => {
       masterGain?.disconnect();
@@ -289,9 +224,7 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const bot = isMobile ? MOBILE_BOTTOM_SAFE_SPACING : ARENA_SAFE_SPACING;
   const availW = Math.max(220, width - hPad);
   const availH = Math.max(220, height - hudH - bot);
-
   const arenaSize = clamp(Math.min(availW, availH), 220, 920);
-
   canvas.style.width = `${width}px`;
   canvas.style.height = `${height}px`;
   canvas.width = Math.floor(width * dpr);
@@ -334,7 +267,7 @@ const getBodyWorldVerts = (body: Body): Point[] =>
 
 // ─── Body factory ─────────────────────────────────────────────────────────────
 
-const getShapeSize = (arena: Arena) => arena.width * SHAPE_SIZE_RATIO;
+const getShapeSize = (arena: Arena) => arena.width / GRID_DIVISIONS;
 const getBodySpeed = (arena: Arena) => arena.width * BODY_SPEED_RATIO;
 
 const preserveBodySpeed = (body: Body, arena: Arena) => {
@@ -350,7 +283,59 @@ const preserveBodySpeed = (body: Body, arena: Arena) => {
   body.vy = (body.vy / cur) * target;
 };
 
-const trySpawnShape = (arena: Arena, bodies: Body[]): Body | null => {
+// Build the moving cluster from the user's grid design.
+// Pieces start as ghost (filled=false); loose pieces snap in over time.
+const createClusterBody = (
+  targets: Array<{ col: number; row: number; kind: PieceKind }>,
+  arena: Arena,
+): Body => {
+  const s = getShapeSize(arena);
+  const avgCol =
+    targets.reduce((sum, t) => sum + t.col, 0) / targets.length;
+  const avgRow =
+    targets.reduce((sum, t) => sum + t.row, 0) / targets.length;
+
+  const pieces: Piece[] = targets.map((t) => ({
+    id: _pieceIdCounter++,
+    kind: t.kind,
+    color: SQUARE_COLOR,
+    localX: (t.col - avgCol) * s,
+    localY: (t.row - avgRow) * s,
+    localRotation: 0,
+    vertices: getPieceLocalVerts(t.kind, s),
+    edges: getEdgeSlots(),
+    filled: false,
+  }));
+
+  const speed = getBodySpeed(arena);
+  const angle = rng(0, Math.PI * 2);
+  const spawnX =
+    arena.x + arena.width * (0.3 + Math.random() * 0.4);
+  const spawnY =
+    arena.y + arena.height * (0.3 + Math.random() * 0.4);
+
+  return {
+    id: _bodyIdCounter++,
+    x: spawnX,
+    y: spawnY,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    rotation: 0,
+    angularVelocity: 0,
+    pieces,
+    glowColor: "none",
+    glowTime: 0,
+    attachPulse: 0,
+    isCluster: true,
+  };
+};
+
+const trySpawnShape = (
+  arena: Arena,
+  bodies: Body[],
+  _cluster: Body | null,
+): Body | null => {
+  if (bodies.length >= MAX_BODIES) return null;
   const s = getShapeSize(arena);
   const clearance = s * 2.2;
   const margin = clearance;
@@ -361,12 +346,14 @@ const trySpawnShape = (arena: Arena, bodies: Body[]): Body | null => {
   for (let attempt = 0; attempt < 120; attempt++) {
     const cx = arena.x + margin + Math.random() * (arena.width - margin * 2);
     const cy = arena.y + margin + Math.random() * (arena.height - margin * 2);
-    const clear = bodies.every((body) =>
-      body.pieces.every((piece) => {
+    // Only check loose bodies for clearance (not the cluster)
+    const clear = bodies.every((body) => {
+      if (body.isCluster) return true;
+      return body.pieces.every((piece) => {
         const tr = getPieceWorldTransform(body, piece);
         return distancePt({ x: tr.x, y: tr.y }, { x: cx, y: cy }) > clearance;
-      }),
-    );
+      });
+    });
     if (clear) {
       spawnX = cx;
       spawnY = cy;
@@ -377,8 +364,8 @@ const trySpawnShape = (arena: Arena, bodies: Body[]): Body | null => {
 
   if (!found) return null;
 
-  const kind: PieceKind = Math.random() < 0.5 ? "square" : "triangle";
-  const color = SHAPE_PALETTE[_pieceIdCounter % SHAPE_PALETTE.length];
+  const kind: PieceKind = "square";
+
   const speed = getBodySpeed(arena);
   const angle = rng(0, Math.PI * 2);
 
@@ -394,29 +381,20 @@ const trySpawnShape = (arena: Arena, bodies: Body[]): Body | null => {
       {
         id: _pieceIdCounter++,
         kind,
-        color,
+        color: SQUARE_COLOR,
         localX: 0,
         localY: 0,
         localRotation: 0,
         vertices: getPieceLocalVerts(kind, s),
-        edges: getEdgeSlots(kind),
+        edges: getEdgeSlots(),
+        filled: true,
       },
     ],
     glowColor: "none",
     glowTime: 0,
     attachPulse: 0,
+    isCluster: false,
   };
-};
-
-const createInitialBodies = (arena: Arena): Body[] => {
-  _bodyIdCounter = 0;
-  _pieceIdCounter = 0;
-  const bodies: Body[] = [];
-  for (let i = 0; i < INITIAL_SHAPE_COUNT; i++) {
-    const body = trySpawnShape(arena, bodies);
-    if (body) bodies.push(body);
-  }
-  return bodies;
 };
 
 // ─── SAT collision ────────────────────────────────────────────────────────────
@@ -466,9 +444,14 @@ const getPolyCollision = (
 };
 
 const getBodyCollision = (a: Body, b: Body): Collision | null => {
+  // For the cluster, only filled pieces have solid geometry.
+  // Ghost slots stay passable so loose squares can approach and snap in.
+  const aPieces = a.isCluster ? a.pieces.filter((p) => p.filled) : a.pieces;
+  const bPieces = b.isCluster ? b.pieces.filter((p) => p.filled) : b.pieces;
+  if (aPieces.length === 0 || bPieces.length === 0) return null;
   let best: Collision | null = null;
-  for (const ap of a.pieces) {
-    for (const bp of b.pieces) {
+  for (const ap of aPieces) {
+    for (const bp of bPieces) {
       const col = getPolyCollision(
         getPieceWorldVerts(a, ap),
         getPieceWorldVerts(b, bp),
@@ -481,181 +464,38 @@ const getBodyCollision = (a: Body, b: Body): Collision | null => {
   return best;
 };
 
-// ─── Edge / attachment detection ──────────────────────────────────────────────
+// ─── Target snapping ──────────────────────────────────────────────────────────
 
-const getEdgeWorldInfo = (
-  body: Body,
-  piece: Piece,
-  slot: EdgeSlot,
-): EdgeInfo | null => {
-  if (slot.attached) return null;
-  const verts = getPieceWorldVerts(body, piece);
-  const start = verts[slot.index];
-  const end = verts[(slot.index + 1) % verts.length];
-  const direction = normalize(subPoints(end, start));
-  const midpoint = scalePoint(addPoints(start, end), 0.5);
-  return { body, piece, slot, start, end, direction, midpoint };
-};
+// When a loose piece overlaps a ghost slot on the moving cluster, it snaps in.
+const snapToCluster = (
+  bodies: Body[],
+  cluster: Body,
+  arena: Arena,
+  onSnap: () => void,
+) => {
+  const s = getShapeSize(arena);
+  const threshold = s * 0.65;
 
-const getFreeEdges = (body: Body): EdgeInfo[] =>
-  body.pieces.flatMap((p) =>
-    p.edges
-      .map((s) => getEdgeWorldInfo(body, p, s))
-      .filter((e): e is EdgeInfo => e !== null),
-  );
+  for (let i = bodies.length - 1; i >= 0; i--) {
+    const body = bodies[i];
+    if (body.isCluster) continue;
+    const piece = body.pieces[0];
+    const wt = getPieceWorldTransform(body, piece);
 
-const getEndpointDistance = (a: EdgeInfo, b: EdgeInfo) => {
-  const rev = distancePt(a.start, b.end) + distancePt(a.end, b.start);
-  const same = distancePt(a.start, b.start) + distancePt(a.end, b.end);
-  return Math.min(rev, same);
-};
-
-const checkAttachment = (
-  bodyA: Body,
-  bodyB: Body,
-  shapeSize: number,
-): AttachCheck => {
-  const maxEp = shapeSize * 0.62;
-  const maxMid = shapeSize * 0.54;
-  let best: AttachCheck = {
-    edgeA: null,
-    edgeB: null,
-    angleDiff: Math.PI,
-    valid: false,
-  };
-
-  for (const ae of getFreeEdges(bodyA)) {
-    for (const be of getFreeEdges(bodyB)) {
-      const angleDiff = Math.acos(
-        clamp(dotProduct(ae.direction, scalePoint(be.direction, -1)), -1, 1),
-      );
-      const epDist = getEndpointDistance(ae, be);
-      const midDist = distancePt(ae.midpoint, be.midpoint);
-      const score = epDist + midDist * 0.75;
-      const bestScore =
-        best.edgeA && best.edgeB
-          ? getEndpointDistance(best.edgeA, best.edgeB) +
-            distancePt(best.edgeA.midpoint, best.edgeB.midpoint) * 0.75
-          : Infinity;
-      if (score < bestScore) {
-        best = {
-          edgeA: ae,
-          edgeB: be,
-          angleDiff,
-          valid:
-            epDist <= maxEp &&
-            midDist <= maxMid &&
-            angleDiff <= ATTACH_ANGLE_TOL,
-        };
+    for (const cp of cluster.pieces) {
+      if (cp.filled) continue;
+      const cwt = getPieceWorldTransform(cluster, cp);
+      if (Math.hypot(wt.x - cwt.x, wt.y - cwt.y) < threshold) {
+        cp.filled = true;
+        bodies.splice(i, 1);
+        cluster.glowColor = "green";
+        cluster.glowTime = GLOW_DURATION;
+        cluster.attachPulse = 1;
+        onSnap();
+        break;
       }
     }
   }
-  return best;
-};
-
-const snapAndMerge = (
-  bodies: Body[],
-  bodyA: Body,
-  bodyB: Body,
-  check: AttachCheck,
-  arena: Arena,
-): boolean => {
-  if (!check.edgeA || !check.edgeB) return false;
-
-  // Save B's state so we can revert if the snap is geometrically invalid
-  const savedRotB = bodyB.rotation;
-  const savedXB = bodyB.x;
-  const savedYB = bodyB.y;
-
-  const angleCorrection =
-    Math.atan2(check.edgeA.direction.y, check.edgeA.direction.x) -
-    Math.atan2(-check.edgeB.direction.y, -check.edgeB.direction.x);
-  bodyB.rotation += angleCorrection;
-
-  const refreshed = getEdgeWorldInfo(
-    bodyB,
-    check.edgeB.piece,
-    check.edgeB.slot,
-  );
-  if (!refreshed) {
-    bodyB.rotation = savedRotB;
-    return false;
-  }
-
-  const translation = subPoints(check.edgeA.midpoint, refreshed.midpoint);
-  bodyB.x += translation.x;
-  bodyB.y += translation.y;
-
-  // Abort if any piece of B significantly overlaps any piece of A (> 1.5px)
-  // The two directly-connecting pieces touch at ~0 overlap and are allowed
-  const snapOverlapThreshold = 1.5;
-  const connectingAPiece = check.edgeA.piece.id;
-  const connectingBPiece = check.edgeB.piece.id;
-  const hasConflict = bodyB.pieces.some((bPiece) => {
-    const bVerts = getPieceWorldVerts(bodyB, bPiece);
-    const bC = { x: bodyB.x, y: bodyB.y };
-    return bodyA.pieces.some((aPiece) => {
-      if (aPiece.id === connectingAPiece && bPiece.id === connectingBPiece)
-        return false;
-      const col = getPolyCollision(
-        getPieceWorldVerts(bodyA, aPiece),
-        bVerts,
-        { x: bodyA.x, y: bodyA.y },
-        bC,
-      );
-      return col !== null && col.overlap > snapOverlapThreshold;
-    });
-  });
-
-  if (hasConflict) {
-    bodyB.rotation = savedRotB;
-    bodyB.x = savedXB;
-    bodyB.y = savedYB;
-    return false;
-  }
-
-  const ma = bodyA.pieces.length,
-    mb = bodyB.pieces.length,
-    total = ma + mb;
-  bodyA.vx = (bodyA.vx * ma + bodyB.vx * mb) / total;
-  bodyA.vy = (bodyA.vy * ma + bodyB.vy * mb) / total;
-  bodyA.angularVelocity = 0;
-  preserveBodySpeed(bodyA, arena);
-
-  bodyB.pieces.forEach((piece) => {
-    const wt = getPieceWorldTransform(bodyB, piece);
-    const rel = rotatePoint(
-      subPoints({ x: wt.x, y: wt.y }, { x: bodyA.x, y: bodyA.y }),
-      -bodyA.rotation,
-    );
-    bodyA.pieces.push({
-      ...piece,
-      localX: rel.x,
-      localY: rel.y,
-      localRotation: wt.rotation - bodyA.rotation,
-      edges: piece.edges.map((e) => ({ ...e })),
-    });
-  });
-
-  check.edgeA.slot.attached = true;
-  const absorbedPiece = bodyA.pieces.find(
-    (p) => p.id === check.edgeB?.piece.id,
-  );
-  if (absorbedPiece) {
-    const absorbedSlot = absorbedPiece.edges.find(
-      (e) => e.index === check.edgeB?.slot.index,
-    );
-    if (absorbedSlot) absorbedSlot.attached = true;
-  }
-
-  bodyA.glowColor = "green";
-  bodyA.glowTime = GLOW_DURATION;
-  bodyA.attachPulse = 1;
-
-  const idx = bodies.indexOf(bodyB);
-  if (idx >= 0) bodies.splice(idx, 1);
-
-  return true;
 };
 
 // ─── Physics ──────────────────────────────────────────────────────────────────
@@ -676,7 +516,6 @@ const resolveWallCollisions = (
     const minY = Math.min(...verts.map((v) => v.y));
     const maxY = Math.max(...verts.map((v) => v.y));
     let hit = false;
-
     if (minX < L) {
       body.x += L - minX;
       body.vx = Math.abs(body.vx) * RESTITUTION;
@@ -697,7 +536,6 @@ const resolveWallCollisions = (
       body.vy = -Math.abs(body.vy) * RESTITUTION;
       hit = true;
     }
-
     if (hit) {
       preserveBodySpeed(body, arena);
       body.glowColor = "red";
@@ -711,55 +549,39 @@ const resolveBodyCollisions = (
   arena: Arena,
   bodies: Body[],
   audio: AssemblyAudio | null,
-  shapeSize: number,
 ) => {
-  for (let pass = 0; pass < 3; pass++) {
-    let merged = false;
-    for (let i = 0; i < bodies.length && !merged; i++) {
-      for (let j = i + 1; j < bodies.length && !merged; j++) {
-        const a = bodies[i],
-          b = bodies[j];
-        const col = getBodyCollision(a, b);
-        if (!col) continue;
-
-        const check = checkAttachment(a, b, shapeSize);
-        if (check.valid) {
-          const didMerge = snapAndMerge(bodies, a, b, check, arena);
-          if (didMerge) {
-            audio?.playAttach();
-            merged = true;
-            continue;
-          }
-          // merge aborted (geometric conflict) — fall through to bounce
-        }
-
-        const { normal, overlap } = col;
-        const correction = overlap * 0.6 + 0.5;
-        a.x -= normal.x * correction;
-        a.y -= normal.y * correction;
-        b.x += normal.x * correction;
-        b.y += normal.y * correction;
-
-        const relV = subPoints({ x: b.vx, y: b.vy }, { x: a.vx, y: a.vy });
-        const vn = dotProduct(relV, normal);
-        if (vn < 0) {
-          const ma = a.pieces.length,
-            mb = b.pieces.length;
-          const impulse = (-(1 + RESTITUTION) * vn) / (1 / ma + 1 / mb);
-          a.vx -= (impulse * normal.x) / ma;
-          a.vy -= (impulse * normal.y) / ma;
-          b.vx += (impulse * normal.x) / mb;
-          b.vy += (impulse * normal.y) / mb;
-          preserveBodySpeed(a, arena);
-          preserveBodySpeed(b, arena);
-        }
-
-        a.glowColor = "red";
-        a.glowTime = 0.25;
-        b.glowColor = "red";
-        b.glowTime = 0.25;
-        audio?.playCollision();
+  for (let i = 0; i < bodies.length; i++) {
+    for (let j = i + 1; j < bodies.length; j++) {
+      const a = bodies[i],
+        b = bodies[j];
+      const col = getBodyCollision(a, b);
+      if (!col) continue;
+      const { normal, overlap } = col;
+      const correction = overlap * 0.6 + 0.5;
+      // Cluster is heavy — push it much less than a loose piece
+      const aShare = a.isCluster ? 0.05 : b.isCluster ? 0.95 : 0.5;
+      const bShare = 1 - aShare;
+      a.x -= normal.x * correction * aShare;
+      a.y -= normal.y * correction * aShare;
+      b.x += normal.x * correction * bShare;
+      b.y += normal.y * correction * bShare;
+      const relV = subPoints({ x: b.vx, y: b.vy }, { x: a.vx, y: a.vy });
+      const vn = dotProduct(relV, normal);
+      if (vn < 0) {
+        // Cluster mass = total piece count so it barely deflects
+        const ma = a.pieces.length;
+        const mb = b.pieces.length;
+        const impulse = (-(1 + RESTITUTION) * vn) / (1 / ma + 1 / mb);
+        a.vx -= (impulse * normal.x) / ma;
+        a.vy -= (impulse * normal.y) / ma;
+        b.vx += (impulse * normal.x) / mb;
+        b.vy += (impulse * normal.y) / mb;
+        preserveBodySpeed(a, arena);
+        preserveBodySpeed(b, arena);
       }
+      if (!a.isCluster) { a.glowColor = "red"; a.glowTime = 0.25; }
+      if (!b.isCluster) { b.glowColor = "red"; b.glowTime = 0.25; }
+      audio?.playCollision();
     }
   }
 };
@@ -774,15 +596,12 @@ const getFittedFontSize = (
   minSize: number,
 ) => {
   let size = maxSize;
-
   while (size > minSize) {
     ctx.font = `900 ${size}px Arial, Helvetica, sans-serif`;
-    if (lines.every((line) => ctx.measureText(line).width <= maxWidth)) {
+    if (lines.every((line) => ctx.measureText(line).width <= maxWidth))
       return size;
-    }
     size -= 1;
   }
-
   return minSize;
 };
 
@@ -793,9 +612,7 @@ const getHeadingLines = (
   fontSize: number,
 ) => {
   ctx.font = `900 ${fontSize}px Arial, Helvetica, sans-serif`;
-
   if (ctx.measureText(text).width <= maxWidth) return [text];
-
   const words = text.split(" ");
   const midpoint = Math.ceil(words.length / 2);
   let bestLines = [
@@ -803,8 +620,7 @@ const getHeadingLines = (
     words.slice(midpoint).join(" "),
   ];
   let bestWidth = Number.POSITIVE_INFINITY;
-
-  for (let split = 1; split < words.length; split += 1) {
+  for (let split = 1; split < words.length; split++) {
     const lines = [
       words.slice(0, split).join(" "),
       words.slice(split).join(" "),
@@ -813,21 +629,22 @@ const getHeadingLines = (
       ctx.measureText(lines[0]).width,
       ctx.measureText(lines[1]).width,
     );
-
     if (widest < bestWidth) {
       bestWidth = widest;
       bestLines = lines;
     }
   }
-
   return bestLines;
 };
 
-const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
+const drawArenaFrame = (
+  ctx: CanvasRenderingContext2D,
+  arena: Arena,
+  headingText: string,
+) => {
   const isMobile = window.innerWidth < 600;
   const lineW = isMobile ? 2.25 : 3;
-  const glowB = isMobile ? 11 : 11;
-  const headingText = "WHAT WEIRD STRUCTURE WILL THESE RANDOM SHAPES MAKE?";
+  const glowB = 11;
 
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
   ctx.fillStyle = "#020617";
@@ -908,10 +725,57 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
       bottomY - (headingLines.length - index - 1) * lineHeight,
     );
   });
-
   ctx.restore();
 };
 
+const drawEditorGrid = (
+  ctx: CanvasRenderingContext2D,
+  arena: Arena,
+  grid: CellKind[][],
+) => {
+  const s = getShapeSize(arena);
+
+  for (let r = 0; r < GRID_DIVISIONS; r++) {
+    for (let c = 0; c < GRID_DIVISIONS; c++) {
+      ctx.fillStyle = "rgba(100, 130, 160, 0.04)";
+      ctx.fillRect(arena.x + c * s + 0.5, arena.y + r * s + 0.5, s - 1, s - 1);
+    }
+  }
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(100, 120, 150, 0.22)";
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= GRID_DIVISIONS; i++) {
+    ctx.beginPath();
+    ctx.moveTo(arena.x + i * s, arena.y);
+    ctx.lineTo(arena.x + i * s, arena.y + arena.height);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(arena.x, arena.y + i * s);
+    ctx.lineTo(arena.x + arena.width, arena.y + i * s);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  for (let r = 0; r < GRID_DIVISIONS; r++) {
+    for (let c = 0; c < GRID_DIVISIONS; c++) {
+      const kind = grid[r][c];
+      if (kind === "empty") continue;
+      const cx = arena.x + (c + 0.5) * s;
+      const cy = arena.y + (r + 0.5) * s;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.fillStyle = SQUARE_COLOR;
+      ctx.shadowColor = "rgba(215,112,38,0.7)";
+      ctx.shadowBlur = 7;
+      const h = s / 2 - 1;
+      ctx.fillRect(-h, -h, h * 2, h * 2);
+      ctx.restore();
+    }
+  }
+};
+
+// Draws each body. Ghost cluster pieces (filled=false) are drawn faded.
 const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
   const glowCol =
     body.glowColor === "green"
@@ -928,66 +792,55 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
     ctx.scale(pulse, pulse);
     ctx.translate(tr.x - body.x, tr.y - body.y);
     ctx.rotate(tr.rotation);
+    ctx.globalAlpha = piece.filled ? 1 : 0.18;
     ctx.beginPath();
     piece.vertices.forEach((v, i) => {
       if (i === 0) ctx.moveTo(v.x, v.y);
       else ctx.lineTo(v.x, v.y);
     });
     ctx.closePath();
-    ctx.shadowColor = glowCol;
-    ctx.shadowBlur = 12 + body.glowTime * 38;
+    if (piece.filled) {
+      ctx.shadowColor = glowCol;
+      ctx.shadowBlur = 12 + body.glowTime * 38;
+    }
     ctx.fillStyle = piece.color;
     ctx.fill();
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+    ctx.strokeStyle = piece.filled
+      ? "rgba(255, 255, 255, 0.15)"
+      : "rgba(255, 255, 255, 0.06)";
     ctx.lineWidth = 0.8;
     ctx.stroke();
     ctx.restore();
   });
 };
 
-const isArenaTooCrowded = (
-  arena: Arena,
-  bodies: Body[],
-  shapeSize: number,
-): boolean => {
-  if (bodies.length === 0) return false;
-  let maxW = 0,
-    maxH = 0;
-  for (const body of bodies) {
-    const verts = getBodyWorldVerts(body);
-    const minX = Math.min(...verts.map((v) => v.x));
-    const maxX = Math.max(...verts.map((v) => v.x));
-    const minY = Math.min(...verts.map((v) => v.y));
-    const maxY = Math.max(...verts.map((v) => v.y));
-    maxW = Math.max(maxW, maxX - minX);
-    maxH = Math.max(maxH, maxY - minY);
-  }
-  const minClearance = shapeSize * 2.5;
-  return (
-    arena.width - maxW < minClearance || arena.height - maxH < minClearance
-  );
-};
-
-const drawStats = (
+const drawSimStats = (
   ctx: CanvasRenderingContext2D,
   arena: Arena,
-  pieceCount: number,
-  bodyCount: number,
+  filled: number,
+  total: number,
+  looseCount: number,
   elapsedSec: number,
-  arenaFull: boolean,
 ) => {
   const isMobile = window.innerWidth < 600;
   const mins = Math.floor(elapsedSec / 60);
   const secs = String(Math.floor(elapsedSec % 60)).padStart(2, "0");
-  const statusText = arenaFull ? "Arena Full!" : `Clusters: ${bodyCount}`;
+  const allDone = total > 0 && filled === total;
+  const statusText = allDone
+    ? "Complete!"
+    : total > 0
+      ? `Filled: ${filled}/${total}`
+      : `Bouncing: ${looseCount}`;
   ctx.save();
-  ctx.fillStyle = "rgba(241, 245, 249, 0.72)";
+  ctx.fillStyle = allDone
+    ? "rgba(34,197,94,0.9)"
+    : "rgba(241, 245, 249, 0.72)";
   ctx.font = `700 ${isMobile ? 11 : 13}px Arial, Helvetica, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "top";
   ctx.fillText(
-    `Pieces: ${pieceCount}  ·  ${statusText}  ·  Time: ${mins}:${secs}`,
+    `${statusText}  ·  Time: ${mins}:${secs}`,
     arena.x + arena.width / 2,
     arena.y + arena.height + (isMobile ? 10 : 14),
   );
@@ -996,111 +849,280 @@ const drawStats = (
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
+const makeEmptyGrid = (): CellKind[][] =>
+  Array.from({ length: GRID_DIVISIONS }, () =>
+    new Array<CellKind>(GRID_DIVISIONS).fill("empty"),
+  );
+
 const SquareAssembly = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<AssemblyAudio | null>(null);
   const arenaRef = useRef<Arena | null>(null);
   const bodiesRef = useRef<Body[]>([]);
+  const clusterBodyRef = useRef<Body | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
   const startTimeRef = useRef(0);
   const spawnTimerRef = useRef(SPAWN_INTERVAL_SECS);
-  const arenaFullRef = useRef(false);
+  const phaseRef = useRef<GamePhase>("editor");
+  const gridRef = useRef<CellKind[][]>(makeEmptyGrid());
+  const completedRef = useRef(false);
+  const completionTimeRef = useRef(0);
+  const maxSpawnRef = useRef(0);
+  const totalSpawnedRef = useRef(0);
+  const [phase, setPhase] = useState<GamePhase>("editor");
+  const [completed, setCompleted] = useState(false);
+  const [completionSecs, setCompletionSecs] = useState(0);
+  const [editorError, setEditorError] = useState(false);
 
   if (audioRef.current === null) audioRef.current = createAudio();
+
+  const startSimulation = useCallback(() => {
+    const arena = arenaRef.current;
+    if (!arena) return;
+
+    const targets: Array<{ col: number; row: number; kind: PieceKind }> = [];
+    gridRef.current.forEach((row, r) => {
+      row.forEach((cell, c) => {
+        if (cell !== "empty")
+          targets.push({ col: c, row: r, kind: "square" });
+      });
+    });
+
+    if (targets.length === 0) {
+      setEditorError(true);
+      window.setTimeout(() => setEditorError(false), 2000);
+      return;
+    }
+
+    _bodyIdCounter = 0;
+    _pieceIdCounter = 0;
+
+    const cluster = createClusterBody(targets, arena);
+    clusterBodyRef.current = cluster;
+
+    maxSpawnRef.current = targets.length;
+    totalSpawnedRef.current = 0;
+
+    // Spawn initial batch (capped at grid count)
+    const initBodies: Body[] = [cluster];
+    const initCount = Math.min(INITIAL_SHAPE_COUNT, targets.length);
+    for (let i = 0; i < initCount; i++) {
+      const b = trySpawnShape(arena, initBodies, cluster);
+      if (b) { initBodies.push(b); totalSpawnedRef.current++; }
+    }
+    bodiesRef.current = initBodies;
+
+    spawnTimerRef.current = SPAWN_INTERVAL_SECS;
+    startTimeRef.current = 0;
+    lastTimeRef.current = performance.now();
+    completedRef.current = false;
+    completionTimeRef.current = 0;
+    phaseRef.current = "simulation";
+    setPhase("simulation");
+    setCompleted(false);
+    audioRef.current?.unlock();
+  }, []);
+
+  const resetToEditor = useCallback(() => {
+    bodiesRef.current = [];
+    clusterBodyRef.current = null;
+    completedRef.current = false;
+    completionTimeRef.current = 0;
+    phaseRef.current = "editor";
+    setPhase("editor");
+    setCompleted(false);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
 
-    const initialize = () => {
-      const arena = resizeCanvas(canvas);
-      arenaRef.current = arena;
-      bodiesRef.current = createInitialBodies(arena);
-      arenaFullRef.current = false;
-      spawnTimerRef.current = SPAWN_INTERVAL_SECS;
-      startTimeRef.current = 0;
-    };
+    arenaRef.current = resizeCanvas(canvas);
+    lastTimeRef.current = performance.now();
 
     const draw = (time: number) => {
       const arena = arenaRef.current;
       if (!arena) return;
 
-      if (startTimeRef.current === 0) startTimeRef.current = time;
-      const dt = Math.min((time - lastTimeRef.current) / 1000, MAX_DT);
-      lastTimeRef.current = time;
+      if (phaseRef.current === "editor") {
+        drawArenaFrame(ctx, arena, "CLICK CELLS TO DESIGN YOUR SHAPE");
+        drawEditorGrid(ctx, arena, gridRef.current);
+      } else {
+        if (startTimeRef.current === 0) startTimeRef.current = time;
+        const dt = Math.min((time - lastTimeRef.current) / 1000, MAX_DT);
+        lastTimeRef.current = time;
 
-      const shapeSize = getShapeSize(arena);
+        const cluster = clusterBodyRef.current;
+        const total = cluster ? cluster.pieces.length : 0;
+        const filled = cluster
+          ? cluster.pieces.filter((p) => p.filled).length
+          : 0;
+        const allFilled = total > 0 && filled === total;
+        const elapsedSec = (time - startTimeRef.current) / 1000;
 
-      if (!arenaFullRef.current) {
-        spawnTimerRef.current -= dt;
-        if (spawnTimerRef.current <= 0) {
-          spawnTimerRef.current = SPAWN_INTERVAL_SECS;
-          if (isArenaTooCrowded(arena, bodiesRef.current, shapeSize)) {
-            arenaFullRef.current = true;
-          } else {
-            const body = trySpawnShape(arena, bodiesRef.current);
-            if (body) bodiesRef.current.push(body);
-            else arenaFullRef.current = true;
+        // Detect first completion
+        if (allFilled && !completedRef.current) {
+          completedRef.current = true;
+          completionTimeRef.current = elapsedSec;
+          setCompletionSecs(Math.floor(elapsedSec));
+          setCompleted(true);
+          audioRef.current?.playComplete();
+        }
+
+        if (!completedRef.current) {
+          if (totalSpawnedRef.current < maxSpawnRef.current) {
+            spawnTimerRef.current -= dt;
+            if (spawnTimerRef.current <= 0) {
+              spawnTimerRef.current = SPAWN_INTERVAL_SECS;
+              const body = trySpawnShape(arena, bodiesRef.current, cluster);
+              if (body) { bodiesRef.current.push(body); totalSpawnedRef.current++; }
+            }
+          }
+
+          const subDt = dt / PHYSICS_SUBSTEPS;
+          for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
+            bodiesRef.current.forEach((body) => {
+              body.x += body.vx * subDt;
+              body.y += body.vy * subDt;
+              body.glowTime = Math.max(0, body.glowTime - subDt);
+              body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
+              if (body.glowTime <= 0) body.glowColor = "none";
+            });
+            resolveWallCollisions(arena, bodiesRef.current, () =>
+              audioRef.current?.playCollision(),
+            );
+            resolveBodyCollisions(arena, bodiesRef.current, audioRef.current);
+            if (cluster) {
+              snapToCluster(bodiesRef.current, cluster, arena, () =>
+                audioRef.current?.playAttach(),
+              );
+            }
           }
         }
-      }
 
-      const subDt = dt / PHYSICS_SUBSTEPS;
-      for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
-        bodiesRef.current.forEach((body) => {
-          body.x += body.vx * subDt;
-          body.y += body.vy * subDt;
-          body.glowTime = Math.max(0, body.glowTime - subDt);
-          body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
-          if (body.glowTime <= 0) body.glowColor = "none";
-        });
-        resolveWallCollisions(arena, bodiesRef.current, () =>
-          audioRef.current?.playCollision(),
-        );
-        resolveBodyCollisions(
+        const looseCount = bodiesRef.current.filter((b) => !b.isCluster).length;
+
+        drawArenaFrame(
+          ctx,
           arena,
-          bodiesRef.current,
-          audioRef.current,
-          shapeSize,
+          completedRef.current
+            ? "SHAPE COMPLETE!"
+            : "WHAT WEIRD STRUCTURE WILL THESE RANDOM SHAPES MAKE?",
         );
+        bodiesRef.current.forEach((b) => drawBody(ctx, b));
+        drawSimStats(ctx, arena, filled, total, looseCount,
+          completedRef.current ? completionTimeRef.current : elapsedSec);
       }
-
-      const elapsedSec = (time - startTimeRef.current) / 1000;
-      const pieces = bodiesRef.current.reduce((s, b) => s + b.pieces.length, 0);
-      const bods = bodiesRef.current.length;
-
-      drawArenaFrame(ctx, arena);
-      bodiesRef.current.forEach((b) => drawBody(ctx, b));
-      drawStats(ctx, arena, pieces, bods, elapsedSec, arenaFullRef.current);
 
       rafRef.current = requestAnimationFrame(draw);
     };
 
-    initialize();
-    lastTimeRef.current = performance.now();
     rafRef.current = requestAnimationFrame(draw);
 
     const handleResize = () => {
       arenaRef.current = resizeCanvas(canvas);
     };
-    const handleInteract = () => audioRef.current?.unlock();
+
+    const handleCanvasInteraction = (e: MouseEvent | TouchEvent) => {
+      audioRef.current?.unlock();
+      if (phaseRef.current !== "editor") return;
+      const arena = arenaRef.current;
+      if (!arena) return;
+      const s = getShapeSize(arena);
+      let clientX: number, clientY: number;
+      if ("touches" in e) {
+        if (e.touches.length === 0) return;
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = (e as MouseEvent).clientX;
+        clientY = (e as MouseEvent).clientY;
+      }
+      const col = Math.floor((clientX - arena.x) / s);
+      const row = Math.floor((clientY - arena.y) / s);
+      if (col >= 0 && col < GRID_DIVISIONS && row >= 0 && row < GRID_DIVISIONS) {
+        const cur = gridRef.current[row][col];
+        gridRef.current[row][col] = cur === "empty" ? "square" : "empty";
+      }
+    };
+
     window.addEventListener("resize", handleResize);
-    canvas.addEventListener("click", handleInteract);
-    canvas.addEventListener("touchstart", handleInteract, { passive: true });
+    canvas.addEventListener("click", handleCanvasInteraction as EventListener);
+    canvas.addEventListener(
+      "touchstart",
+      handleCanvasInteraction as EventListener,
+      { passive: true },
+    );
 
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", handleResize);
-      canvas.removeEventListener("click", handleInteract);
-      canvas.removeEventListener("touchstart", handleInteract);
+      canvas.removeEventListener(
+        "click",
+        handleCanvasInteraction as EventListener,
+      );
+      canvas.removeEventListener(
+        "touchstart",
+        handleCanvasInteraction as EventListener,
+      );
     };
   }, []);
 
   return (
-    <div className="assembly-root">
+    <div className={`assembly-root${phase === "editor" ? " editor-mode" : ""}`}>
       <canvas ref={canvasRef} className="assembly-canvas" />
+
+      {phase === "editor" && (
+        <div className="editor-hud">
+          <p className="editor-hint">
+            Click cells to place &nbsp;<span className="sq-swatch">■</span> squares, click again to remove
+          </p>
+          {editorError && (
+            <p className="editor-error">Select at least one cell first</p>
+          )}
+          <div className="editor-actions">
+            <button
+              className="btn-clear"
+              onClick={() => { gridRef.current = makeEmptyGrid(); }}
+            >
+              Clear
+            </button>
+            <button className="btn-start" onClick={startSimulation}>
+              ▶ Start Simulation
+            </button>
+          </div>
+        </div>
+      )}
+
+      {phase === "simulation" && !completed && (
+        <div className="sim-hud">
+          <button className="btn-edit" onClick={resetToEditor}>
+            ← Edit
+          </button>
+        </div>
+      )}
+
+      {completed && (
+        <div className="complete-overlay">
+          <div className="complete-card">
+            <div className="complete-title">Shape Complete!</div>
+            <div className="complete-time">
+              {Math.floor(completionSecs / 60)}:{String(completionSecs % 60).padStart(2, "0")}
+            </div>
+            <div className="complete-actions">
+              <button className="btn-again" onClick={startSimulation}>
+                ▶ Play Again
+              </button>
+              <button className="btn-edit-again" onClick={resetToEditor}>
+                ✎ Edit Design
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style jsx>{`
         .assembly-root {
           position: relative;
@@ -1117,7 +1139,157 @@ const SquareAssembly = () => {
           height: 100dvh;
           min-height: 100dvh;
           max-height: 100dvh;
+          cursor: default;
+        }
+        .editor-mode .assembly-canvas {
+          cursor: crosshair;
+        }
+        .editor-hud {
+          position: absolute;
+          bottom: 20px;
+          left: 50%;
+          transform: translateX(-50%);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 10px;
+          pointer-events: none;
+        }
+        .editor-hint {
+          color: rgba(241, 245, 249, 0.55);
+          font-size: 12px;
+          font-family: Arial, Helvetica, sans-serif;
+          white-space: nowrap;
+        }
+        .editor-error {
+          color: rgba(248, 113, 113, 0.9);
+          font-size: 12px;
+          font-family: Arial, Helvetica, sans-serif;
+          white-space: nowrap;
+        }
+        .sq-swatch {
+          color: #d77026;
+        }
+        .tri-swatch {
+          color: #22c55e;
+        }
+        .editor-actions {
+          display: flex;
+          gap: 10px;
+          pointer-events: all;
+        }
+        .btn-start {
+          background: rgba(34, 197, 94, 0.12);
+          border: 1.5px solid rgba(34, 197, 94, 0.55);
+          color: #4ade80;
+          padding: 8px 22px;
+          border-radius: 7px;
+          font-size: 13px;
+          font-weight: 700;
+          font-family: Arial, Helvetica, sans-serif;
           cursor: pointer;
+          letter-spacing: 0.03em;
+        }
+        .btn-start:hover {
+          background: rgba(34, 197, 94, 0.22);
+        }
+        .btn-clear {
+          background: rgba(100, 120, 150, 0.08);
+          border: 1.5px solid rgba(100, 120, 150, 0.3);
+          color: rgba(241, 245, 249, 0.55);
+          padding: 8px 16px;
+          border-radius: 7px;
+          font-size: 13px;
+          font-family: Arial, Helvetica, sans-serif;
+          cursor: pointer;
+        }
+        .btn-clear:hover {
+          background: rgba(100, 120, 150, 0.16);
+        }
+        .sim-hud {
+          position: absolute;
+          top: 14px;
+          left: 16px;
+        }
+        .btn-edit {
+          background: rgba(100, 120, 150, 0.08);
+          border: 1.5px solid rgba(100, 120, 150, 0.28);
+          color: rgba(241, 245, 249, 0.65);
+          padding: 5px 13px;
+          border-radius: 6px;
+          font-size: 12px;
+          font-family: Arial, Helvetica, sans-serif;
+          cursor: pointer;
+        }
+        .btn-edit:hover {
+          background: rgba(100, 120, 150, 0.18);
+        }
+        .complete-overlay {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(2, 6, 23, 0.62);
+          backdrop-filter: blur(6px);
+        }
+        .complete-card {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 14px;
+          background: rgba(10, 18, 40, 0.88);
+          border: 1.5px solid rgba(34, 197, 94, 0.4);
+          border-radius: 16px;
+          padding: 36px 48px;
+          box-shadow: 0 0 48px rgba(34, 197, 94, 0.15);
+        }
+        .complete-title {
+          font-size: 26px;
+          font-weight: 900;
+          font-family: Arial, Helvetica, sans-serif;
+          color: #4ade80;
+          letter-spacing: 0.04em;
+          text-shadow: 0 0 24px rgba(34, 197, 94, 0.6);
+        }
+        .complete-time {
+          font-size: 42px;
+          font-weight: 900;
+          font-family: Arial, Helvetica, sans-serif;
+          color: rgba(241, 245, 249, 0.9);
+          letter-spacing: 0.06em;
+        }
+        .complete-actions {
+          display: flex;
+          gap: 12px;
+          margin-top: 6px;
+        }
+        .btn-again {
+          background: rgba(34, 197, 94, 0.12);
+          border: 1.5px solid rgba(34, 197, 94, 0.55);
+          color: #4ade80;
+          padding: 9px 24px;
+          border-radius: 8px;
+          font-size: 13px;
+          font-weight: 700;
+          font-family: Arial, Helvetica, sans-serif;
+          cursor: pointer;
+        }
+        .btn-again:hover {
+          background: rgba(34, 197, 94, 0.22);
+        }
+        .btn-edit-again {
+          background: rgba(100, 120, 150, 0.08);
+          border: 1.5px solid rgba(100, 120, 150, 0.3);
+          color: rgba(241, 245, 249, 0.6);
+          padding: 9px 20px;
+          border-radius: 8px;
+          font-size: 13px;
+          font-family: Arial, Helvetica, sans-serif;
+          cursor: pointer;
+        }
+        .btn-edit-again:hover {
+          background: rgba(100, 120, 150, 0.18);
         }
       `}</style>
     </div>
