@@ -59,10 +59,6 @@ type AssemblyAudio = {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const HUD_RESERVED_HEIGHT_DESKTOP = 142;
-const HUD_RESERVED_HEIGHT_MOBILE = 158;
-const ARENA_SAFE_SPACING = 24;
-const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const PHYSICS_SUBSTEPS = 4;
 const RESTITUTION = 1.0;
 const GRID_DIVISIONS = 25;
@@ -208,22 +204,19 @@ const createAudio = (): AssemblyAudio => {
 
 // ─── Canvas / arena ───────────────────────────────────────────────────────────
 
+// Canvas is always flex:1 (heading and controls are always DOM elements in both modes).
+// Arena is always centered within the canvas so layout is stable across phase transitions.
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = window.innerWidth;
-  const height = window.innerHeight;
+  const width = canvas.offsetWidth || window.innerWidth;
+  const height = canvas.offsetHeight || window.innerHeight;
   const ctx = canvas.getContext("2d");
   const isMobile = width < 600;
-  const hudH = isMobile
-    ? HUD_RESERVED_HEIGHT_MOBILE
-    : HUD_RESERVED_HEIGHT_DESKTOP;
   const hPad = isMobile ? width * 0.06 : 28;
-  const bot = isMobile ? MOBILE_BOTTOM_SAFE_SPACING : ARENA_SAFE_SPACING;
+  const vPad = 12;
   const availW = Math.max(220, width - hPad);
-  const availH = Math.max(220, height - hudH - bot);
+  const availH = Math.max(220, height - vPad * 2);
   const arenaSize = clamp(Math.min(availW, availH), 220, 920);
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
   if (ctx) {
@@ -233,7 +226,7 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   }
   return {
     x: (width - arenaSize) / 2,
-    y: hudH,
+    y: (height - arenaSize) / 2,
     width: arenaSize,
     height: arenaSize,
     dpr,
@@ -729,13 +722,16 @@ const drawArenaFrame = (
   arena: Arena,
   headingText: string,
 ) => {
-  const isMobile = window.innerWidth < 600;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const W = ctx.canvas.width / dpr;
+  const H = ctx.canvas.height / dpr;
+  const isMobile = W < 600;
   const lineW = isMobile ? 2.25 : 3;
   const glowB = 11;
 
-  ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+  ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = "#020617";
-  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+  ctx.fillRect(0, 0, W, H);
 
   const bg = ctx.createRadialGradient(
     arena.x + arena.width * 0.58,
@@ -749,8 +745,8 @@ const drawArenaFrame = (
   bg.addColorStop(0.48, "rgba(59, 130, 246, 0.06)");
   bg.addColorStop(1, "rgba(2, 6, 23, 0)");
   ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
-  drawCanvasWatermark(ctx, window.innerWidth, window.innerHeight);
+  ctx.fillRect(0, 0, W, H);
+  drawCanvasWatermark(ctx, W, H);
 
   ctx.save();
   ctx.strokeStyle = "rgba(2, 6, 23, 0.5)";
@@ -779,39 +775,36 @@ const drawArenaFrame = (
   ctx.strokeStyle = "rgba(226, 232, 240, 0.08)";
   ctx.lineWidth = 1;
   ctx.strokeRect(arena.x + 5, arena.y + 5, arena.width - 10, arena.height - 10);
-  ctx.fillStyle = "rgba(241, 245, 249, 0.92)";
-  ctx.shadowColor = "rgba(148, 163, 184, 0.32)";
-  ctx.shadowBlur = isMobile ? 8 : 12;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "bottom";
-  const maxHeadingWidth = Math.min(arena.width - 20, window.innerWidth - 32);
-  const maxHeadingSize = isMobile ? 20 : 26;
-  const headingLines = getHeadingLines(
-    ctx,
-    headingText,
-    maxHeadingWidth,
-    maxHeadingSize,
-  );
-  const headingSize = getFittedFontSize(
-    ctx,
-    headingLines,
-    maxHeadingWidth,
-    maxHeadingSize,
-    isMobile ? 13 : 16,
-  );
-  ctx.font = `900 ${headingSize}px Arial, Helvetica, sans-serif`;
-  const lineHeight = headingSize * 1.14;
-  const bottomY = Math.max(
-    headingSize + 16 + lineHeight * (headingLines.length - 1),
-    arena.y - (isMobile ? 38 : 48),
-  );
-  headingLines.forEach((line, index) => {
-    ctx.fillText(
-      line,
-      arena.x + arena.width / 2,
-      bottomY - (headingLines.length - index - 1) * lineHeight,
+  if (headingText) {
+    ctx.fillStyle = "rgba(241, 245, 249, 0.92)";
+    ctx.shadowColor = "rgba(148, 163, 184, 0.32)";
+    ctx.shadowBlur = isMobile ? 8 : 12;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    const maxHeadingWidth = Math.min(arena.width - 20, W - 32);
+    const maxHeadingSize = isMobile ? 20 : 26;
+    const headingLines = getHeadingLines(ctx, headingText, maxHeadingWidth, maxHeadingSize);
+    const headingSize = getFittedFontSize(
+      ctx,
+      headingLines,
+      maxHeadingWidth,
+      maxHeadingSize,
+      isMobile ? 13 : 16,
     );
-  });
+    ctx.font = `900 ${headingSize}px Arial, Helvetica, sans-serif`;
+    const lineHeight = headingSize * 1.14;
+    const bottomY = Math.max(
+      headingSize + 16 + lineHeight * (headingLines.length - 1),
+      arena.y - (isMobile ? 38 : 48),
+    );
+    headingLines.forEach((line, index) => {
+      ctx.fillText(
+        line,
+        arena.x + arena.width / 2,
+        bottomY - (headingLines.length - index - 1) * lineHeight,
+      );
+    });
+  }
   ctx.restore();
 };
 
@@ -903,37 +896,6 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
   });
 };
 
-const drawSimStats = (
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  filled: number,
-  total: number,
-  looseCount: number,
-  elapsedSec: number,
-) => {
-  const isMobile = window.innerWidth < 600;
-  const mins = Math.floor(elapsedSec / 60);
-  const secs = String(Math.floor(elapsedSec % 60)).padStart(2, "0");
-  const allDone = total > 0 && filled === total;
-  const statusText = allDone
-    ? "Complete!"
-    : total > 0
-      ? `Filled: ${filled}/${total}`
-      : `Bouncing: ${looseCount}`;
-  ctx.save();
-  ctx.fillStyle = allDone
-    ? "rgba(34,197,94,0.9)"
-    : "rgba(241, 245, 249, 0.72)";
-  ctx.font = `700 ${isMobile ? 11 : 13}px Arial, Helvetica, sans-serif`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.fillText(
-    `${statusText}  ·  Time: ${mins}:${secs}`,
-    arena.x + arena.width / 2,
-    arena.y + arena.height + (isMobile ? 10 : 14),
-  );
-  ctx.restore();
-};
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -953,12 +915,11 @@ const SquareAssembly = () => {
   const startTimeRef = useRef(0);
   const phaseRef = useRef<GamePhase>("editor");
   const gridRef = useRef<CellKind[][]>(makeEmptyGrid());
-  const completedRef = useRef(false);
-  const completionTimeRef = useRef(0);
+  const completeSoundPlayedRef = useRef(false);
+  const mergeCountdownRef = useRef<number | null>(null);
   const [phase, setPhase] = useState<GamePhase>("editor");
-  const [completed, setCompleted] = useState(false);
-  const [completionSecs, setCompletionSecs] = useState(0);
   const [editorError, setEditorError] = useState(false);
+  const [mergeCountdown, setMergeCountdown] = useState<number | null>(null);
 
   if (audioRef.current === null) audioRef.current = createAudio();
 
@@ -996,23 +957,29 @@ const SquareAssembly = () => {
 
     startTimeRef.current = 0;
     lastTimeRef.current = performance.now();
-    completedRef.current = false;
-    completionTimeRef.current = 0;
+    completeSoundPlayedRef.current = false;
     phaseRef.current = "simulation";
     setPhase("simulation");
-    setCompleted(false);
     audioRef.current?.unlock();
   }, []);
 
   const resetToEditor = useCallback(() => {
     bodiesRef.current = [];
     clusterBodyRef.current = null;
-    completedRef.current = false;
-    completionTimeRef.current = 0;
+    completeSoundPlayedRef.current = false;
     phaseRef.current = "editor";
     setPhase("editor");
-    setCompleted(false);
   }, []);
+
+  // Re-compute arena after phase change so canvas size (flex:1 vs 100dvh) is respected
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const id = window.requestAnimationFrame(() => {
+      arenaRef.current = resizeCanvas(canvas);
+    });
+    return () => window.cancelAnimationFrame(id);
+  }, [phase]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1027,7 +994,7 @@ const SquareAssembly = () => {
       if (!arena) return;
 
       if (phaseRef.current === "editor") {
-        drawArenaFrame(ctx, arena, "CLICK CELLS TO DESIGN YOUR SHAPE");
+        drawArenaFrame(ctx, arena, "");
         drawEditorGrid(ctx, arena, gridRef.current);
       } else {
         if (startTimeRef.current === 0) startTimeRef.current = time;
@@ -1042,72 +1009,47 @@ const SquareAssembly = () => {
         const allFilled = total > 0 && filled === total;
         const elapsedSec = (time - startTimeRef.current) / 1000;
 
-        // Detect first completion
-        if (allFilled && !completedRef.current) {
-          completedRef.current = true;
-          completionTimeRef.current = elapsedSec;
-          setCompletionSecs(Math.floor(elapsedSec));
-          setCompleted(true);
+        // Play completion sound once when all slots filled, then keep running
+        if (allFilled && !completeSoundPlayedRef.current) {
+          completeSoundPlayedRef.current = true;
           audioRef.current?.playComplete();
         }
 
         const MERGE_DELAY = 5;
         const mergeElapsed = Math.max(0, elapsedSec - MERGE_DELAY);
         const mergingStarted = elapsedSec >= MERGE_DELAY;
-        // Cluster acts as solid wall for first 50 s of merging, then goes ghost
         const clusterSolid = mergeElapsed < 50;
 
-        if (!completedRef.current) {
-          const subDt = dt / PHYSICS_SUBSTEPS;
-          for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
-            bodiesRef.current.forEach((body) => {
-              body.x += body.vx * subDt;
-              body.y += body.vy * subDt;
-              body.glowTime = Math.max(0, body.glowTime - subDt);
-              body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
-              if (body.glowTime <= 0) body.glowColor = "none";
-            });
-            resolveWallCollisions(arena, bodiesRef.current, () =>
-              audioRef.current?.playCollision(),
+        const subDt = dt / PHYSICS_SUBSTEPS;
+        for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
+          bodiesRef.current.forEach((body) => {
+            body.x += body.vx * subDt;
+            body.y += body.vy * subDt;
+            body.glowTime = Math.max(0, body.glowTime - subDt);
+            body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
+            if (body.glowTime <= 0) body.glowColor = "none";
+          });
+          resolveWallCollisions(arena, bodiesRef.current, () =>
+            audioRef.current?.playCollision(),
+          );
+          resolveBodyCollisions(arena, bodiesRef.current, audioRef.current, clusterSolid);
+          if (cluster && mergingStarted && !allFilled) {
+            applyClusterAttraction(bodiesRef.current, cluster, arena, subDt, mergeElapsed);
+            snapToCluster(bodiesRef.current, cluster, arena, mergeElapsed, () =>
+              audioRef.current?.playAttach(),
             );
-            resolveBodyCollisions(arena, bodiesRef.current, audioRef.current, clusterSolid);
-            if (cluster && mergingStarted) {
-              applyClusterAttraction(bodiesRef.current, cluster, arena, subDt, mergeElapsed);
-              snapToCluster(bodiesRef.current, cluster, arena, mergeElapsed, () =>
-                audioRef.current?.playAttach(),
-              );
-            }
           }
         }
 
-        const looseCount = bodiesRef.current.filter((b) => !b.isCluster).length;
-        const mergeCountdown = Math.ceil(MERGE_DELAY - elapsedSec);
-
-        drawArenaFrame(
-          ctx,
-          arena,
-          completedRef.current
-            ? "SHAPE COMPLETE!"
-            : "WHAT WEIRD STRUCTURE WILL THESE RANDOM SHAPES MAKE?",
-        );
-        bodiesRef.current.forEach((b) => drawBody(ctx, b));
-        // Countdown overlay before merging starts
-        if (!mergingStarted && !completedRef.current) {
-          ctx.save();
-          ctx.fillStyle = "rgba(241,245,249,0.82)";
-          ctx.font = `700 ${window.innerWidth < 600 ? 12 : 14}px Arial,Helvetica,sans-serif`;
-          ctx.textAlign = "center";
-          ctx.textBaseline = "top";
-          ctx.fillText(
-            `Merging will begin in ${mergeCountdown} sec${mergeCountdown !== 1 ? "s" : ""}`,
-            arena.x + arena.width / 2,
-            arena.y + arena.height + (window.innerWidth < 600 ? 10 : 14),
-          );
-          ctx.restore();
-        } else {
-          drawSimStats(ctx, arena, filled, total, looseCount,
-            completedRef.current ? completionTimeRef.current : elapsedSec);
+        // Update DOM countdown (only re-renders on value change, max 6 times)
+        const nextCountdown = mergingStarted ? null : Math.ceil(MERGE_DELAY - elapsedSec);
+        if (nextCountdown !== mergeCountdownRef.current) {
+          mergeCountdownRef.current = nextCountdown;
+          setMergeCountdown(nextCountdown);
         }
+
+        drawArenaFrame(ctx, arena, "");
+        bodiesRef.current.forEach((b) => drawBody(ctx, b));
       }
 
       rafRef.current = requestAnimationFrame(draw);
@@ -1134,8 +1076,10 @@ const SquareAssembly = () => {
         clientX = (e as MouseEvent).clientX;
         clientY = (e as MouseEvent).clientY;
       }
-      const col = Math.floor((clientX - arena.x) / s);
-      const row = Math.floor((clientY - arena.y) / s);
+      // Use getBoundingClientRect so the offset accounts for the heading DOM element above canvas
+      const rect = canvas.getBoundingClientRect();
+      const col = Math.floor((clientX - rect.left - arena.x) / s);
+      const row = Math.floor((clientY - rect.top - arena.y) / s);
       if (col >= 0 && col < GRID_DIVISIONS && row >= 0 && row < GRID_DIVISIONS) {
         const cur = gridRef.current[row][col];
         gridRef.current[row][col] = cur === "empty" ? "square" : "empty";
@@ -1165,89 +1109,93 @@ const SquareAssembly = () => {
   }, []);
 
   return (
-    <div className={`assembly-root${phase === "editor" ? " editor-mode" : ""}`}>
+    <div className={`assembly-root${phase === "editor" ? " editor-cursor" : ""}`}>
+      <div className="game-heading">
+        What Shape will these squares form?
+      </div>
+
       <canvas ref={canvasRef} className="assembly-canvas" />
 
-      {phase === "editor" && (
-        <div className="editor-hud">
-          <p className="editor-hint">
-            Click cells to place &nbsp;<span className="sq-swatch">■</span> squares, click again to remove
-          </p>
-          {editorError && (
-            <p className="editor-error">Select at least one cell first</p>
-          )}
-          <div className="editor-actions">
-            <button
-              className="btn-clear"
-              onClick={() => { gridRef.current = makeEmptyGrid(); }}
-            >
-              Clear
-            </button>
-            <button className="btn-start" onClick={startSimulation}>
-              ▶ Start Simulation
-            </button>
-          </div>
-        </div>
-      )}
-
-      {phase === "simulation" && !completed && (
-        <div className="sim-hud">
-          <button className="btn-edit" onClick={resetToEditor}>
-            ← Edit
-          </button>
-        </div>
-      )}
-
-      {completed && (
-        <div className="complete-overlay">
-          <div className="complete-card">
-            <div className="complete-title">Shape Complete!</div>
-            <div className="complete-time">
-              {Math.floor(completionSecs / 60)}:{String(completionSecs % 60).padStart(2, "0")}
-            </div>
-            <div className="complete-actions">
-              <button className="btn-again" onClick={startSimulation}>
-                ▶ Play Again
+      <div className="bottom-bar">
+        {phase === "editor" ? (
+          <>
+            <p className="editor-hint">
+              Click cells to place&nbsp;<span className="sq-swatch">■</span>&nbsp;squares, click again to remove
+            </p>
+            {editorError && (
+              <p className="editor-error">Select at least one cell first</p>
+            )}
+            <div className="editor-actions">
+              <button
+                className="btn-clear"
+                onClick={() => { gridRef.current = makeEmptyGrid(); }}
+              >
+                Clear
               </button>
-              <button className="btn-edit-again" onClick={resetToEditor}>
-                ✎ Edit Design
+              <button className="btn-start" onClick={startSimulation}>
+                ▶ Start Simulation
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        ) : (
+          <>
+            {mergeCountdown !== null && (
+              <p className="merge-countdown">
+                Merging will begin in {mergeCountdown} sec{mergeCountdown !== 1 ? "s" : ""}
+              </p>
+            )}
+            <button className="btn-edit" onClick={resetToEditor}>
+              ← Edit
+            </button>
+          </>
+        )}
+      </div>
 
       <style jsx>{`
         .assembly-root {
+          display: flex;
+          flex-direction: column;
           position: relative;
           width: 100%;
           height: 100dvh;
-          min-height: 100dvh;
-          max-height: 100dvh;
           overflow: hidden;
           background: #020617;
+        }
+        .game-heading {
+          flex-shrink: 0;
+          text-align: center;
+          color: rgba(241, 245, 249, 0.92);
+          font-size: clamp(13px, 2vw, 20px);
+          font-weight: 900;
+          font-family: Arial, Helvetica, sans-serif;
+          letter-spacing: 0.02em;
+          padding: 14px 16px 6px;
+          line-height: 1.25;
         }
         .assembly-canvas {
           display: block;
           width: 100%;
-          height: 100dvh;
-          min-height: 100dvh;
-          max-height: 100dvh;
+          flex: 1;
+          min-height: 0;
           cursor: default;
         }
-        .editor-mode .assembly-canvas {
+        .editor-cursor .assembly-canvas {
           cursor: crosshair;
         }
-        .editor-hud {
-          position: absolute;
-          bottom: 20px;
-          left: 50%;
-          transform: translateX(-50%);
+        .bottom-bar {
+          flex-shrink: 0;
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 10px;
-          pointer-events: none;
+          gap: 8px;
+          padding: 10px 16px 16px;
+          background: #020617;
+          min-height: 68px;
+        }
+        .merge-countdown {
+          color: rgba(241, 245, 249, 0.72);
+          font-size: 12px;
+          font-family: Arial, Helvetica, sans-serif;
         }
         .editor-hint {
           color: rgba(241, 245, 249, 0.55);
@@ -1264,13 +1212,9 @@ const SquareAssembly = () => {
         .sq-swatch {
           color: #d77026;
         }
-        .tri-swatch {
-          color: #22c55e;
-        }
         .editor-actions {
           display: flex;
           gap: 10px;
-          pointer-events: all;
         }
         .btn-start {
           background: rgba(34, 197, 94, 0.12);
@@ -1300,11 +1244,6 @@ const SquareAssembly = () => {
         .btn-clear:hover {
           background: rgba(100, 120, 150, 0.16);
         }
-        .sim-hud {
-          position: absolute;
-          top: 14px;
-          left: 16px;
-        }
         .btn-edit {
           background: rgba(100, 120, 150, 0.08);
           border: 1.5px solid rgba(100, 120, 150, 0.28);
@@ -1316,73 +1255,6 @@ const SquareAssembly = () => {
           cursor: pointer;
         }
         .btn-edit:hover {
-          background: rgba(100, 120, 150, 0.18);
-        }
-        .complete-overlay {
-          position: absolute;
-          inset: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          background: rgba(2, 6, 23, 0.62);
-          backdrop-filter: blur(6px);
-        }
-        .complete-card {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 14px;
-          background: rgba(10, 18, 40, 0.88);
-          border: 1.5px solid rgba(34, 197, 94, 0.4);
-          border-radius: 16px;
-          padding: 36px 48px;
-          box-shadow: 0 0 48px rgba(34, 197, 94, 0.15);
-        }
-        .complete-title {
-          font-size: 26px;
-          font-weight: 900;
-          font-family: Arial, Helvetica, sans-serif;
-          color: #4ade80;
-          letter-spacing: 0.04em;
-          text-shadow: 0 0 24px rgba(34, 197, 94, 0.6);
-        }
-        .complete-time {
-          font-size: 42px;
-          font-weight: 900;
-          font-family: Arial, Helvetica, sans-serif;
-          color: rgba(241, 245, 249, 0.9);
-          letter-spacing: 0.06em;
-        }
-        .complete-actions {
-          display: flex;
-          gap: 12px;
-          margin-top: 6px;
-        }
-        .btn-again {
-          background: rgba(34, 197, 94, 0.12);
-          border: 1.5px solid rgba(34, 197, 94, 0.55);
-          color: #4ade80;
-          padding: 9px 24px;
-          border-radius: 8px;
-          font-size: 13px;
-          font-weight: 700;
-          font-family: Arial, Helvetica, sans-serif;
-          cursor: pointer;
-        }
-        .btn-again:hover {
-          background: rgba(34, 197, 94, 0.22);
-        }
-        .btn-edit-again {
-          background: rgba(100, 120, 150, 0.08);
-          border: 1.5px solid rgba(100, 120, 150, 0.3);
-          color: rgba(241, 245, 249, 0.6);
-          padding: 9px 20px;
-          border-radius: 8px;
-          font-size: 13px;
-          font-family: Arial, Helvetica, sans-serif;
-          cursor: pointer;
-        }
-        .btn-edit-again:hover {
           background: rgba(100, 120, 150, 0.18);
         }
       `}</style>

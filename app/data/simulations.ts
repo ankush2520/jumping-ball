@@ -26,6 +26,17 @@ export type Simulation = {
 
 export const simulations: Simulation[] = [
   {
+    id: "square-assembly",
+    title: "Interactive Square Shapes",
+    subtitle: "SHAPE SNAP CHALLENGE",
+    description: "Design a shape on the grid, then watch bouncing squares snap into place.",
+    component: SquareAssembly,
+    status: "experimental",
+    accentColor: "#f43f5e",
+    icon: "square-assembly",
+    glow: "card-rose",
+  },
+  {
     id: "country-escape-challenge",
     title: "Ball Escape",
     subtitle: "ROTATING EXIT RACE",
@@ -68,17 +79,6 @@ export const simulations: Simulation[] = [
     accentColor: "#67e8f9",
     icon: "plasma-bounce",
     glow: "card-cyan",
-  },
-  {
-    id: "square-assembly",
-    title: "Square Assembly",
-    subtitle: "SHAPE SNAP CHALLENGE",
-    description: "Watch a square and three triangles collide and snap into their final form.",
-    component: SquareAssembly,
-    status: "experimental",
-    accentColor: "#f43f5e",
-    icon: "square-assembly",
-    glow: "card-rose",
   },
 ];
 
