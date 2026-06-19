@@ -469,16 +469,37 @@ const getPolyCollision = (
 };
 
 const getBodyCollision = (a: Body, b: Body): Collision | null => {
-  // Ghost skeletons are pure visual — they never cause any collision
-  if (a.isCluster || b.isCluster) return null;
-  // A loose square always passes through the assembled shape of its own color
-  if (a.isAssembled !== b.isAssembled) {
-    const assembled = a.isAssembled ? a : b;
-    const loose = a.isAssembled ? b : a;
-    if (assembled.colorIdx === loose.colorIdx) return null;
+  // Skeleton with NO filled pieces = pure ghost position marker, always passable
+  if (a.isCluster && a.pieces.every((p) => !p.filled)) return null;
+  if (b.isCluster && b.pieces.every((p) => !p.filled)) return null;
+
+  // Default to all pieces; may be overridden to filled-only for partial skeletons
+  let aPieces: Piece[] = a.pieces;
+  let bPieces: Piece[] = b.pieces;
+
+  if (a.isCluster || b.isCluster) {
+    const skeleton = a.isCluster ? a : b;
+    const mover    = a.isCluster ? b : a;
+
+    // Mega skeleton: always passable (assembled groups snap through it; squares ignore it)
+    if (skeleton.colorIdx === -1) return null;
+    // Assembled group passes through any color-group skeleton (it targets mega only)
+    if (mover.isAssembled) return null;
+    // Same-color loose square passes through its own skeleton to snap into empty slots
+    if (mover.colorIdx === skeleton.colorIdx) return null;
+
+    // Different-color loose square bounces off only the FILLED pieces of the skeleton
+    if (a.isCluster) aPieces = a.pieces.filter((p) => p.filled);
+    else             bPieces = b.pieces.filter((p) => p.filled);
+  } else {
+    // Both solid: loose square passes through assembled group of its own color
+    if (a.isAssembled !== b.isAssembled) {
+      const assembled = a.isAssembled ? a : b;
+      const loose     = a.isAssembled ? b : a;
+      if (assembled.colorIdx === loose.colorIdx) return null;
+    }
   }
-  const aPieces = a.pieces;
-  const bPieces = b.pieces;
+
   if (aPieces.length === 0 || bPieces.length === 0) return null;
   let best: Collision | null = null;
   for (const ap of aPieces) {
@@ -628,8 +649,10 @@ const resolveBodyCollisions = (
       if (!col) continue;
       const { normal, overlap } = col;
       const correction = overlap * 0.6 + 0.5;
-      // Assembled groups are heavy — absorb less positional correction
-      const aShare = a.isAssembled ? 0.05 : b.isAssembled ? 0.95 : 0.5;
+      // Skeletons and assembled groups are heavy — absorb very little correction
+      const aHeavy = a.isCluster || a.isAssembled;
+      const bHeavy = b.isCluster || b.isAssembled;
+      const aShare = aHeavy ? 0.05 : bHeavy ? 0.95 : 0.5;
       const bShare = 1 - aShare;
       a.x -= normal.x * correction * aShare;
       a.y -= normal.y * correction * aShare;
@@ -648,8 +671,9 @@ const resolveBodyCollisions = (
         preserveBodySpeed(a, arena);
         preserveBodySpeed(b, arena);
       }
-      if (!a.isAssembled) { a.glowColor = "red"; a.glowTime = 0.25; }
-      if (!b.isAssembled) { b.glowColor = "red"; b.glowTime = 0.25; }
+      // Only loose squares flash red on hit; skeletons and assembled groups don't glow
+      if (!a.isAssembled && !a.isCluster) { a.glowColor = "red"; a.glowTime = 0.25; }
+      if (!b.isAssembled && !b.isCluster) { b.glowColor = "red"; b.glowTime = 0.25; }
       audio?.playCollision(a.id);
       audio?.playCollision(b.id);
     }
@@ -1091,6 +1115,8 @@ const SquareAssembly = () => {
             body.glowTime = Math.max(0, body.glowTime - subDt);
             body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
             if (body.glowTime <= 0) body.glowColor = "none";
+            // Enforce constant speed every substep so drift never accumulates
+            preserveBodySpeed(body, arena);
           });
           resolveWallCollisions(arena, bodiesRef.current, (bodyId) =>
             audioRef.current?.playCollision(bodyId),
