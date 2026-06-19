@@ -1067,19 +1067,10 @@ const SquareAssembly = () => {
       const arena = arenaRef.current;
       if (!arena) return;
       const s = getShapeSize(arena);
-      let clientX: number, clientY: number;
-      if ("touches" in e) {
-        if (e.touches.length === 0) return;
-        clientX = e.touches[0].clientX;
-        clientY = e.touches[0].clientY;
-      } else {
-        clientX = (e as MouseEvent).clientX;
-        clientY = (e as MouseEvent).clientY;
-      }
-      // Use getBoundingClientRect so the offset accounts for the heading DOM element above canvas
+      const pe = e as PointerEvent;
       const rect = canvas.getBoundingClientRect();
-      const col = Math.floor((clientX - rect.left - arena.x) / s);
-      const row = Math.floor((clientY - rect.top - arena.y) / s);
+      const col = Math.floor((pe.clientX - rect.left - arena.x) / s);
+      const row = Math.floor((pe.clientY - rect.top - arena.y) / s);
       if (col >= 0 && col < GRID_DIVISIONS && row >= 0 && row < GRID_DIVISIONS) {
         const cur = gridRef.current[row][col];
         gridRef.current[row][col] = cur === "empty" ? "square" : "empty";
@@ -1087,24 +1078,13 @@ const SquareAssembly = () => {
     };
 
     window.addEventListener("resize", handleResize);
-    canvas.addEventListener("click", handleCanvasInteraction as EventListener);
-    canvas.addEventListener(
-      "touchstart",
-      handleCanvasInteraction as EventListener,
-      { passive: true },
-    );
+    // pointerdown covers mouse, touch, and stylus uniformly — no touch/click split needed
+    canvas.addEventListener("pointerdown", handleCanvasInteraction as EventListener);
 
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", handleResize);
-      canvas.removeEventListener(
-        "click",
-        handleCanvasInteraction as EventListener,
-      );
-      canvas.removeEventListener(
-        "touchstart",
-        handleCanvasInteraction as EventListener,
-      );
+      canvas.removeEventListener("pointerdown", handleCanvasInteraction as EventListener);
     };
   }, []);
 
@@ -1164,8 +1144,8 @@ const SquareAssembly = () => {
         .game-heading {
           flex-shrink: 0;
           text-align: center;
-          color: rgba(241, 245, 249, 0.92);
-          font-size: clamp(13px, 2vw, 20px);
+          color: rgba(241, 245, 249, 0.95);
+          font-size: clamp(18px, 4.5vw, 24px);
           font-weight: 900;
           font-family: Arial, Helvetica, sans-serif;
           letter-spacing: 0.02em;
@@ -1176,8 +1156,10 @@ const SquareAssembly = () => {
           display: block;
           width: 100%;
           flex: 1;
-          min-height: 0;
+          min-height: 0 !important;
+          height: 0 !important;
           cursor: default;
+          touch-action: none;
         }
         .editor-cursor .assembly-canvas {
           cursor: crosshair;
