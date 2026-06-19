@@ -204,8 +204,15 @@ const createAudio = (): AssemblyAudio => {
 
 // ─── Canvas / arena ───────────────────────────────────────────────────────────
 
-// Canvas is always flex:1 (heading and controls are always DOM elements in both modes).
-// Arena is always centered within the canvas so layout is stable across phase transitions.
+// Layout (canvas-space, top to bottom):
+//   topMargin  →  headingH (text here)  →  4×cellSize gap  →  arena  →  botPad  →  bottomMargin
+//
+// headingH must clear the home-button overlay (~44px) so text never overlaps it.
+// The whole block is centered in the canvas so topMargin ≥ 0 absorbs leftover space.
+//
+// Algebraic solve for arenaSize when height-constrained (topMargin → 0):
+//   headingH + 4*(A/G) + A + botPad = height
+//   A * (1 + 4/G) = height - headingH - botPad
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const width = canvas.offsetWidth || window.innerWidth;
@@ -213,10 +220,17 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const ctx = canvas.getContext("2d");
   const isMobile = width < 600;
   const hPad = isMobile ? width * 0.06 : 28;
-  const vPad = 12;
+  const headingH = isMobile ? 120 : 100; // clears home-button + leaves room for heading text
+  const botPad = 16;
   const availW = Math.max(220, width - hPad);
-  const availH = Math.max(220, height - vPad * 2);
-  const arenaSize = clamp(Math.min(availW, availH), 220, 920);
+  const arenaSizeFromH = (height - headingH - botPad) / (1 + 4 / GRID_DIVISIONS);
+  const arenaSize = clamp(Math.min(availW, Math.max(220, arenaSizeFromH)), 220, 920);
+  const cellSize = arenaSize / GRID_DIVISIONS;
+  const gapH = 4 * cellSize;
+  // Center the full content block vertically; extra space becomes symmetric top/bottom margin
+  const blockH = headingH + gapH + arenaSize + botPad;
+  const topMargin = Math.max(0, (height - blockH) / 2);
+  const arenaY = topMargin + headingH + gapH;
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
   if (ctx) {
@@ -226,7 +240,7 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   }
   return {
     x: (width - arenaSize) / 2,
-    y: (height - arenaSize) / 2,
+    y: arenaY,
     width: arenaSize,
     height: arenaSize,
     dpr,
@@ -776,32 +790,31 @@ const drawArenaFrame = (
   ctx.lineWidth = 1;
   ctx.strokeRect(arena.x + 5, arena.y + 5, arena.width - 10, arena.height - 10);
   if (headingText) {
-    ctx.fillStyle = "rgba(241, 245, 249, 0.92)";
-    ctx.shadowColor = "rgba(148, 163, 184, 0.32)";
-    ctx.shadowBlur = isMobile ? 8 : 12;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "bottom";
-    const maxHeadingWidth = Math.min(arena.width - 20, W - 32);
-    const maxHeadingSize = isMobile ? 20 : 26;
+    // Heading sits in the space above the arena. Bottom of text = arena.y - 4*cellSize.
+    const s = arena.width / GRID_DIVISIONS;
+    const textBottomY = arena.y - 4 * s;
+    const maxHeadingWidth = Math.min(arena.width + 8, W - 24);
+    const maxHeadingSize = isMobile ? 22 : 28;
     const headingLines = getHeadingLines(ctx, headingText, maxHeadingWidth, maxHeadingSize);
     const headingSize = getFittedFontSize(
       ctx,
       headingLines,
       maxHeadingWidth,
       maxHeadingSize,
-      isMobile ? 13 : 16,
+      isMobile ? 14 : 17,
     );
+    ctx.fillStyle = "rgba(241, 245, 249, 0.95)";
+    ctx.shadowColor = "rgba(148, 163, 184, 0.35)";
+    ctx.shadowBlur = isMobile ? 8 : 14;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
     ctx.font = `900 ${headingSize}px Arial, Helvetica, sans-serif`;
-    const lineHeight = headingSize * 1.14;
-    const bottomY = Math.max(
-      headingSize + 16 + lineHeight * (headingLines.length - 1),
-      arena.y - (isMobile ? 38 : 48),
-    );
+    const lineHeight = headingSize * 1.18;
     headingLines.forEach((line, index) => {
       ctx.fillText(
         line,
         arena.x + arena.width / 2,
-        bottomY - (headingLines.length - index - 1) * lineHeight,
+        textBottomY - (headingLines.length - index - 1) * lineHeight,
       );
     });
   }
@@ -994,7 +1007,7 @@ const SquareAssembly = () => {
       if (!arena) return;
 
       if (phaseRef.current === "editor") {
-        drawArenaFrame(ctx, arena, "");
+        drawArenaFrame(ctx, arena, "What Shape will these squares form?");
         drawEditorGrid(ctx, arena, gridRef.current);
       } else {
         if (startTimeRef.current === 0) startTimeRef.current = time;
@@ -1048,7 +1061,7 @@ const SquareAssembly = () => {
           setMergeCountdown(nextCountdown);
         }
 
-        drawArenaFrame(ctx, arena, "");
+        drawArenaFrame(ctx, arena, "What Shape will these squares form?");
         bodiesRef.current.forEach((b) => drawBody(ctx, b));
       }
 
@@ -1090,10 +1103,6 @@ const SquareAssembly = () => {
 
   return (
     <div className={`assembly-root${phase === "editor" ? " editor-cursor" : ""}`}>
-      <div className="game-heading">
-        What Shape will these squares form?
-      </div>
-
       <canvas ref={canvasRef} className="assembly-canvas" />
 
       <div className="bottom-bar">
@@ -1140,17 +1149,6 @@ const SquareAssembly = () => {
           height: 100dvh;
           overflow: hidden;
           background: #020617;
-        }
-        .game-heading {
-          flex-shrink: 0;
-          text-align: center;
-          color: rgba(241, 245, 249, 0.95);
-          font-size: clamp(18px, 4.5vw, 24px);
-          font-weight: 900;
-          font-family: Arial, Helvetica, sans-serif;
-          letter-spacing: 0.02em;
-          padding: 14px 16px 6px;
-          line-height: 1.25;
         }
         .assembly-canvas {
           display: block;
