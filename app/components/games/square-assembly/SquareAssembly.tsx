@@ -332,31 +332,27 @@ const trySpawnShape = (
   bodies: Body[],
   _cluster: Body | null,
 ): Body | null => {
-  if (bodies.length >= 200) return null; // hard safety cap
+  if (bodies.length >= 200) return null;
   const s = getShapeSize(arena);
-  const clearance = s * 2.2;
-  const margin = clearance;
-  let spawnX = 0,
-    spawnY = 0,
-    found = false;
+  let spawnX = 0, spawnY = 0, found = false;
 
-  for (let attempt = 0; attempt < 120; attempt++) {
-    const cx = arena.x + margin + Math.random() * (arena.width - margin * 2);
-    const cy = arena.y + margin + Math.random() * (arena.height - margin * 2);
-    // Only check loose bodies for clearance (not the cluster)
-    const clear = bodies.every((body) => {
-      if (body.isCluster) return true;
-      return body.pieces.every((piece) => {
-        const tr = getPieceWorldTransform(body, piece);
-        return distancePt({ x: tr.x, y: tr.y }, { x: cx, y: cy }) > clearance;
+  // Try progressively tighter clearance so we always fit every square
+  for (const clearanceMult of [2.0, 1.4, 1.0, 0.6]) {
+    const clearance = s * clearanceMult;
+    const margin = s;
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const cx = arena.x + margin + Math.random() * (arena.width - margin * 2);
+      const cy = arena.y + margin + Math.random() * (arena.height - margin * 2);
+      const clear = bodies.every((body) => {
+        if (body.isCluster) return true;
+        return body.pieces.every((piece) => {
+          const tr = getPieceWorldTransform(body, piece);
+          return distancePt({ x: tr.x, y: tr.y }, { x: cx, y: cy }) > clearance;
+        });
       });
-    });
-    if (clear) {
-      spawnX = cx;
-      spawnY = cy;
-      found = true;
-      break;
+      if (clear) { spawnX = cx; spawnY = cy; found = true; break; }
     }
+    if (found) break;
   }
 
   if (!found) return null;
@@ -464,14 +460,18 @@ const getBodyCollision = (a: Body, b: Body): Collision | null => {
 // ─── Target snapping ──────────────────────────────────────────────────────────
 
 // When a loose piece overlaps a ghost slot on the moving cluster, it snaps in.
+// Snap threshold grows gently over time so late-game stragglers always eventually land.
 const snapToCluster = (
   bodies: Body[],
   cluster: Body,
   arena: Arena,
+  elapsedSec: number,
   onSnap: () => void,
 ) => {
   const s = getShapeSize(arena);
-  const threshold = s * 0.65;
+  // 0–50 s: stays at 0.65 cells; 50 s+: grows to 2.5 cells over 40 s
+  const magnetT = elapsedSec > 50 ? Math.min(1, (elapsedSec - 50) / 40) : 0;
+  const threshold = s * (0.65 + magnetT * 1.85);
 
   for (let i = bodies.length - 1; i >= 0; i--) {
     const body = bodies[i];
@@ -492,6 +492,93 @@ const snapToCluster = (
         break;
       }
     }
+  }
+};
+
+// Phase 1 (0–50 s): gentle velocity steering toward nearest unfilled slot.
+// Phase 2 (50 s+): escalating magnet — stronger steering + direct velocity pull
+//                  + a position nudge that bypasses bouncing entirely.
+// The position nudge is the key to guaranteeing completion: wall reflections
+// reset velocity direction but can't undo a direct position shift.
+const applyClusterAttraction = (
+  bodies: Body[],
+  cluster: Body,
+  arena: Arena,
+  subDt: number,
+  elapsedSec: number,
+) => {
+  const s = getShapeSize(arena);
+  const magnetActive = elapsedSec >= 50;
+  const magnetT = magnetActive ? Math.min(1, (elapsedSec - 50) / 40) : 0;
+
+  // Attract radius: 3.5 cells normally, grows to fill entire arena in magnet phase
+  const attractRadius = magnetActive
+    ? arena.width * 2           // whole arena when magnet is on
+    : s * 3.5;
+
+  // Steer: gentle normally, strong in magnet phase
+  const maxSteerPerSec = magnetActive ? 4 + magnetT * 10 : 1.8;
+
+  // Direct pull: velocity component added toward slot each substep (magnet only)
+  const pullAccel = magnetT * 280; // px / s²
+
+  // Position nudge: direct position shift toward slot, bypasses velocity (magnet only)
+  // Grows from 0 → 90 px/s over 40 s after trigger
+  const nudgeSpeed = magnetT * 90; // px / s
+
+  for (const body of bodies) {
+    if (body.isCluster) continue;
+    const piece = body.pieces[0];
+    const wt = getPieceWorldTransform(body, piece);
+
+    let nearDist = Infinity;
+    let nearX = 0, nearY = 0;
+    for (const cp of cluster.pieces) {
+      if (cp.filled) continue;
+      const cwt = getPieceWorldTransform(cluster, cp);
+      const d = Math.hypot(cwt.x - wt.x, cwt.y - wt.y);
+      if (d < nearDist) { nearDist = d; nearX = cwt.x; nearY = cwt.y; }
+    }
+
+    if (nearDist >= attractRadius || nearDist < 0.5) continue;
+
+    const dx = nearX - wt.x;
+    const dy = nearY - wt.y;
+    const invDist = 1 / nearDist;
+
+    // ── 1. Velocity steering (bend direction toward slot) ──
+    const falloff = Math.max(0, 1 - nearDist / attractRadius);
+    const steerPerSec = maxSteerPerSec * falloff * falloff;
+    const targetAngle = Math.atan2(dy, dx);
+    const curAngle = Math.atan2(body.vy, body.vx);
+    let diff = targetAngle - curAngle;
+    while (diff > Math.PI) diff -= 2 * Math.PI;
+    while (diff < -Math.PI) diff += 2 * Math.PI;
+    const steer = Math.sign(diff) * Math.min(Math.abs(diff), steerPerSec * subDt);
+    const curSpeed = Math.hypot(body.vx, body.vy);
+    if (curSpeed > 0.01) {
+      const newAngle = curAngle + steer;
+      body.vx = Math.cos(newAngle) * curSpeed;
+      body.vy = Math.sin(newAngle) * curSpeed;
+    }
+
+    if (!magnetActive) continue;
+
+    // ── 2. Velocity pull (acceleration toward slot) ──
+    body.vx += dx * invDist * pullAccel * subDt;
+    body.vy += dy * invDist * pullAccel * subDt;
+    // Keep speed from going wild — cap at 2× normal
+    const newSpeed = Math.hypot(body.vx, body.vy);
+    const speedCap = getBodySpeed(arena) * (1 + magnetT);
+    if (newSpeed > speedCap) {
+      body.vx = (body.vx / newSpeed) * speedCap;
+      body.vy = (body.vy / newSpeed) * speedCap;
+    }
+
+    // ── 3. Position nudge (direct drift, immune to wall reflections) ──
+    const moveDist = Math.min(nearDist * 0.9, nudgeSpeed * subDt);
+    body.x += dx * invDist * moveDist;
+    body.y += dy * invDist * moveDist;
   }
 };
 
@@ -546,11 +633,14 @@ const resolveBodyCollisions = (
   arena: Arena,
   bodies: Body[],
   audio: AssemblyAudio | null,
+  clusterSolid: boolean,
 ) => {
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
       const a = bodies[i],
         b = bodies[j];
+      // After 50 s merge time, cluster becomes ghost — loose squares pass through
+      if (!clusterSolid && (a.isCluster || b.isCluster)) continue;
       const col = getBodyCollision(a, b);
       if (!col) continue;
       const { normal, overlap } = col;
@@ -783,13 +873,14 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
   const pulse = 1 + body.attachPulse * 0.07;
 
   body.pieces.forEach((piece) => {
+    if (!piece.filled) return; // ghost slots are invisible
     const tr = getPieceWorldTransform(body, piece);
     ctx.save();
     ctx.translate(body.x, body.y);
     ctx.scale(pulse, pulse);
     ctx.translate(tr.x - body.x, tr.y - body.y);
     ctx.rotate(tr.rotation);
-    ctx.globalAlpha = piece.filled ? 1 : 0.18;
+    ctx.globalAlpha = 1;
     ctx.beginPath();
     piece.vertices.forEach((v, i) => {
       if (i === 0) ctx.moveTo(v.x, v.y);
@@ -960,6 +1051,12 @@ const SquareAssembly = () => {
           audioRef.current?.playComplete();
         }
 
+        const MERGE_DELAY = 5;
+        const mergeElapsed = Math.max(0, elapsedSec - MERGE_DELAY);
+        const mergingStarted = elapsedSec >= MERGE_DELAY;
+        // Cluster acts as solid wall for first 50 s of merging, then goes ghost
+        const clusterSolid = mergeElapsed < 50;
+
         if (!completedRef.current) {
           const subDt = dt / PHYSICS_SUBSTEPS;
           for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
@@ -973,9 +1070,10 @@ const SquareAssembly = () => {
             resolveWallCollisions(arena, bodiesRef.current, () =>
               audioRef.current?.playCollision(),
             );
-            resolveBodyCollisions(arena, bodiesRef.current, audioRef.current);
-            if (cluster) {
-              snapToCluster(bodiesRef.current, cluster, arena, () =>
+            resolveBodyCollisions(arena, bodiesRef.current, audioRef.current, clusterSolid);
+            if (cluster && mergingStarted) {
+              applyClusterAttraction(bodiesRef.current, cluster, arena, subDt, mergeElapsed);
+              snapToCluster(bodiesRef.current, cluster, arena, mergeElapsed, () =>
                 audioRef.current?.playAttach(),
               );
             }
@@ -983,6 +1081,7 @@ const SquareAssembly = () => {
         }
 
         const looseCount = bodiesRef.current.filter((b) => !b.isCluster).length;
+        const mergeCountdown = Math.ceil(MERGE_DELAY - elapsedSec);
 
         drawArenaFrame(
           ctx,
@@ -992,8 +1091,23 @@ const SquareAssembly = () => {
             : "WHAT WEIRD STRUCTURE WILL THESE RANDOM SHAPES MAKE?",
         );
         bodiesRef.current.forEach((b) => drawBody(ctx, b));
-        drawSimStats(ctx, arena, filled, total, looseCount,
-          completedRef.current ? completionTimeRef.current : elapsedSec);
+        // Countdown overlay before merging starts
+        if (!mergingStarted && !completedRef.current) {
+          ctx.save();
+          ctx.fillStyle = "rgba(241,245,249,0.82)";
+          ctx.font = `700 ${window.innerWidth < 600 ? 12 : 14}px Arial,Helvetica,sans-serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          ctx.fillText(
+            `Merging will begin in ${mergeCountdown} sec${mergeCountdown !== 1 ? "s" : ""}`,
+            arena.x + arena.width / 2,
+            arena.y + arena.height + (window.innerWidth < 600 ? 10 : 14),
+          );
+          ctx.restore();
+        } else {
+          drawSimStats(ctx, arena, filled, total, looseCount,
+            completedRef.current ? completionTimeRef.current : elapsedSec);
+        }
       }
 
       rafRef.current = requestAnimationFrame(draw);
