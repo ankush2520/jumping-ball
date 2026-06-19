@@ -38,9 +38,9 @@ type Body = {
   glowColor: "none" | "green" | "red";
   glowTime: number;
   attachPulse: number;
-  isCluster: boolean;   // true = ghost skeleton (always passable, visual only)
+  isCluster: boolean; // true = ghost skeleton (always passable, visual only)
   isAssembled: boolean; // true = fully assembled solid shape (can collide + attach)
-  colorIdx: number;     // 0-4 for loose/cluster/assembled; -1 for merged multi-color shape
+  colorIdx: number; // 0-4 for loose/cluster/assembled; -1 for merged multi-color shape
 };
 
 type Arena = {
@@ -77,7 +77,6 @@ const SELECTOR_COLORS = [
 ] as const;
 const GLOW_DURATION = 0.5;
 const MAX_DT = 1 / 30;
-
 
 let sharedAudioContext: AudioContext | null = null;
 let _bodyIdCounter = 0;
@@ -152,7 +151,13 @@ const createAudio = (): AssemblyAudio => {
   };
 
   // Soft bell-like sine tone: slow attack, long gentle release
-  const playBell = (freq: number, peakGain: number, attackSec: number, releaseSec: number, when = 0) => {
+  const playBell = (
+    freq: number,
+    peakGain: number,
+    attackSec: number,
+    releaseSec: number,
+    when = 0,
+  ) => {
     const ac = ensureAudio();
     if (!ac || ac.state !== "running" || !masterGain) return;
     const now = ac.currentTime + when;
@@ -172,14 +177,23 @@ const createAudio = (): AssemblyAudio => {
       osc.frequency.setValueAtTime(freq * ratio * rng(0.999, 1.001), now);
       gain.gain.setValueAtTime(0.0001, now);
       gain.gain.linearRampToValueAtTime(g, now + attackSec);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + attackSec + releaseSec);
+      gain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        now + attackSec + releaseSec,
+      );
       osc.connect(gain);
       gain.connect(filter);
       osc.start(now);
       osc.stop(now + attackSec + releaseSec + 0.05);
-      osc.onended = () => { osc.disconnect(); gain.disconnect(); };
+      osc.onended = () => {
+        osc.disconnect();
+        gain.disconnect();
+      };
     });
-    window.setTimeout(() => filter.disconnect(), (when + attackSec + releaseSec + 0.2) * 1000);
+    window.setTimeout(
+      () => filter.disconnect(),
+      (when + attackSec + releaseSec + 0.2) * 1000,
+    );
   };
 
   return {
@@ -193,18 +207,18 @@ const createAudio = (): AssemblyAudio => {
       const now = ac.currentTime;
       // Each body gets its own 100ms cooldown — simultaneous hits on different bodies all play
       const last = bodyHitTime.get(bodyId) ?? 0;
-      if (now - last < 0.10) return;
+      if (now - last < 0.1) return;
       bodyHitTime.set(bodyId, now);
       // Advance note index so each collision gets a unique note in sequence
       const freq = pentatonic[noteIdx % pentatonic.length];
       noteIdx = (noteIdx + 1) % pentatonic.length;
-      playBell(freq * 0.5, 0.055, 0.010, 0.32);
+      playBell(freq * 0.5, 0.055, 0.01, 0.32);
     },
     playAttach: () => {
       // Two rising notes — a gentle "click-chime"
       const base = pentatonic[2]; // G4 = 392 Hz
       playBell(base, 0.14, 0.01, 0.9);
-      playBell(base * 1.5, 0.10, 0.01, 1.1, 0.09);
+      playBell(base * 1.5, 0.1, 0.01, 1.1, 0.09);
     },
     playComplete: () => {
       // Soft ascending arpeggio: C-E-G-C
@@ -240,8 +254,13 @@ const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const headingH = isMobile ? 120 : 100; // clears home-button + leaves room for heading text
   const botPad = 16;
   const availW = Math.max(220, width - hPad);
-  const arenaSizeFromH = (height - headingH - botPad) / (1 + 4 / GRID_DIVISIONS);
-  const arenaSize = clamp(Math.min(availW, Math.max(220, arenaSizeFromH)), 220, 920);
+  const arenaSizeFromH =
+    (height - headingH - botPad) / (1 + 4 / GRID_DIVISIONS);
+  const arenaSize = clamp(
+    Math.min(availW, Math.max(220, arenaSizeFromH)),
+    220,
+    920,
+  );
   const cellSize = arenaSize / GRID_DIVISIONS;
   const gapH = 4 * cellSize;
   // Center the full content block vertically; extra space becomes symmetric top/bottom margin
@@ -308,7 +327,12 @@ const preserveBodySpeed = (body: Body, arena: Arena) => {
 // Pieces start as ghost (filled=false); loose pieces snap in over time.
 // overrideColorIdx: use -1 for the mega skeleton (all colors), else the specific color
 const createClusterBody = (
-  targets: Array<{ col: number; row: number; kind: PieceKind; colorIdx: number }>,
+  targets: Array<{
+    col: number;
+    row: number;
+    kind: PieceKind;
+    colorIdx: number;
+  }>,
   arena: Arena,
   overrideColorIdx = -1,
 ): Body => {
@@ -334,9 +358,12 @@ const createClusterBody = (
   const spawnX = arena.x + arena.width * (0.3 + Math.random() * 0.4);
   const spawnY = arena.y + arena.height * (0.3 + Math.random() * 0.4);
 
-  const bodyColorIdx = overrideColorIdx === -1
-    ? (targets.every((t) => t.colorIdx === targets[0].colorIdx) ? targets[0].colorIdx : -1)
-    : overrideColorIdx;
+  const bodyColorIdx =
+    overrideColorIdx === -1
+      ? targets.every((t) => t.colorIdx === targets[0].colorIdx)
+        ? targets[0].colorIdx
+        : -1
+      : overrideColorIdx;
 
   return {
     id: _bodyIdCounter++,
@@ -364,7 +391,9 @@ const trySpawnShape = (
 ): Body | null => {
   if (bodies.length >= 200) return null;
   const s = getShapeSize(arena);
-  let spawnX = 0, spawnY = 0, found = false;
+  let spawnX = 0,
+    spawnY = 0,
+    found = false;
 
   for (const clearanceMult of [2.0, 1.4, 1.0, 0.6]) {
     const clearance = s * clearanceMult;
@@ -379,7 +408,12 @@ const trySpawnShape = (
           return distancePt({ x: tr.x, y: tr.y }, { x: cx, y: cy }) > clearance;
         });
       });
-      if (clear) { spawnX = cx; spawnY = cy; found = true; break; }
+      if (clear) {
+        spawnX = cx;
+        spawnY = cy;
+        found = true;
+        break;
+      }
     }
     if (found) break;
   }
@@ -479,7 +513,7 @@ const getBodyCollision = (a: Body, b: Body): Collision | null => {
 
   if (a.isCluster || b.isCluster) {
     const skeleton = a.isCluster ? a : b;
-    const mover    = a.isCluster ? b : a;
+    const mover = a.isCluster ? b : a;
 
     // Mega skeleton: always passable (assembled groups snap through it; squares ignore it)
     if (skeleton.colorIdx === -1) return null;
@@ -490,12 +524,12 @@ const getBodyCollision = (a: Body, b: Body): Collision | null => {
 
     // Different-color loose square bounces off only the FILLED pieces of the skeleton
     if (a.isCluster) aPieces = a.pieces.filter((p) => p.filled);
-    else             bPieces = b.pieces.filter((p) => p.filled);
+    else bPieces = b.pieces.filter((p) => p.filled);
   } else {
     // Both solid: loose square passes through assembled group of its own color
     if (a.isAssembled !== b.isAssembled) {
       const assembled = a.isAssembled ? a : b;
-      const loose     = a.isAssembled ? b : a;
+      const loose = a.isAssembled ? b : a;
       if (assembled.colorIdx === loose.colorIdx) return null;
     }
   }
@@ -538,7 +572,9 @@ const snapToCluster = (
     const wt = getPieceWorldTransform(body, piece);
 
     // Each loose square only snaps into its matching-color GROUP skeleton (not the mega)
-    const cluster = clusters.find((c) => c.colorIdx === body.colorIdx && c.colorIdx !== -1);
+    const cluster = clusters.find(
+      (c) => c.colorIdx === body.colorIdx && c.colorIdx !== -1,
+    );
     if (!cluster) continue;
 
     for (const cp of cluster.pieces) {
@@ -644,7 +680,8 @@ const resolveBodyCollisions = (
 ) => {
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
-      const a = bodies[i], b = bodies[j];
+      const a = bodies[i],
+        b = bodies[j];
       const col = getBodyCollision(a, b);
       if (!col) continue;
       const { normal, overlap } = col;
@@ -672,8 +709,14 @@ const resolveBodyCollisions = (
         preserveBodySpeed(b, arena);
       }
       // Only loose squares flash red on hit; skeletons and assembled groups don't glow
-      if (!a.isAssembled && !a.isCluster) { a.glowColor = "red"; a.glowTime = 0.25; }
-      if (!b.isAssembled && !b.isCluster) { b.glowColor = "red"; b.glowTime = 0.25; }
+      if (!a.isAssembled && !a.isCluster) {
+        a.glowColor = "red";
+        a.glowTime = 0.25;
+      }
+      if (!b.isAssembled && !b.isCluster) {
+        b.glowColor = "red";
+        b.glowTime = 0.25;
+      }
       audio?.playCollision(a.id);
       audio?.playCollision(b.id);
     }
@@ -795,7 +838,12 @@ const drawArenaFrame = (
     const textBottomY = arena.y - 4 * s;
     const maxHeadingWidth = Math.min(arena.width + 8, W - 24);
     const maxHeadingSize = isMobile ? 22 : 28;
-    const headingLines = getHeadingLines(ctx, headingText, maxHeadingWidth, maxHeadingSize);
+    const headingLines = getHeadingLines(
+      ctx,
+      headingText,
+      maxHeadingWidth,
+      maxHeadingSize,
+    );
     const headingSize = getFittedFontSize(
       ctx,
       headingLines,
@@ -917,7 +965,6 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
   });
 };
 
-
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const makeEmptyGrid = (): CellKind[][] =>
@@ -933,7 +980,9 @@ const SquareAssembly = () => {
   const clusterBodiesRef = useRef<Body[]>([]); // color-group skeletons
   const megaClusterRef = useRef<Body | null>(null); // the one mega skeleton
   // per-color offset (px) from mega skeleton center to that color group's center
-  const groupOffsetsRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const groupOffsetsRef = useRef<Map<number, { x: number; y: number }>>(
+    new Map(),
+  );
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
   const startTimeRef = useRef(0);
@@ -953,11 +1002,21 @@ const SquareAssembly = () => {
     const arena = arenaRef.current;
     if (!arena) return;
 
-    const targets: Array<{ col: number; row: number; kind: PieceKind; colorIdx: number }> = [];
+    const targets: Array<{
+      col: number;
+      row: number;
+      kind: PieceKind;
+      colorIdx: number;
+    }> = [];
     gridRef.current.forEach((row, r) => {
       row.forEach((cell, c) => {
         if (cell !== "empty")
-          targets.push({ col: c, row: r, kind: "square", colorIdx: cell as number });
+          targets.push({
+            col: c,
+            row: r,
+            kind: "square",
+            colorIdx: cell as number,
+          });
       });
     });
 
@@ -978,14 +1037,18 @@ const SquareAssembly = () => {
     }
 
     const s = getShapeSize(arena);
-    const overallAvgCol = targets.reduce((sum, t) => sum + t.col, 0) / targets.length;
-    const overallAvgRow = targets.reduce((sum, t) => sum + t.row, 0) / targets.length;
+    const overallAvgCol =
+      targets.reduce((sum, t) => sum + t.col, 0) / targets.length;
+    const overallAvgRow =
+      targets.reduce((sum, t) => sum + t.row, 0) / targets.length;
 
     // Compute per-color offset from mega skeleton center
     const newGroupOffsets = new Map<number, { x: number; y: number }>();
     for (const [colorIdx, colorTargets] of byColor) {
-      const subAvgCol = colorTargets.reduce((sum, t) => sum + t.col, 0) / colorTargets.length;
-      const subAvgRow = colorTargets.reduce((sum, t) => sum + t.row, 0) / colorTargets.length;
+      const subAvgCol =
+        colorTargets.reduce((sum, t) => sum + t.col, 0) / colorTargets.length;
+      const subAvgRow =
+        colorTargets.reduce((sum, t) => sum + t.row, 0) / colorTargets.length;
       newGroupOffsets.set(colorIdx, {
         x: (subAvgCol - overallAvgCol) * s,
         y: (subAvgRow - overallAvgRow) * s,
@@ -1109,6 +1172,7 @@ const SquareAssembly = () => {
           resolveWallCollisions(arena, bodiesRef.current, (bodyId) =>
             audioRef.current?.playCollision(bodyId),
           );
+
           resolveBodyCollisions(arena, bodiesRef.current, audioRef.current);
           if (mergingStarted) {
             // Level 1: loose squares snap into color-group skeletons
@@ -1118,7 +1182,10 @@ const SquareAssembly = () => {
             // Level 2: assembled color-groups snap into mega skeleton
             if (mega && mega.isCluster) {
               snapGroupsIntoMega(
-                bodiesRef.current, mega, groupOffsetsRef.current, arena,
+                bodiesRef.current,
+                mega,
+                groupOffsetsRef.current,
+                arena,
                 () => audioRef.current?.playAttach(),
               );
             }
@@ -1126,7 +1193,9 @@ const SquareAssembly = () => {
         }
 
         // Update DOM countdown
-        const nextCountdown = mergingStarted ? null : Math.ceil(MERGE_DELAY - elapsedSec);
+        const nextCountdown = mergingStarted
+          ? null
+          : Math.ceil(MERGE_DELAY - elapsedSec);
         if (nextCountdown !== mergeCountdownRef.current) {
           mergeCountdownRef.current = nextCountdown;
           setMergeCountdown(nextCountdown);
@@ -1155,7 +1224,12 @@ const SquareAssembly = () => {
       const rect = canvas.getBoundingClientRect();
       const col = Math.floor((pe.clientX - rect.left - arena.x) / s);
       const row = Math.floor((pe.clientY - rect.top - arena.y) / s);
-      if (col >= 0 && col < GRID_DIVISIONS && row >= 0 && row < GRID_DIVISIONS) {
+      if (
+        col >= 0 &&
+        col < GRID_DIVISIONS &&
+        row >= 0 &&
+        row < GRID_DIVISIONS
+      ) {
         const cur = gridRef.current[row][col];
         const brush = activeBrushRef.current as CellKind;
         // clicking same color erases; otherwise paint with active brush
@@ -1165,17 +1239,25 @@ const SquareAssembly = () => {
 
     window.addEventListener("resize", handleResize);
     // pointerdown covers mouse, touch, and stylus uniformly — no touch/click split needed
-    canvas.addEventListener("pointerdown", handleCanvasInteraction as EventListener);
+    canvas.addEventListener(
+      "pointerdown",
+      handleCanvasInteraction as EventListener,
+    );
 
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", handleResize);
-      canvas.removeEventListener("pointerdown", handleCanvasInteraction as EventListener);
+      canvas.removeEventListener(
+        "pointerdown",
+        handleCanvasInteraction as EventListener,
+      );
     };
   }, []);
 
   return (
-    <div className={`assembly-root${phase === "editor" ? " editor-cursor" : ""}`}>
+    <div
+      className={`assembly-root${phase === "editor" ? " editor-cursor" : ""}`}
+    >
       <canvas ref={canvasRef} className="assembly-canvas" />
 
       <div className="bottom-bar">
@@ -1187,7 +1269,10 @@ const SquareAssembly = () => {
                   key={idx}
                   className={`brush-btn${activeBrush === idx ? " brush-active" : ""}`}
                   style={{ "--brush-color": color } as React.CSSProperties}
-                  onClick={() => { setActiveBrush(idx); activeBrushRef.current = idx; }}
+                  onClick={() => {
+                    setActiveBrush(idx);
+                    activeBrushRef.current = idx;
+                  }}
                   aria-label={`Color ${idx + 1}`}
                 />
               ))}
@@ -1198,7 +1283,9 @@ const SquareAssembly = () => {
             <div className="editor-actions">
               <button
                 className="btn-clear"
-                onClick={() => { gridRef.current = makeEmptyGrid(); }}
+                onClick={() => {
+                  gridRef.current = makeEmptyGrid();
+                }}
               >
                 Clear
               </button>
@@ -1211,7 +1298,8 @@ const SquareAssembly = () => {
           <>
             {mergeCountdown !== null && (
               <p className="merge-countdown">
-                Merging will begin in {mergeCountdown} sec{mergeCountdown !== 1 ? "s" : ""}
+                Merging will begin in {mergeCountdown} sec
+                {mergeCountdown !== 1 ? "s" : ""}
               </p>
             )}
             <button className="btn-edit" onClick={resetToEditor}>
@@ -1272,7 +1360,10 @@ const SquareAssembly = () => {
           border: 2.5px solid transparent;
           cursor: pointer;
           opacity: 0.7;
-          transition: opacity 0.15s, border-color 0.15s, transform 0.12s;
+          transition:
+            opacity 0.15s,
+            border-color 0.15s,
+            transform 0.12s;
           flex-shrink: 0;
         }
         .brush-btn:hover {
