@@ -69,9 +69,6 @@ const GRID_DIVISIONS = 25;
 const BODY_SPEED_RATIO = 0.3;
 const GLOW_DURATION = 0.5;
 const MAX_DT = 1 / 30;
-const INITIAL_SHAPE_COUNT = 6;
-const SPAWN_INTERVAL_SECS = 0.8;
-const MAX_BODIES = 40;
 
 const SQUARE_COLOR = "#d77026";
 
@@ -335,7 +332,7 @@ const trySpawnShape = (
   bodies: Body[],
   _cluster: Body | null,
 ): Body | null => {
-  if (bodies.length >= MAX_BODIES) return null;
+  if (bodies.length >= 200) return null; // hard safety cap
   const s = getShapeSize(arena);
   const clearance = s * 2.2;
   const margin = clearance;
@@ -863,13 +860,10 @@ const SquareAssembly = () => {
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
   const startTimeRef = useRef(0);
-  const spawnTimerRef = useRef(SPAWN_INTERVAL_SECS);
   const phaseRef = useRef<GamePhase>("editor");
   const gridRef = useRef<CellKind[][]>(makeEmptyGrid());
   const completedRef = useRef(false);
   const completionTimeRef = useRef(0);
-  const maxSpawnRef = useRef(0);
-  const totalSpawnedRef = useRef(0);
   const [phase, setPhase] = useState<GamePhase>("editor");
   const [completed, setCompleted] = useState(false);
   const [completionSecs, setCompletionSecs] = useState(0);
@@ -901,19 +895,14 @@ const SquareAssembly = () => {
     const cluster = createClusterBody(targets, arena);
     clusterBodyRef.current = cluster;
 
-    maxSpawnRef.current = targets.length;
-    totalSpawnedRef.current = 0;
-
-    // Spawn initial batch (capped at grid count)
-    const initBodies: Body[] = [cluster];
-    const initCount = Math.min(INITIAL_SHAPE_COUNT, targets.length);
-    for (let i = 0; i < initCount; i++) {
-      const b = trySpawnShape(arena, initBodies, cluster);
-      if (b) { initBodies.push(b); totalSpawnedRef.current++; }
+    // Spawn exactly as many loose squares as the user designed
+    const allBodies: Body[] = [cluster];
+    for (let i = 0; i < targets.length; i++) {
+      const b = trySpawnShape(arena, allBodies, cluster);
+      if (b) allBodies.push(b);
     }
-    bodiesRef.current = initBodies;
+    bodiesRef.current = allBodies;
 
-    spawnTimerRef.current = SPAWN_INTERVAL_SECS;
     startTimeRef.current = 0;
     lastTimeRef.current = performance.now();
     completedRef.current = false;
@@ -972,15 +961,6 @@ const SquareAssembly = () => {
         }
 
         if (!completedRef.current) {
-          if (totalSpawnedRef.current < maxSpawnRef.current) {
-            spawnTimerRef.current -= dt;
-            if (spawnTimerRef.current <= 0) {
-              spawnTimerRef.current = SPAWN_INTERVAL_SECS;
-              const body = trySpawnShape(arena, bodiesRef.current, cluster);
-              if (body) { bodiesRef.current.push(body); totalSpawnedRef.current++; }
-            }
-          }
-
           const subDt = dt / PHYSICS_SUBSTEPS;
           for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
             bodiesRef.current.forEach((body) => {
