@@ -67,6 +67,7 @@ const PHYSICS_SUBSTEPS = 4;
 const RESTITUTION = 1.0;
 const GRID_DIVISIONS = 25;
 const BODY_SPEED_RATIO = 0.45; // 2× the previous 0.225
+const PLAY_COLOR = "#f97316"; // all pieces render as orange during simulation
 
 const SELECTOR_COLORS = [
   "#ef4444", // red
@@ -953,7 +954,7 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
     ctx.closePath();
     ctx.shadowColor = glowCol;
     ctx.shadowBlur = 12 + body.glowTime * 38;
-    ctx.fillStyle = piece.color;
+    ctx.fillStyle = PLAY_COLOR;
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.strokeStyle = piece.filled
