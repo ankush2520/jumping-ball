@@ -7,7 +7,8 @@ import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 type Point = { x: number; y: number };
 type PieceKind = "square";
-type CellKind = "empty" | "square";
+// 0-4 = color index; "empty" = unselected
+type CellKind = "empty" | 0 | 1 | 2 | 3 | 4;
 type GamePhase = "editor" | "simulation";
 
 type EdgeSlot = { index: number; attached: boolean };
@@ -22,6 +23,7 @@ type Piece = {
   vertices: Point[];
   edges: EdgeSlot[];
   filled: boolean; // false = ghost slot on cluster, true = real piece
+  colorIdx: number; // 0-4: which color group this slot/piece belongs to
 };
 
 type Body = {
@@ -37,6 +39,7 @@ type Body = {
   glowTime: number;
   attachPulse: number;
   isCluster: boolean; // the moving target body
+  colorIdx: number;   // for loose squares: 0-4; for cluster: -1 (mixed colors)
 };
 
 type Arena = {
@@ -62,11 +65,18 @@ type AssemblyAudio = {
 const PHYSICS_SUBSTEPS = 4;
 const RESTITUTION = 1.0;
 const GRID_DIVISIONS = 25;
-const BODY_SPEED_RATIO = 0.15;
+const BODY_SPEED_RATIO = 0.225; // 1.5× the previous 0.15
+
+const SELECTOR_COLORS = [
+  "#ef4444", // red
+  "#3b82f6", // blue
+  "#22c55e", // green
+  "#eab308", // yellow
+  "#a855f7", // purple
+] as const;
 const GLOW_DURATION = 0.5;
 const MAX_DT = 1 / 30;
 
-const SQUARE_COLOR = "#d77026";
 
 let sharedAudioContext: AudioContext | null = null;
 let _bodyIdCounter = 0;
@@ -296,33 +306,30 @@ const preserveBodySpeed = (body: Body, arena: Arena) => {
 // Build the moving cluster from the user's grid design.
 // Pieces start as ghost (filled=false); loose pieces snap in over time.
 const createClusterBody = (
-  targets: Array<{ col: number; row: number; kind: PieceKind }>,
+  targets: Array<{ col: number; row: number; kind: PieceKind; colorIdx: number }>,
   arena: Arena,
 ): Body => {
   const s = getShapeSize(arena);
-  const avgCol =
-    targets.reduce((sum, t) => sum + t.col, 0) / targets.length;
-  const avgRow =
-    targets.reduce((sum, t) => sum + t.row, 0) / targets.length;
+  const avgCol = targets.reduce((sum, t) => sum + t.col, 0) / targets.length;
+  const avgRow = targets.reduce((sum, t) => sum + t.row, 0) / targets.length;
 
   const pieces: Piece[] = targets.map((t) => ({
     id: _pieceIdCounter++,
     kind: t.kind,
-    color: SQUARE_COLOR,
+    color: SELECTOR_COLORS[t.colorIdx],
     localX: (t.col - avgCol) * s,
     localY: (t.row - avgRow) * s,
     localRotation: 0,
     vertices: getPieceLocalVerts(t.kind, s),
     edges: getEdgeSlots(),
     filled: false,
+    colorIdx: t.colorIdx,
   }));
 
   const speed = getBodySpeed(arena);
   const angle = rng(0, Math.PI * 2);
-  const spawnX =
-    arena.x + arena.width * (0.3 + Math.random() * 0.4);
-  const spawnY =
-    arena.y + arena.height * (0.3 + Math.random() * 0.4);
+  const spawnX = arena.x + arena.width * (0.3 + Math.random() * 0.4);
+  const spawnY = arena.y + arena.height * (0.3 + Math.random() * 0.4);
 
   return {
     id: _bodyIdCounter++,
@@ -337,6 +344,7 @@ const createClusterBody = (
     glowTime: 0,
     attachPulse: 0,
     isCluster: true,
+    colorIdx: targets[0].colorIdx, // single-color cluster
   };
 };
 
@@ -344,12 +352,12 @@ const trySpawnShape = (
   arena: Arena,
   bodies: Body[],
   _cluster: Body | null,
+  colorIdx: number,
 ): Body | null => {
   if (bodies.length >= 200) return null;
   const s = getShapeSize(arena);
   let spawnX = 0, spawnY = 0, found = false;
 
-  // Try progressively tighter clearance so we always fit every square
   for (const clearanceMult of [2.0, 1.4, 1.0, 0.6]) {
     const clearance = s * clearanceMult;
     const margin = s;
@@ -371,9 +379,9 @@ const trySpawnShape = (
   if (!found) return null;
 
   const kind: PieceKind = "square";
-
   const speed = getBodySpeed(arena);
   const angle = rng(0, Math.PI * 2);
+  const color = SELECTOR_COLORS[colorIdx];
 
   return {
     id: _bodyIdCounter++,
@@ -387,19 +395,21 @@ const trySpawnShape = (
       {
         id: _pieceIdCounter++,
         kind,
-        color: SQUARE_COLOR,
+        color,
         localX: 0,
         localY: 0,
         localRotation: 0,
         vertices: getPieceLocalVerts(kind, s),
         edges: getEdgeSlots(),
         filled: true,
+        colorIdx,
       },
     ],
     glowColor: "none",
     glowTime: 0,
     attachPulse: 0,
     isCluster: false,
+    colorIdx,
   };
 };
 
@@ -449,11 +459,13 @@ const getPolyCollision = (
   };
 };
 
-const getBodyCollision = (a: Body, b: Body): Collision | null => {
-  // For the cluster, only filled pieces have solid geometry.
-  // Ghost slots stay passable so loose squares can approach and snap in.
-  const aPieces = a.isCluster ? a.pieces.filter((p) => p.filled) : a.pieces;
-  const bPieces = b.isCluster ? b.pieces.filter((p) => p.filled) : b.pieces;
+const getBodyCollision = (a: Body, b: Body, clusterSolid: boolean): Collision | null => {
+  // Clusters never block each other — they're separate color-group shapes
+  if (a.isCluster && b.isCluster) return null;
+  // Before 20s: cluster is a solid obstacle (all pieces block, including ghost slots).
+  // After 20s: cluster is fully passable — loose squares pass through to reach their slots.
+  const aPieces = a.isCluster ? (clusterSolid ? a.pieces : []) : a.pieces;
+  const bPieces = b.isCluster ? (clusterSolid ? b.pieces : []) : b.pieces;
   if (aPieces.length === 0 || bPieces.length === 0) return null;
   let best: Collision | null = null;
   for (const ap of aPieces) {
@@ -476,21 +488,24 @@ const getBodyCollision = (a: Body, b: Body): Collision | null => {
 // Snap threshold grows gently over time so late-game stragglers always eventually land.
 const snapToCluster = (
   bodies: Body[],
-  cluster: Body,
+  clusters: Body[],
   arena: Arena,
   elapsedSec: number,
   onSnap: () => void,
 ) => {
   const s = getShapeSize(arena);
-  // 0–50 s: stays at 0.65 cells; 50 s+: grows to 2.5 cells over 40 s
-  const magnetT = elapsedSec > 20 ? Math.min(1, (elapsedSec - 20) / 40) : 0;
-  const threshold = s * (0.65 + magnetT * 1.85);
+  // After 20s squares pass through clusters, so use a larger snap radius
+  const threshold = elapsedSec >= 20 ? s * 1.1 : s * 0.65;
 
   for (let i = bodies.length - 1; i >= 0; i--) {
     const body = bodies[i];
     if (body.isCluster) continue;
     const piece = body.pieces[0];
     const wt = getPieceWorldTransform(body, piece);
+
+    // Each loose square only snaps into its matching-color cluster
+    const cluster = clusters.find((c) => c.colorIdx === body.colorIdx);
+    if (!cluster) continue;
 
     for (const cp of cluster.pieces) {
       if (cp.filled) continue;
@@ -505,93 +520,6 @@ const snapToCluster = (
         break;
       }
     }
-  }
-};
-
-// Phase 1 (0–50 s): gentle velocity steering toward nearest unfilled slot.
-// Phase 2 (50 s+): escalating magnet — stronger steering + direct velocity pull
-//                  + a position nudge that bypasses bouncing entirely.
-// The position nudge is the key to guaranteeing completion: wall reflections
-// reset velocity direction but can't undo a direct position shift.
-const applyClusterAttraction = (
-  bodies: Body[],
-  cluster: Body,
-  arena: Arena,
-  subDt: number,
-  elapsedSec: number,
-) => {
-  const s = getShapeSize(arena);
-  const magnetActive = elapsedSec >= 20;
-  const magnetT = magnetActive ? Math.min(1, (elapsedSec - 20) / 40) : 0;
-
-  // Attract radius: 3.5 cells normally, grows to fill entire arena in magnet phase
-  const attractRadius = magnetActive
-    ? arena.width * 2           // whole arena when magnet is on
-    : s * 3.5;
-
-  // Steer: gentle normally, strong in magnet phase
-  const maxSteerPerSec = magnetActive ? 4 + magnetT * 10 : 1.8;
-
-  // Direct pull: velocity component added toward slot each substep (magnet only)
-  const pullAccel = magnetT * 280; // px / s²
-
-  // Position nudge: direct position shift toward slot, bypasses velocity (magnet only)
-  // Grows from 0 → 90 px/s over 40 s after trigger
-  const nudgeSpeed = magnetT * 90; // px / s
-
-  for (const body of bodies) {
-    if (body.isCluster) continue;
-    const piece = body.pieces[0];
-    const wt = getPieceWorldTransform(body, piece);
-
-    let nearDist = Infinity;
-    let nearX = 0, nearY = 0;
-    for (const cp of cluster.pieces) {
-      if (cp.filled) continue;
-      const cwt = getPieceWorldTransform(cluster, cp);
-      const d = Math.hypot(cwt.x - wt.x, cwt.y - wt.y);
-      if (d < nearDist) { nearDist = d; nearX = cwt.x; nearY = cwt.y; }
-    }
-
-    if (nearDist >= attractRadius || nearDist < 0.5) continue;
-
-    const dx = nearX - wt.x;
-    const dy = nearY - wt.y;
-    const invDist = 1 / nearDist;
-
-    // ── 1. Velocity steering (bend direction toward slot) ──
-    const falloff = Math.max(0, 1 - nearDist / attractRadius);
-    const steerPerSec = maxSteerPerSec * falloff * falloff;
-    const targetAngle = Math.atan2(dy, dx);
-    const curAngle = Math.atan2(body.vy, body.vx);
-    let diff = targetAngle - curAngle;
-    while (diff > Math.PI) diff -= 2 * Math.PI;
-    while (diff < -Math.PI) diff += 2 * Math.PI;
-    const steer = Math.sign(diff) * Math.min(Math.abs(diff), steerPerSec * subDt);
-    const curSpeed = Math.hypot(body.vx, body.vy);
-    if (curSpeed > 0.01) {
-      const newAngle = curAngle + steer;
-      body.vx = Math.cos(newAngle) * curSpeed;
-      body.vy = Math.sin(newAngle) * curSpeed;
-    }
-
-    if (!magnetActive) continue;
-
-    // ── 2. Velocity pull (acceleration toward slot) ──
-    body.vx += dx * invDist * pullAccel * subDt;
-    body.vy += dy * invDist * pullAccel * subDt;
-    // Keep speed from going wild — cap at 2× normal
-    const newSpeed = Math.hypot(body.vx, body.vy);
-    const speedCap = getBodySpeed(arena) * (1 + magnetT);
-    if (newSpeed > speedCap) {
-      body.vx = (body.vx / newSpeed) * speedCap;
-      body.vy = (body.vy / newSpeed) * speedCap;
-    }
-
-    // ── 3. Position nudge (direct drift, immune to wall reflections) ──
-    const moveDist = Math.min(nearDist * 0.9, nudgeSpeed * subDt);
-    body.x += dx * invDist * moveDist;
-    body.y += dy * invDist * moveDist;
   }
 };
 
@@ -652,9 +580,7 @@ const resolveBodyCollisions = (
     for (let j = i + 1; j < bodies.length; j++) {
       const a = bodies[i],
         b = bodies[j];
-      // After 50 s merge time, cluster becomes ghost — loose squares pass through
-      if (!clusterSolid && (a.isCluster || b.isCluster)) continue;
-      const col = getBodyCollision(a, b);
+      const col = getBodyCollision(a, b, clusterSolid);
       if (!col) continue;
       const { normal, overlap } = col;
       const correction = overlap * 0.6 + 0.5;
@@ -862,13 +788,14 @@ const drawEditorGrid = (
     for (let c = 0; c < GRID_DIVISIONS; c++) {
       const kind = grid[r][c];
       if (kind === "empty") continue;
+      const color = SELECTOR_COLORS[kind as number];
       const cx = arena.x + (c + 0.5) * s;
       const cy = arena.y + (r + 0.5) * s;
       ctx.save();
       ctx.translate(cx, cy);
-      ctx.fillStyle = SQUARE_COLOR;
-      ctx.shadowColor = "rgba(215,112,38,0.7)";
-      ctx.shadowBlur = 7;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 6;
       const h = s / 2 - 1;
       ctx.fillRect(-h, -h, h * 2, h * 2);
       ctx.restore();
@@ -887,13 +814,34 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
   const pulse = 1 + body.attachPulse * 0.07;
 
   body.pieces.forEach((piece) => {
-    if (!piece.filled) return; // ghost slots are invisible
     const tr = getPieceWorldTransform(body, piece);
     ctx.save();
     ctx.translate(body.x, body.y);
     ctx.scale(pulse, pulse);
     ctx.translate(tr.x - body.x, tr.y - body.y);
     ctx.rotate(tr.rotation);
+
+    if (!piece.filled) {
+      // Ghost slot: draw faint colored outline so player can see the target shape
+      if (body.isCluster) {
+        ctx.globalAlpha = 0.22;
+        ctx.strokeStyle = piece.color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        piece.vertices.forEach((v, i) => {
+          if (i === 0) ctx.moveTo(v.x, v.y);
+          else ctx.lineTo(v.x, v.y);
+        });
+        ctx.closePath();
+        ctx.stroke();
+        ctx.globalAlpha = 0.06;
+        ctx.fillStyle = piece.color;
+        ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
+
     ctx.globalAlpha = 1;
     ctx.beginPath();
     piece.vertices.forEach((v, i) => {
@@ -901,10 +849,8 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
       else ctx.lineTo(v.x, v.y);
     });
     ctx.closePath();
-    if (piece.filled) {
-      ctx.shadowColor = glowCol;
-      ctx.shadowBlur = 12 + body.glowTime * 38;
-    }
+    ctx.shadowColor = glowCol;
+    ctx.shadowBlur = 12 + body.glowTime * 38;
     ctx.fillStyle = piece.color;
     ctx.fill();
     ctx.shadowBlur = 0;
@@ -930,7 +876,10 @@ const SquareAssembly = () => {
   const audioRef = useRef<AssemblyAudio | null>(null);
   const arenaRef = useRef<Arena | null>(null);
   const bodiesRef = useRef<Body[]>([]);
-  const clusterBodyRef = useRef<Body | null>(null);
+  const clusterBodiesRef = useRef<Body[]>([]);
+  // target arena position for each color's cluster during final merge
+  const clusterTargetsRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const isMergingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef(0);
   const startTimeRef = useRef(0);
@@ -938,9 +887,11 @@ const SquareAssembly = () => {
   const gridRef = useRef<CellKind[][]>(makeEmptyGrid());
   const completeSoundPlayedRef = useRef(false);
   const mergeCountdownRef = useRef<number | null>(null);
+  const activeBrushRef = useRef<number>(0);
   const [phase, setPhase] = useState<GamePhase>("editor");
   const [editorError, setEditorError] = useState(false);
   const [mergeCountdown, setMergeCountdown] = useState<number | null>(null);
+  const [activeBrush, setActiveBrush] = useState<number>(0);
 
   if (audioRef.current === null) audioRef.current = createAudio();
 
@@ -948,11 +899,11 @@ const SquareAssembly = () => {
     const arena = arenaRef.current;
     if (!arena) return;
 
-    const targets: Array<{ col: number; row: number; kind: PieceKind }> = [];
+    const targets: Array<{ col: number; row: number; kind: PieceKind; colorIdx: number }> = [];
     gridRef.current.forEach((row, r) => {
       row.forEach((cell, c) => {
         if (cell !== "empty")
-          targets.push({ col: c, row: r, kind: "square" });
+          targets.push({ col: c, row: r, kind: "square", colorIdx: cell as number });
       });
     });
 
@@ -965,15 +916,43 @@ const SquareAssembly = () => {
     _bodyIdCounter = 0;
     _pieceIdCounter = 0;
 
-    const cluster = createClusterBody(targets, arena);
-    clusterBodyRef.current = cluster;
-
-    // Spawn exactly as many loose squares as the user designed
-    const allBodies: Body[] = [cluster];
-    for (let i = 0; i < targets.length; i++) {
-      const b = trySpawnShape(arena, allBodies, cluster);
-      if (b) allBodies.push(b);
+    // Group cells by color — each color gets its own cluster body
+    const byColor = new Map<number, typeof targets>();
+    for (const t of targets) {
+      if (!byColor.has(t.colorIdx)) byColor.set(t.colorIdx, []);
+      byColor.get(t.colorIdx)!.push(t);
     }
+
+    // Overall centroid in grid coords — used to compute per-cluster target offsets
+    const s = getShapeSize(arena);
+    const overallAvgCol = targets.reduce((sum, t) => sum + t.col, 0) / targets.length;
+    const overallAvgRow = targets.reduce((sum, t) => sum + t.row, 0) / targets.length;
+    const newTargets = new Map<number, { x: number; y: number }>();
+
+    const allBodies: Body[] = [];
+    const clusters: Body[] = [];
+
+    for (const [colorIdx, colorTargets] of byColor) {
+      const cluster = createClusterBody(colorTargets, arena);
+      // Final merge target: arena center + this color group's offset from overall centroid
+      const subAvgCol = colorTargets.reduce((sum, t) => sum + t.col, 0) / colorTargets.length;
+      const subAvgRow = colorTargets.reduce((sum, t) => sum + t.row, 0) / colorTargets.length;
+      newTargets.set(colorIdx, {
+        x: arena.x + arena.width / 2 + (subAvgCol - overallAvgCol) * s,
+        y: arena.y + arena.height / 2 + (subAvgRow - overallAvgRow) * s,
+      });
+      clusters.push(cluster);
+      allBodies.push(cluster);
+      for (const t of colorTargets) {
+        const b = trySpawnShape(arena, allBodies, cluster, colorIdx);
+        if (b) allBodies.push(b);
+        void t; // used only for count
+      }
+    }
+
+    clusterBodiesRef.current = clusters;
+    clusterTargetsRef.current = newTargets;
+    isMergingRef.current = false;
     bodiesRef.current = allBodies;
 
     startTimeRef.current = 0;
@@ -986,7 +965,9 @@ const SquareAssembly = () => {
 
   const resetToEditor = useCallback(() => {
     bodiesRef.current = [];
-    clusterBodyRef.current = null;
+    clusterBodiesRef.current = [];
+    clusterTargetsRef.current = new Map();
+    isMergingRef.current = false;
     completeSoundPlayedRef.current = false;
     phaseRef.current = "editor";
     setPhase("editor");
@@ -1022,24 +1003,46 @@ const SquareAssembly = () => {
         const dt = Math.min((time - lastTimeRef.current) / 1000, MAX_DT);
         lastTimeRef.current = time;
 
-        const cluster = clusterBodyRef.current;
-        const total = cluster ? cluster.pieces.length : 0;
-        const filled = cluster
-          ? cluster.pieces.filter((p) => p.filled).length
-          : 0;
-        const allFilled = total > 0 && filled === total;
+        const clusters = clusterBodiesRef.current;
+        const allClustersComplete =
+          clusters.length > 0 &&
+          clusters.every((c) => c.pieces.every((p) => p.filled));
         const elapsedSec = (time - startTimeRef.current) / 1000;
 
-        // Play completion sound once when all slots filled, then keep running
-        if (allFilled && !completeSoundPlayedRef.current) {
-          completeSoundPlayedRef.current = true;
-          audioRef.current?.playComplete();
-        }
-
         const MERGE_DELAY = 5;
-        const mergeElapsed = Math.max(0, elapsedSec - MERGE_DELAY);
         const mergingStarted = elapsedSec >= MERGE_DELAY;
-        const clusterSolid = mergeElapsed < 50;
+        // Before 20s: clusters are solid obstacles; after 20s: squares pass through
+        const clusterSolid = elapsedSec < 20;
+
+        // ── Merge phase: once all clusters complete, home them to designed positions ──
+        if (allClustersComplete && !isMergingRef.current) {
+          isMergingRef.current = true;
+        }
+        if (isMergingRef.current) {
+          let allAtTarget = true;
+          for (const cluster of clusters) {
+            const target = clusterTargetsRef.current.get(cluster.colorIdx);
+            if (!target) continue;
+            const dx = target.x - cluster.x;
+            const dy = target.y - cluster.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist > 3) {
+              allAtTarget = false;
+              const spd = Math.min(dist * 3, 350);
+              cluster.vx = (dx / dist) * spd;
+              cluster.vy = (dy / dist) * spd;
+            } else {
+              cluster.x = target.x;
+              cluster.y = target.y;
+              cluster.vx = 0;
+              cluster.vy = 0;
+            }
+          }
+          if (allAtTarget && !completeSoundPlayedRef.current) {
+            completeSoundPlayedRef.current = true;
+            audioRef.current?.playComplete();
+          }
+        }
 
         const subDt = dt / PHYSICS_SUBSTEPS;
         for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
@@ -1050,19 +1053,19 @@ const SquareAssembly = () => {
             body.attachPulse = Math.max(0, body.attachPulse - subDt * 3.2);
             if (body.glowTime <= 0) body.glowColor = "none";
           });
+          // Clusters still bounce off walls (including during merge animation)
           resolveWallCollisions(arena, bodiesRef.current, (bodyId) =>
             audioRef.current?.playCollision(bodyId),
           );
           resolveBodyCollisions(arena, bodiesRef.current, audioRef.current, clusterSolid);
-          if (cluster && mergingStarted && !allFilled) {
-            applyClusterAttraction(bodiesRef.current, cluster, arena, subDt, mergeElapsed);
-            snapToCluster(bodiesRef.current, cluster, arena, mergeElapsed, () =>
+          if (mergingStarted && !allClustersComplete) {
+            snapToCluster(bodiesRef.current, clusters, arena, elapsedSec, () =>
               audioRef.current?.playAttach(),
             );
           }
         }
 
-        // Update DOM countdown (only re-renders on value change, max 6 times)
+        // Update DOM countdown
         const nextCountdown = mergingStarted ? null : Math.ceil(MERGE_DELAY - elapsedSec);
         if (nextCountdown !== mergeCountdownRef.current) {
           mergeCountdownRef.current = nextCountdown;
@@ -1094,7 +1097,9 @@ const SquareAssembly = () => {
       const row = Math.floor((pe.clientY - rect.top - arena.y) / s);
       if (col >= 0 && col < GRID_DIVISIONS && row >= 0 && row < GRID_DIVISIONS) {
         const cur = gridRef.current[row][col];
-        gridRef.current[row][col] = cur === "empty" ? "square" : "empty";
+        const brush = activeBrushRef.current as CellKind;
+        // clicking same color erases; otherwise paint with active brush
+        gridRef.current[row][col] = cur === brush ? "empty" : brush;
       }
     };
 
@@ -1116,9 +1121,17 @@ const SquareAssembly = () => {
       <div className="bottom-bar">
         {phase === "editor" ? (
           <>
-            <p className="editor-hint">
-              Click cells to place&nbsp;<span className="sq-swatch">■</span>&nbsp;squares, click again to remove
-            </p>
+            <div className="color-palette">
+              {SELECTOR_COLORS.map((color, idx) => (
+                <button
+                  key={idx}
+                  className={`brush-btn${activeBrush === idx ? " brush-active" : ""}`}
+                  style={{ "--brush-color": color } as React.CSSProperties}
+                  onClick={() => { setActiveBrush(idx); activeBrushRef.current = idx; }}
+                  aria-label={`Color ${idx + 1}`}
+                />
+              ))}
+            </div>
             {editorError && (
               <p className="editor-error">Select at least one cell first</p>
             )}
@@ -1185,20 +1198,38 @@ const SquareAssembly = () => {
           font-size: 12px;
           font-family: Arial, Helvetica, sans-serif;
         }
-        .editor-hint {
-          color: rgba(241, 245, 249, 0.55);
-          font-size: 12px;
-          font-family: Arial, Helvetica, sans-serif;
-          white-space: nowrap;
+        .color-palette {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          justify-content: center;
+        }
+        .brush-btn {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          background: var(--brush-color);
+          border: 2.5px solid transparent;
+          cursor: pointer;
+          opacity: 0.7;
+          transition: opacity 0.15s, border-color 0.15s, transform 0.12s;
+          flex-shrink: 0;
+        }
+        .brush-btn:hover {
+          opacity: 1;
+          transform: scale(1.1);
+        }
+        .brush-btn.brush-active {
+          border-color: #fff;
+          opacity: 1;
+          transform: scale(1.18);
+          box-shadow: 0 0 8px var(--brush-color);
         }
         .editor-error {
           color: rgba(248, 113, 113, 0.9);
           font-size: 12px;
           font-family: Arial, Helvetica, sans-serif;
           white-space: nowrap;
-        }
-        .sq-swatch {
-          color: #d77026;
         }
         .editor-actions {
           display: flex;
