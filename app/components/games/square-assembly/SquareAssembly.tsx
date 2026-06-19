@@ -890,16 +890,7 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
     if (!piece.filled) {
       // Ghost slot: draw faint colored outline so player can see the target shape
       if (body.isCluster) {
-        ctx.globalAlpha = 0.06;
-        ctx.strokeStyle = piece.color;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        piece.vertices.forEach((v, i) => {
-          if (i === 0) ctx.moveTo(v.x, v.y);
-          else ctx.lineTo(v.x, v.y);
-        });
-        ctx.closePath();
-        ctx.stroke();
+        // Ghost slots are invisible
       }
       ctx.restore();
       return;
