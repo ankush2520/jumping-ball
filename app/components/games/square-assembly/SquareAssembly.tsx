@@ -138,11 +138,18 @@ const createAudio = (): AssemblyAudio => {
   const pentatonic = [261.63, 329.63, 392.0, 440.0, 523.25, 659.25, 783.99];
 
   const ensureAudio = () => {
-    if (audio) return audio;
+    if (audio) {
+      // iOS suspends the context when the app goes to background. Try to resume on every
+      // call so that any subsequent user gesture (wall bounce, button tap) also recovers it.
+      if (audio.state === "suspended") audio.resume().catch(() => {});
+      return audio;
+    }
     const w = window as Window &
       typeof globalThis & { webkitAudioContext?: typeof AudioContext };
     const AudioContextClass = w.AudioContext || w.webkitAudioContext;
     if (!AudioContextClass) return null;
+    // Discard a closed context so a fresh one is created below
+    if (sharedAudioContext?.state === "closed") sharedAudioContext = null;
     sharedAudioContext = sharedAudioContext || new AudioContextClass();
     audio = sharedAudioContext;
     if (!audio) return null;
@@ -151,6 +158,15 @@ const createAudio = (): AssemblyAudio => {
     masterGain.connect(audio.destination);
     return audio;
   };
+
+  // iOS 14.1+ allows AudioContext.resume() inside visibilitychange without a user gesture,
+  // which is the main recovery path after the user locks the screen or switches apps.
+  const handleVisibility = () => {
+    if (!document.hidden && audio?.state === "suspended") {
+      audio.resume().catch(() => {});
+    }
+  };
+  document.addEventListener("visibilitychange", handleVisibility);
 
   // Soft bell-like sine tone: slow attack, long gentle release
   const playBell = (
@@ -228,6 +244,7 @@ const createAudio = (): AssemblyAudio => {
       chord.forEach((f, i) => playBell(f, 0.18, 0.02, 2.2, i * 0.13));
     },
     dispose: () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
       masterGain?.disconnect();
       masterGain = null;
       audio = null;
@@ -817,10 +834,13 @@ const drawBody = (
       else ctx.lineTo(v.x, v.y);
     });
     ctx.closePath();
+    // Single-piece bodies are loose squares; alternate by body.id so both colors
+    // appear from the start. Multi-piece bodies use the per-slot col+row parity
+    // so the assembled shape shows a true checkerboard.
+    const checkerIndex =
+      body.pieces.length === 1 ? body.id % 2 : piece.checkerParity % 2;
     const fillColor =
-      colorMode === "checker"
-        ? simColors[piece.checkerParity % 2]
-        : simColors[0];
+      colorMode === "checker" ? simColors[checkerIndex] : simColors[0];
     ctx.shadowColor = glowCol;
     ctx.shadowBlur = 12 + body.glowTime * 38;
     ctx.fillStyle = fillColor;
@@ -859,11 +879,9 @@ const SquareAssembly = () => {
   const phaseRef = useRef<GamePhase>("editor");
   const gridRef = useRef<CellKind[][]>(makeEmptyGrid());
   const completeSoundPlayedRef = useRef(false);
-  const mergeCountdownRef = useRef<number | null>(null);
   const activeBrushRef = useRef<number>(0);
   const [phase, setPhase] = useState<GamePhase>("editor");
   const [editorError, setEditorError] = useState(false);
-  const [mergeCountdown, setMergeCountdown] = useState<number | null>(null);
   const [activeBrush, setActiveBrush] = useState<number>(0);
   const [simColors, setSimColors] = useState<[string, string]>([SIM_PALETTE[0], SIM_PALETTE[4]]);
   const [simColorMode, setSimColorMode] = useState<"solid" | "checker">("solid");
@@ -1066,15 +1084,6 @@ const SquareAssembly = () => {
           }
         }
 
-        // Update DOM countdown
-        const nextCountdown = mergingStarted
-          ? null
-          : Math.ceil(MERGE_DELAY - elapsedSec);
-        if (nextCountdown !== mergeCountdownRef.current) {
-          mergeCountdownRef.current = nextCountdown;
-          setMergeCountdown(nextCountdown);
-        }
-
         drawArenaFrame(ctx, arena, "What Shape will these squares form?");
         bodiesRef.current.forEach((b) =>
           drawBody(ctx, b, simColorsRef.current, simColorModeRef.current),
@@ -1189,11 +1198,6 @@ const SquareAssembly = () => {
           </>
         ) : (
           <>
-            {mergeCountdown !== null && (
-              <p className="merge-countdown">
-                Merging in {mergeCountdown}s
-              </p>
-            )}
             <button className="btn-edit" onClick={resetToEditor}>
               ← Edit
             </button>
