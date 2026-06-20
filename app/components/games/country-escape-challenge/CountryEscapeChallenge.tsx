@@ -1,945 +1,489 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { drawCanvasWatermark } from "@/app/lib/watermark";
 
-type Country = {
-  name: string;
-  flag: string;
-  color: string;
-};
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-type Result = {
-  country: Country;
-  time: number | null;
-};
+type Arena = { cx: number; cy: number; radius: number; W: number; H: number };
+type Ball  = { x: number; y: number; vx: number; vy: number; r: number; hue: number };
+type Phase = "idle" | "running" | "gameover";
 
-type Arena = {
-  x: number;
-  y: number;
-  radius: number;
-  canvasWidth: number;
-  canvasHeight: number;
-};
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-type Ball = {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  radius: number;
-  escaped: boolean;
-  stuck: boolean;
-};
+const MAX_DT          = 1 / 30;
+const SPEED_RATIO     = 1.65;
+const INIT_R_RATIO    = 0.0092;
+const GROWTH_RATE     = 0.011;   // fraction of original arena radius / sec
+const SHRINK_RATE     = 0.0055;  // proportional to growth (50% of growth rate)
+const HUE_RATE        = 38;      // degrees / sec
 
-type TrailPoint = {
-  x: number;
-  y: number;
-};
 
-type RoundUi = {
-  phase: "intro" | "playing" | "complete";
-  countryIndex: number;
-  elapsed: number;
-  message: string;
-};
-
-type ChallengeAudio = {
-  unlock: () => Promise<void>;
-  playRoundStart: () => void;
-  playBounce: () => void;
-  playEscape: () => void;
-  playVictory: () => void;
-  dispose: () => void;
-};
-
-const COUNTRY_POOL: Country[] = [
-  { name: "India", flag: "🇮🇳", color: "#f97316" },
-  { name: "USA", flag: "🇺🇸", color: "#38bdf8" },
-  { name: "Japan", flag: "🇯🇵", color: "#f8fafc" },
-  { name: "Brazil", flag: "🇧🇷", color: "#22c55e" },
-  { name: "Germany", flag: "🇩🇪", color: "#facc15" },
-  { name: "France", flag: "🇫🇷", color: "#60a5fa" },
-  { name: "Canada", flag: "🇨🇦", color: "#ef4444" },
-  { name: "Australia", flag: "🇦🇺", color: "#2563eb" },
-  { name: "South Korea", flag: "🇰🇷", color: "#f8fafc" },
-  { name: "Italy", flag: "🇮🇹", color: "#22c55e" },
-  { name: "Spain", flag: "🇪🇸", color: "#facc15" },
-  { name: "Mexico", flag: "🇲🇽", color: "#16a34a" },
-  { name: "Argentina", flag: "🇦🇷", color: "#7dd3fc" },
-  { name: "China", flag: "🇨🇳", color: "#ef4444" },
-  { name: "United Kingdom", flag: "🇬🇧", color: "#60a5fa" },
-  { name: "South Africa", flag: "🇿🇦", color: "#22c55e" },
-  { name: "Netherlands", flag: "🇳🇱", color: "#f97316" },
-  { name: "Sweden", flag: "🇸🇪", color: "#38bdf8" },
-  { name: "Norway", flag: "🇳🇴", color: "#ef4444" },
-  { name: "Turkey", flag: "🇹🇷", color: "#dc2626" },
-  { name: "Egypt", flag: "🇪🇬", color: "#f8fafc" },
+const PIANO_NOTES = [
+  261.63, 293.66, 329.63, 349.23, 392.0,
+  440.0,  493.88, 523.25, 587.33, 659.25,
+  698.46, 783.99, 880.0,  987.77, 1046.5,
 ];
 
-const COUNTRY_COUNT = 10;
+let _sharedAudioCtx: AudioContext | null = null;
 
-const HUD_RESERVED_HEIGHT_DESKTOP = 160;
-const HUD_RESERVED_HEIGHT_MOBILE = 180;
-const ARENA_BOTTOM_SPACING = 28;
+// ─── Audio ────────────────────────────────────────────────────────────────────
 
-const ROUND_LIMIT = 4;
-const GAP_SIZE_RATIO = 0.0536;
-const GAP_ROTATION_SPEED = 0.7;
-const BALL_SPEED_RATIO = 3;
-const MAX_DT = 1 / 30;
+function createAudio() {
+  let ac: AudioContext | null = null;
+  let master: GainNode | null = null;
+  let noteIdx = 0;
 
-let sharedAudioContext: AudioContext | null = null;
-
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(max, Math.max(min, value));
-
-const PAINT_COLORS: Record<string, string> = {
-  India: "#f97316",
-  USA: "#38bdf8",
-  Japan: "#f8fafc",
-  Brazil: "#22c55e",
-  Germany: "#facc15",
-  France: "#60a5fa",
-  Canada: "#ef4444",
-  Australia: "#2563eb",
-  "South Korea": "#e9d5ff",
-  Italy: "#4ade80",
-  Spain: "#fbbf24",
-  Mexico: "#16a34a",
-  Argentina: "#7dd3fc",
-  China: "#f87171",
-  "United Kingdom": "#93c5fd",
-  "South Africa": "#84cc16",
-  Netherlands: "#fb923c",
-  Sweden: "#22d3ee",
-  Norway: "#f43f5e",
-  Turkey: "#dc2626",
-  Egypt: "#fca5a5",
-};
-
-const getPaintColor = (country: Country) =>
-  PAINT_COLORS[country.name] ?? country.color;
-
-const getRandomCountries = () =>
-  [...COUNTRY_POOL].sort(() => Math.random() - 0.5).slice(0, COUNTRY_COUNT);
-
-const normalizeAngle = (angle: number) => {
-  const full = Math.PI * 2;
-  return ((angle % full) + full) % full;
-};
-
-const angleDistance = (first: number, second: number) => {
-  const diff = Math.abs(normalizeAngle(first) - normalizeAngle(second));
-  return Math.min(diff, Math.PI * 2 - diff);
-};
-
-const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-  const ctx = canvas.getContext("2d");
-  const isMobile = width < 680;
-  const hudHeight = isMobile
-    ? HUD_RESERVED_HEIGHT_MOBILE
-    : HUD_RESERVED_HEIGHT_DESKTOP;
-  const horizontalPadding = isMobile ? width * 0.06 : 48;
-  const availableWidth = Math.max(220, width - horizontalPadding * 2);
-  const availableHeight = Math.max(
-    220,
-    height - hudHeight - ARENA_BOTTOM_SPACING,
-  );
-  const diameter = clamp(Math.min(availableWidth, availableHeight), 210, 560);
-  const radius = diameter / 2;
-  const x = width / 2;
-  const y = hudHeight + availableHeight / 2;
-
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  canvas.width = Math.floor(width * dpr);
-  canvas.height = Math.floor(height * dpr);
-
-  if (ctx) {
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
-    ctx.imageSmoothingEnabled = true;
-  }
-
-  return { x, y, radius, canvasWidth: width, canvasHeight: height };
-};
-
-const createAudio = (): ChallengeAudio => {
-  let audio: AudioContext | null = null;
-  let masterGain: GainNode | null = null;
-  let lastBounceAt = 0;
-  const calmPianoNotes = [261.63, 293.66, 329.63, 392, 440, 523.25];
-
-  const ensureAudio = () => {
-    if (audio) return audio;
-    const audioWindow = window as Window &
-      typeof globalThis & {
-        webkitAudioContext?: typeof AudioContext;
-      };
-    const AudioContextClass =
-      audioWindow.AudioContext || audioWindow.webkitAudioContext;
-    if (!AudioContextClass) return null;
-
-    sharedAudioContext = sharedAudioContext || new AudioContextClass();
-    audio = sharedAudioContext;
-    masterGain = audio.createGain();
-    masterGain.gain.value = 0.32;
-    masterGain.connect(audio.destination);
-    return audio;
+  const ensure = () => {
+    if (ac) { if (ac.state === "suspended") ac.resume().catch(() => {}); return ac; }
+    const w = window as typeof globalThis & { webkitAudioContext?: typeof AudioContext };
+    const AC = w.AudioContext || w.webkitAudioContext;
+    if (!AC) return null;
+    if (_sharedAudioCtx?.state === "closed") _sharedAudioCtx = null;
+    _sharedAudioCtx = _sharedAudioCtx || new AC();
+    ac = _sharedAudioCtx;
+    master = ac.createGain();
+    master.gain.value = 0.28;
+    master.connect(ac.destination);
+    return ac;
   };
 
-  const tone = (
-    frequency: number,
-    duration: number,
-    gainValue: number,
-    type: OscillatorType = "sine",
-  ) => {
-    const context = ensureAudio();
-    if (!context || context.state !== "running" || !masterGain) return;
+  const onVis = () => { if (!document.hidden && ac?.state === "suspended") ac.resume().catch(() => {}); };
+  document.addEventListener("visibilitychange", onVis);
 
-    const now = context.currentTime;
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-
-    oscillator.type = type;
-    oscillator.frequency.setValueAtTime(frequency, now);
-    oscillator.frequency.exponentialRampToValueAtTime(
-      Math.max(80, frequency * 0.78),
-      now + duration,
-    );
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.linearRampToValueAtTime(gainValue, now + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-    oscillator.connect(gain);
-    gain.connect(masterGain);
-    oscillator.start(now);
-    oscillator.stop(now + duration + 0.02);
-    oscillator.onended = () => {
-      oscillator.disconnect();
-      gain.disconnect();
-    };
-  };
-
-  const playCalmPiano = (frequency: number) => {
-    const context = ensureAudio();
-    if (!context || context.state !== "running" || !masterGain) return;
-
-    const now = context.currentTime;
-    const outputGain = context.createGain();
-    const filter = context.createBiquadFilter();
-    const harmonics = [
-      { ratio: 1, gain: 0.15 },
-      { ratio: 2, gain: 0.06 },
-      { ratio: 3, gain: 0.024 },
-    ];
-
-    filter.type = "lowpass";
-    filter.frequency.setValueAtTime(3000, now);
-    filter.frequency.exponentialRampToValueAtTime(1100, now + 0.45);
-    outputGain.gain.setValueAtTime(0.0001, now);
-    outputGain.gain.linearRampToValueAtTime(0.34, now + 0.008);
-    outputGain.gain.exponentialRampToValueAtTime(0.11, now + 0.08);
-    outputGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.62);
-    outputGain.connect(filter);
-    filter.connect(masterGain);
-
-    harmonics.forEach((harmonic, index) => {
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-
-      oscillator.type = index === 0 ? "triangle" : "sine";
-      oscillator.frequency.setValueAtTime(
-        frequency * harmonic.ratio * (0.998 + Math.random() * 0.004),
-        now,
-      );
-      gain.gain.setValueAtTime(harmonic.gain, now);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.48 + index * 0.04);
-      oscillator.connect(gain);
-      gain.connect(outputGain);
-      oscillator.start(now);
-      oscillator.stop(now + 0.68);
-      oscillator.onended = () => {
-        oscillator.disconnect();
-        gain.disconnect();
-      };
+  const piano = (freq: number) => {
+    const ctx = ensure();
+    if (!ctx || ctx.state !== "running" || !master) return;
+    const now = ctx.currentTime;
+    const out  = ctx.createGain();
+    const filt = ctx.createBiquadFilter();
+    filt.type = "lowpass";
+    filt.frequency.setValueAtTime(3200, now);
+    filt.frequency.exponentialRampToValueAtTime(1100, now + 0.55);
+    out.gain.setValueAtTime(0.0001, now);
+    out.gain.linearRampToValueAtTime(0.38, now + 0.009);
+    out.gain.exponentialRampToValueAtTime(0.13, now + 0.09);
+    out.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
+    out.connect(filt); filt.connect(master);
+    ([
+      { ratio: 1, g: 0.14, t: "triangle" as OscillatorType },
+      { ratio: 2, g: 0.052, t: "sine" as OscillatorType },
+      { ratio: 3, g: 0.018, t: "sine" as OscillatorType },
+    ] as const).forEach(({ ratio, g, t }) => {
+      const osc = ctx.createOscillator();
+      const gn  = ctx.createGain();
+      osc.type = t;
+      osc.frequency.setValueAtTime(freq * ratio, now);
+      gn.gain.setValueAtTime(g, now);
+      gn.gain.exponentialRampToValueAtTime(0.0001, now + 0.65);
+      osc.connect(gn); gn.connect(out);
+      osc.start(now); osc.stop(now + 0.75);
+      osc.onended = () => { osc.disconnect(); gn.disconnect(); };
     });
-
-    window.setTimeout(() => {
-      outputGain.disconnect();
-      filter.disconnect();
-    }, 760);
+    window.setTimeout(() => { out.disconnect(); filt.disconnect(); }, 900);
   };
 
   return {
-    unlock: async () => {
-      const context = ensureAudio();
-      if (!context) return;
-      if (context.state === "suspended") {
-        await context.resume();
-      }
-    },
-    playRoundStart: () => {
-      tone(260, 0.16, 0.09, "triangle");
-      window.setTimeout(() => tone(390, 0.18, 0.08, "triangle"), 42);
-    },
-    playBounce: () => {
-      const context = ensureAudio();
-      if (!context) return;
-      const now = context.currentTime;
-      if (now - lastBounceAt < 0.06) return;
-      lastBounceAt = now;
-      playCalmPiano(
-        calmPianoNotes[Math.floor(Math.random() * calmPianoNotes.length)],
-      );
-    },
-    playEscape: () => {
-      [523.25, 659.25, 783.99, 1046.5].forEach((note, index) => {
-        window.setTimeout(() => tone(note, 0.22, 0.09, "triangle"), index * 70);
-      });
-    },
-    playVictory: () => {
-      [392, 493.88, 587.33, 783.99].forEach((note, index) => {
-        window.setTimeout(() => tone(note, 0.32, 0.1, "triangle"), index * 90);
-      });
-    },
-    dispose: () => {
-      masterGain?.disconnect();
-      masterGain = null;
-      audio = null;
+    unlock:  async () => { const c = ensure(); if (c?.state === "suspended") await c.resume(); },
+    bounce:  ()       => { piano(PIANO_NOTES[noteIdx % PIANO_NOTES.length]); noteIdx++; },
+    dispose: ()       => {
+      document.removeEventListener("visibilitychange", onVis);
+      master?.disconnect(); master = null; ac = null;
     },
   };
-};
+}
 
-const BALL_RADIUS = 7.5;
+// ─── Canvas resize ────────────────────────────────────────────────────────────
 
-const createBall = (arena: Arena): Ball => {
-  const radius = BALL_RADIUS;
-  const spawnAngle = Math.random() * Math.PI * 2;
-  const spawnRadius = Math.sqrt(Math.random()) * (arena.radius - radius * 2.4);
+function resizeCanvas(canvas: HTMLCanvasElement): { arena: Arena; dpr: number } {
+  const dpr    = Math.min(window.devicePixelRatio || 1, 2);
+  const W      = window.innerWidth;
+  const H      = window.innerHeight;
+  const ctx    = canvas.getContext("2d");
+  const mobile = W < 600;
+  const headH  = mobile ? 120 : 100;
+  const pad    = mobile ? 24 : 40;
+  const avail  = Math.min(W - pad * 2, H - headH - 20);
+  const r      = Math.max(100, Math.min(avail, 560)) / 2;
+  const cx     = W / 2;
+  const cy     = headH + (H - headH) / 2;
+  canvas.style.width  = `${W}px`;
+  canvas.style.height = `${H}px`;
+  canvas.width  = Math.floor(W * dpr);
+  canvas.height = Math.floor(H * dpr);
+  if (ctx) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.scale(dpr, dpr); ctx.imageSmoothingEnabled = true; }
+  return { arena: { cx, cy, radius: r, W, H }, dpr };
+}
 
-  return {
-    x: arena.x + Math.cos(spawnAngle) * spawnRadius,
-    y: arena.y + Math.sin(spawnAngle) * spawnRadius,
-    vx: 0,
-    vy: 0,
-    radius,
-    escaped: false,
-    stuck: false,
-  };
-};
+// ─── Trail canvas helpers ─────────────────────────────────────────────────────
 
-const isAngleInsideGap = (angle: number, gapCenter: number, gapSize: number) =>
-  angleDistance(angle, gapCenter) <= gapSize / 2;
-
-const preserveSpeed = (ball: Ball, arena: Arena, multiplier = 1) => {
-  const speed = arena.radius * BALL_SPEED_RATIO * multiplier;
-  const current = Math.hypot(ball.vx, ball.vy) || 1;
-  ball.vx = (ball.vx / current) * speed;
-  ball.vy = (ball.vy / current) * speed;
-};
-
-const getLaunchAngleAwayFromExit = () => {
-  const exitAngle = 0;
-  let angle = Math.random() * Math.PI * 2;
-
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    angle = Math.random() * Math.PI * 2;
-    if (angleDistance(angle, exitAngle) > Math.PI / 3) {
-      return angle;
-    }
+// Prepare (or clear) the offscreen trail canvas to match the main canvas dimensions.
+function initTrailCanvas(tc: HTMLCanvasElement, arena: Arena, dpr: number) {
+  tc.width  = Math.floor(arena.W * dpr);
+  tc.height = Math.floor(arena.H * dpr);
+  const tctx = tc.getContext("2d");
+  if (tctx) {
+    tctx.setTransform(1, 0, 0, 1, 0, 0);
+    tctx.scale(dpr, dpr);
+    tctx.clearRect(0, 0, arena.W, arena.H);
   }
+}
 
-  return Math.PI + (Math.random() - 0.5) * Math.PI;
-};
+// Burn one disc into the offscreen trail canvas.
+// Each disc is a copy of the ball: dark fill + thin coloured edge accent.
+function burnRing(tc: HTMLCanvasElement, x: number, y: number, r: number, hue: number) {
+  const tctx = tc.getContext("2d");
+  if (!tctx) return;
 
-const applyRandomBounce = (ball: Ball, angleRange = 0.6) => {
-  const angle = (Math.random() - 0.5) * angleRange; // random small rotation
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const vx = ball.vx * cos - ball.vy * sin;
-  const vy = ball.vx * sin + ball.vy * cos;
-  ball.vx = vx;
-  ball.vy = vy;
-};
+  // Solid dark disc (the "body" of the worm segment)
+  tctx.beginPath();
+  tctx.arc(x, y, r, 0, Math.PI * 2);
+  tctx.fillStyle = "#020617";
+  tctx.fill();
 
-const resolveCountryCollisions = (
-  balls: Array<Ball | null>,
-  activeIndex: number,
-  arena: Arena,
-  playBounce: () => void,
-) => {
-  const activeBall = balls[activeIndex];
-  if (!activeBall || activeBall.escaped || activeBall.stuck) return;
+  // Thin coloured accent ring on the edge (≤8% of radius)
+  tctx.beginPath();
+  tctx.arc(x, y, r, 0, Math.PI * 2);
+  tctx.strokeStyle = `hsl(${hue}, 100%, 62%)`;
+  tctx.lineWidth   = Math.max(1.5, r * 0.08);
+  tctx.stroke();
+}
 
-  balls.forEach((otherBall, index) => {
-    if (index === activeIndex || !otherBall || otherBall.escaped) return;
+// ─── Drawing ──────────────────────────────────────────────────────────────────
 
-    const dx = activeBall.x - otherBall.x;
-    const dy = activeBall.y - otherBall.y;
-    const minDistance = activeBall.radius + otherBall.radius;
-    const distanceSq = dx * dx + dy * dy;
+function drawFrame(
+  ctx:        CanvasRenderingContext2D,
+  arena:      Arena,
+  trailCanvas: HTMLCanvasElement,
+  bR:         number,
+  ball:       Ball,
+) {
+  const { cx, cy, W, H } = arena;
 
-    if (distanceSq <= 0 || distanceSq >= minDistance * minDistance) return;
-
-    const distance = Math.sqrt(distanceSq);
-    const nx = dx / distance;
-    const ny = dy / distance;
-    const overlap = minDistance - distance;
-    const velocityAlongNormal = activeBall.vx * nx + activeBall.vy * ny;
-
-    activeBall.x += nx * (overlap + 0.8);
-    activeBall.y += ny * (overlap + 0.8);
-
-    if (velocityAlongNormal < 0) {
-      activeBall.vx -= 2 * velocityAlongNormal * nx;
-      activeBall.vy -= 2 * velocityAlongNormal * ny;
-      preserveSpeed(activeBall, arena);
-      applyRandomBounce(activeBall, 1.2);
-      playBounce();
-    }
-  });
-};
-
-const drawArena = (
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  gapCenter: number,
-  gapSize: number,
-  balls: Array<Ball | null>,
-  activeIndex: number,
-  exitOrder: Result[],
-  countries: Country[],
-  escapePulse: number,
-  trails: TrailPoint[][],
-) => {
-  ctx.clearRect(0, 0, arena.canvasWidth, arena.canvasHeight);
+  // Background
+  ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = "#020617";
-  ctx.fillRect(0, 0, arena.canvasWidth, arena.canvasHeight);
+  ctx.fillRect(0, 0, W, H);
+  drawCanvasWatermark(ctx, W, H);
 
-  const bg = ctx.createRadialGradient(
-    arena.x,
-    arena.y,
-    arena.radius * 0.1,
-    arena.x,
-    arena.y,
-    arena.radius * 1.3,
-  );
-  bg.addColorStop(0, "rgba(34, 211, 238, 0.1)");
-  bg.addColorStop(0.62, "rgba(15, 23, 42, 0.2)");
-  bg.addColorStop(1, "rgba(2, 6, 23, 0)");
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, arena.canvasWidth, arena.canvasHeight);
-  drawCanvasWatermark(ctx, arena.canvasWidth, arena.canvasHeight);
-
+  // Blit the persistent trail canvas clipped to the circle so nothing leaks outside
   ctx.save();
   ctx.beginPath();
-  ctx.arc(arena.x, arena.y, arena.radius - 3, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(15, 23, 42, 0.36)";
-  ctx.fill();
+  ctx.arc(cx, cy, bR - 1, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.drawImage(trailCanvas, 0, 0, W, H);
   ctx.restore();
 
-  const start = gapCenter + gapSize / 2;
-  const end = gapCenter - gapSize / 2 + Math.PI * 2;
-
+  // Circular boundary
   ctx.save();
-  ctx.shadowColor = "rgba(125, 211, 252, 0.42)";
-  ctx.shadowBlur = 18;
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.78)";
-  ctx.lineWidth = clamp(arena.radius * 0.013, 3, 6);
-  ctx.lineCap = "round";
   ctx.beginPath();
-  ctx.arc(arena.x, arena.y, arena.radius, start, end, false);
+  ctx.arc(cx, cy, bR, 0, Math.PI * 2);
+  ctx.strokeStyle = `hsl(${ball.hue}, 88%, 65%)`;
+  ctx.lineWidth   = 1.6;
+  ctx.shadowColor = `hsl(${ball.hue}, 100%, 72%)`;
+  ctx.shadowBlur  = 20;
   ctx.stroke();
   ctx.restore();
 
-  // exit gap intentionally left empty (no glow)
+  // Ball
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+  ctx.fillStyle   = `hsl(${ball.hue}, 100%, 60%)`;
+  ctx.shadowColor = `hsl(${ball.hue}, 100%, 70%)`;
+  ctx.shadowBlur  = ball.r * 1.8;
+  ctx.fill();
+  ctx.restore();
 
-  const drawPaintStroke = (
-    trail: TrailPoint[],
-    trailBall: Ball,
-    color: string,
-  ) => {
-    if (trail.length <= 1) return;
+  // Inner highlight
+  ctx.save();
+  ctx.globalAlpha = 0.32;
+  ctx.beginPath();
+  ctx.arc(ball.x - ball.r * 0.27, ball.y - ball.r * 0.27, ball.r * 0.4, 0, Math.PI * 2);
+  ctx.fillStyle = "#fff";
+  ctx.fill();
+  ctx.restore();
+}
 
-    ctx.save();
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.globalAlpha = 0.5;
-    ctx.lineWidth = trailBall.radius * 0.205;
-    ctx.strokeStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(trail[0].x, trail[0].y);
+function drawIdle(ctx: CanvasRenderingContext2D, arena: Arena) {
+  const { cx, cy, W, H } = arena;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = "#020617";
+  ctx.fillRect(0, 0, W, H);
+  drawCanvasWatermark(ctx, W, H);
+  ctx.beginPath();
+  ctx.arc(cx, cy, arena.radius * 0.93, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(148,163,184,0.3)";
+  ctx.lineWidth   = 3;
+  ctx.stroke();
+}
 
-    for (let index = 1; index < trail.length - 1; index += 1) {
-      const current = trail[index];
-      const next = trail[index + 1];
-      const midpointX = (current.x + next.x) / 2;
-      const midpointY = (current.y + next.y) / 2;
-      ctx.quadraticCurveTo(current.x, current.y, midpointX, midpointY);
-    }
-
-    const lastPoint = trail[trail.length - 1];
-    ctx.lineTo(lastPoint.x, lastPoint.y);
-    ctx.stroke();
-    ctx.restore();
-  };
-
-  trails.forEach((trail, trailIndex) => {
-    const trailBall = balls[trailIndex];
-    const trailCountry = countries[trailIndex];
-    if (!trailBall || !trailCountry || trail.length <= 1) return;
-
-    drawPaintStroke(trail, trailBall, getPaintColor(trailCountry));
-  });
-
-  balls.forEach((ball, index) => {
-    if (!ball || ball.escaped) return;
-
-    const country = countries[index];
-    if (!country) return;
-    const isActive = activeIndex < 0 || index === activeIndex;
-    const paintColor = getPaintColor(country);
-    const alpha = 1;
-    const pulse = isActive ? 1 + escapePulse * 0.22 : 1;
-    ctx.save();
-    ctx.translate(ball.x, ball.y);
-    ctx.scale(pulse, pulse);
-    ctx.globalAlpha = alpha;
-    ctx.shadowColor = paintColor;
-    ctx.shadowBlur = isActive ? 16 + escapePulse * 24 : 8;
-    ctx.beginPath();
-    ctx.arc(0, 0, ball.radius, 0, Math.PI * 2);
-    ctx.fillStyle = paintColor;
-    ctx.fill();
-    ctx.restore();
-
-    ctx.save();
-    ctx.translate(ball.x, ball.y);
-    ctx.scale(pulse, pulse);
-    ctx.globalAlpha = alpha;
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.82)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.arc(0, 0, ball.radius, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.restore();
-  });
-};
+// ─── Component ────────────────────────────────────────────────────────────────
 
 const CountryEscapeChallenge = () => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const audioRef = useRef<ChallengeAudio | null>(null);
-  const animationRef = useRef<number | null>(null);
-  const arenaRef = useRef<Arena | null>(null);
-  const ballsRef = useRef<Array<Ball | null>>([]);
-  const countriesRef = useRef<Country[]>(getRandomCountries());
-  const gapAngleRef = useRef(0);
-  const roundStartedAtRef = useRef(0);
-  const lastFrameAtRef = useRef(0);
-  const resultsRef = useRef<Result[]>([]);
-  const activeIndexRef = useRef(0);
-  const phaseRef = useRef<RoundUi["phase"]>("intro");
-  const escapePulseRef = useRef(0);
-  const trailsRef = useRef<TrailPoint[][]>([]);
-  const [ui, setUi] = useState<RoundUi>({
-    phase: "intro",
-    countryIndex: 0,
-    elapsed: 0,
-    message: "",
-  });
-  const [escapedCount, setEscapedCount] = useState(0);
+  const canvasRef     = useRef<HTMLCanvasElement>(null);
+  const trailCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioRef      = useRef(createAudio());
+  const arenaRef      = useRef<Arena | null>(null);
+  const dprRef        = useRef(1);
+  const ballRef       = useRef<Ball | null>(null);
+  const bRRef         = useRef(0);
+  const origRRef      = useRef(0);
+  const lastTRef      = useRef(0);
+  const rafRef        = useRef<number | null>(null);
+  const phaseRef      = useRef<Phase>("idle");
+  const bounceRef     = useRef(0);
+  // Distance accumulator for ring spawning
+  const trailAccRef   = useRef(0);
+  const prevPosRef    = useRef({ x: 0, y: 0 });
 
-  if (audioRef.current === null) {
-    audioRef.current = createAudio();
-  }
+  const [phase,       setPhase]       = useState<Phase>("idle");
+  const [bounceCount, setBounceCount] = useState(0);
+
+  const startGame = () => {
+    const arena = arenaRef.current;
+    if (!arena) return;
+    void audioRef.current.unlock();
+
+    // Clear / (re-)initialise the offscreen trail canvas
+    if (!trailCanvasRef.current) trailCanvasRef.current = document.createElement("canvas");
+    initTrailCanvas(trailCanvasRef.current, arena, dprRef.current);
+
+    const initR = arena.radius * INIT_R_RATIO;
+    const angle = Math.random() * Math.PI * 2;
+    const speed = arena.radius * SPEED_RATIO;
+
+    ballRef.current = {
+      x: arena.cx, y: arena.cy,
+      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+      r: initR, hue: Math.random() * 360,
+    };
+    prevPosRef.current  = { x: arena.cx, y: arena.cy };
+    trailAccRef.current = 0;
+
+    bRRef.current       = arena.radius * 0.93;
+    origRRef.current    = arena.radius;
+    bounceRef.current   = 0;
+    phaseRef.current    = "running";
+    setPhase("running");
+    setBounceCount(0);
+    lastTRef.current = performance.now();
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
+    const ctx    = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
 
-    const updateUi = (next: Partial<RoundUi>) => {
-      setUi((current) => ({ ...current, ...next }));
-    };
+    const { arena, dpr } = resizeCanvas(canvas);
+    arenaRef.current = arena;
+    dprRef.current   = dpr;
+    lastTRef.current = performance.now();
 
-    const activateBall = (index: number, arena: Arena) => {
-      let ball = ballsRef.current[index];
-      // create ball for this slot if missing
-      if (!ball) {
-        ball = createBall(arena);
-        ballsRef.current[index] = ball;
-      }
-      if (ball.escaped || ball.stuck) return false;
+    const tick = (t: number) => {
+      const arena = arenaRef.current!;
+      const dt    = Math.min((t - lastTRef.current) / 1000, MAX_DT);
+      lastTRef.current = t;
 
-      const speed = arena.radius * BALL_SPEED_RATIO;
-      const angle = getLaunchAngleAwayFromExit();
-      activeIndexRef.current = index;
-      if (!trailsRef.current[index]?.length) {
-        trailsRef.current[index] = [{ x: ball.x, y: ball.y }];
-      }
-      ball.vx = Math.cos(angle) * speed;
-      ball.vy = Math.sin(angle) * speed;
-      roundStartedAtRef.current = performance.now();
-      updateUi({
-        phase: "playing",
-        countryIndex: index,
-        elapsed: ROUND_LIMIT,
-        message: "",
-      });
-      return true;
-    };
+      if (phaseRef.current === "running") {
+        const ball   = ballRef.current!;
+        const origR  = origRRef.current;
 
-    const advanceTurn = (arena: Arena, fromIndex = activeIndexRef.current) => {
-      for (let offset = 1; offset <= ballsRef.current.length; offset += 1) {
-        const nextIndex = (fromIndex + offset) % ballsRef.current.length;
-        const candidate = ballsRef.current[nextIndex];
-        if (!candidate || (!candidate.escaped && !candidate.stuck)) {
-          if (activateBall(nextIndex, arena)) return;
-        }
-      }
+        // Grow ball and shrink boundary
+        ball.r        += origR * GROWTH_RATE * dt;
+        bRRef.current -= origR * SHRINK_RATE * dt;
+        ball.hue = (ball.hue + HUE_RATE * dt) % 360;
 
-      phaseRef.current = "complete";
-      updateUi({
-        phase: "complete",
-        elapsed: 0,
-        message: "",
-      });
-      audioRef.current?.playVictory();
-    };
+        // Move
+        ball.x += ball.vx * dt;
+        ball.y += ball.vy * dt;
 
-    const recordEscape = (index: number, elapsed: number) => {
-      const country = countriesRef.current[index];
-      if (!country) return;
-      const result: Result = {
-        country,
-        time: elapsed,
-      };
+        // Bounce off circular boundary (before ring-burn so trail stays inside)
+        const bR   = bRRef.current;
+        const cdx  = ball.x - arena.cx;
+        const cdy  = ball.y - arena.cy;
+        const dist = Math.hypot(cdx, cdy) || 0.001;
 
-      resultsRef.current = [...resultsRef.current, result];
-      setEscapedCount(resultsRef.current.length);
-      escapePulseRef.current = 1;
-      void country;
-      audioRef.current?.playEscape();
-    };
-
-    const stepRace = (arena: Arena, dt: number, elapsed: number) => {
-      const gapSize = Math.PI * 2 * GAP_SIZE_RATIO;
-      const activeIndex = activeIndexRef.current;
-      const ball = ballsRef.current[activeIndex];
-
-      if (!ball || ball.escaped || ball.stuck) {
-        advanceTurn(arena, activeIndex);
-        return;
-      }
-
-      ball.x += ball.vx * dt;
-      ball.y += ball.vy * dt;
-      trailsRef.current[activeIndex] = [
-        ...(trailsRef.current[activeIndex] ?? []),
-        { x: ball.x, y: ball.y },
-      ];
-
-      const dx = ball.x - arena.x;
-      const dy = ball.y - arena.y;
-      const distanceFromCenter = Math.hypot(dx, dy) || 1;
-      const angle = Math.atan2(dy, dx);
-      const insideGap = isAngleInsideGap(angle, gapAngleRef.current, gapSize);
-
-      if (insideGap && distanceFromCenter - ball.radius > arena.radius) {
-        ball.escaped = true;
-        recordEscape(activeIndex, elapsed);
-        advanceTurn(arena, activeIndex);
-        return;
-      }
-
-      if (distanceFromCenter + ball.radius >= arena.radius && !insideGap) {
-        const nx = dx / distanceFromCenter;
-        const ny = dy / distanceFromCenter;
-        const velocityAlongNormal = ball.vx * nx + ball.vy * ny;
-
-        if (velocityAlongNormal > 0) {
-          ball.vx -= 2 * velocityAlongNormal * nx;
-          ball.vy -= 2 * velocityAlongNormal * ny;
-          preserveSpeed(ball, arena);
-          applyRandomBounce(ball, 1.2);
-          audioRef.current?.playBounce();
+        if (dist + ball.r >= bR) {
+          const nx = cdx / dist;
+          const ny = cdy / dist;
+          const vn = ball.vx * nx + ball.vy * ny;
+          if (vn > 0) {
+            ball.vx -= 2 * vn * nx;
+            ball.vy -= 2 * vn * ny;
+            // Random angle jitter ±18° so the ball never follows a fixed pattern
+            const jitter = (Math.random() - 0.5) * 0.63;
+            const c = Math.cos(jitter), s = Math.sin(jitter);
+            const jx = ball.vx * c - ball.vy * s;
+            const jy = ball.vx * s + ball.vy * c;
+            ball.vx = jx; ball.vy = jy;
+            audioRef.current.bounce();
+            bounceRef.current++;
+            setBounceCount(bounceRef.current);
+          }
+          // Push ball back inside before recording trail position
+          ball.x = arena.cx + nx * (bR - ball.r - 0.5);
+          ball.y = arena.cy + ny * (bR - ball.r - 0.5);
         }
 
-        ball.x = arena.x + nx * (arena.radius - ball.radius - 0.5);
-        ball.y = arena.y + ny * (arena.radius - ball.radius - 0.5);
+        // Distance-based ring spawning — runs after collision so position is always inside
+        const dx   = ball.x - prevPosRef.current.x;
+        const dy   = ball.y - prevPosRef.current.y;
+        trailAccRef.current += Math.hypot(dx, dy);
+        prevPosRef.current   = { x: ball.x, y: ball.y };
+
+        // Each disc = current ball size; spacing = 15% of diameter → ~85% overlap
+        const drawR   = ball.r;
+        const spacing = Math.max(1, drawR * 0.15);
+        while (trailAccRef.current >= spacing && trailCanvasRef.current) {
+          burnRing(trailCanvasRef.current, ball.x, ball.y, drawR, ball.hue);
+          trailAccRef.current -= spacing;
+        }
+
+        // Simulation runs until the user stops it manually
       }
 
-      resolveCountryCollisions(ballsRef.current, activeIndex, arena, () =>
-        audioRef.current?.playBounce(),
-      );
-
-      if (elapsed >= ROUND_LIMIT) {
-        ball.vx = 0;
-        ball.vy = 0;
-        ball.stuck = true;
-        advanceTurn(arena, activeIndex);
+      const ball = ballRef.current;
+      const bR   = bRRef.current;
+      if (ball && bR > 0 && trailCanvasRef.current) {
+        drawFrame(ctx, arena, trailCanvasRef.current, bR, ball);
+      } else {
+        drawIdle(ctx, arena);
       }
+
+      rafRef.current = requestAnimationFrame(tick);
     };
 
-    const draw = (time: number) => {
-      const arena = arenaRef.current;
-      if (!arena) return;
+    rafRef.current = requestAnimationFrame(tick);
 
-      const dt = Math.min((time - lastFrameAtRef.current) / 1000, MAX_DT);
-      lastFrameAtRef.current = time;
-      escapePulseRef.current = Math.max(0, escapePulseRef.current - dt * 1.8);
-      gapAngleRef.current = normalizeAngle(
-        gapAngleRef.current + dt * GAP_ROTATION_SPEED,
-      );
-      if (phaseRef.current === "playing") {
-        const elapsed = (time - roundStartedAtRef.current) / 1000;
-        stepRace(arena, dt, elapsed);
-        setUi((current) =>
-          current.phase === "playing"
-            ? { ...current, elapsed: Math.max(0, ROUND_LIMIT - elapsed) }
-            : current,
-        );
-      }
-
-      drawArena(
-        ctx,
-        arena,
-        gapAngleRef.current,
-        Math.PI * 2 * GAP_SIZE_RATIO,
-        ballsRef.current,
-        phaseRef.current === "playing" ? activeIndexRef.current : -1,
-        resultsRef.current,
-        countriesRef.current,
-        escapePulseRef.current,
-        trailsRef.current,
-      );
-
-      animationRef.current = requestAnimationFrame(draw);
-    };
-
-    const handleResize = () => {
-      const arena = resizeCanvas(canvas);
+    const onResize = () => {
+      const { arena, dpr } = resizeCanvas(canvas);
       arenaRef.current = arena;
-      // preserve existing balls but ensure array length matches countries
-      const newBalls = new Array(countriesRef.current.length)
-        .fill(null)
-        .map((_, i) => ballsRef.current[i] ?? null);
-      ballsRef.current = newBalls;
+      dprRef.current   = dpr;
+      // Trail canvas is re-initialised on next startGame; resize clears it for now
+      if (trailCanvasRef.current) initTrailCanvas(trailCanvasRef.current, arena, dpr);
     };
+    const onPtr = () => void audioRef.current.unlock();
 
-    const unlockSound = () => {
-      void audioRef.current?.unlock();
-    };
-
-    arenaRef.current = resizeCanvas(canvas);
-    ballsRef.current = new Array(countriesRef.current.length).fill(null);
-    trailsRef.current = new Array(countriesRef.current.length)
-      .fill(null)
-      .map(() => []);
-    lastFrameAtRef.current = performance.now();
-    window.addEventListener("resize", handleResize);
-    window.addEventListener("pointerdown", unlockSound, { passive: true });
-    window.addEventListener("keydown", unlockSound);
-    animationRef.current = requestAnimationFrame(draw);
+    window.addEventListener("resize",     onResize);
+    window.addEventListener("pointerdown", onPtr, { passive: true });
 
     return () => {
-      if (animationRef.current !== null) {
-        cancelAnimationFrame(animationRef.current);
-      }
-      window.removeEventListener("resize", handleResize);
-      window.removeEventListener("pointerdown", unlockSound);
-      window.removeEventListener("keydown", unlockSound);
-      audioRef.current?.dispose();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      window.removeEventListener("resize",      onResize);
+      window.removeEventListener("pointerdown", onPtr);
+      audioRef.current.dispose();
     };
   }, []);
 
-  const startChallenge = () => {
-    void audioRef.current?.unlock();
-    const arena = arenaRef.current;
-    if (!arena) return;
-
-    resultsRef.current = [];
-    setEscapedCount(0);
-    const nextCountries = getRandomCountries();
-    countriesRef.current = nextCountries;
-    ballsRef.current = new Array(nextCountries.length).fill(null);
-    trailsRef.current = new Array(nextCountries.length)
-      .fill(null)
-      .map(() => []);
-    phaseRef.current = "playing";
-    activeIndexRef.current = 0;
-    const first = createBall(arena);
-    ballsRef.current[0] = first;
-    trailsRef.current[0] = [{ x: first.x, y: first.y }];
-    const speed = arena.radius * BALL_SPEED_RATIO;
-    const angle = getLaunchAngleAwayFromExit();
-    first.vx = Math.cos(angle) * speed;
-    first.vy = Math.sin(angle) * speed;
-    roundStartedAtRef.current = performance.now();
-    escapePulseRef.current = 0;
-    setUi({
-      phase: "playing",
-      countryIndex: 0,
-      elapsed: ROUND_LIMIT,
-      message: "",
-    });
-    audioRef.current?.playRoundStart();
-  };
-
   return (
-    <div className="country-root">
-      <canvas ref={canvasRef} className="country-canvas" />
+    <div className="root">
+      <canvas ref={canvasRef} className="cv" />
 
-      <div className="hud" aria-live="polite">
-        <h1>Each ball has 4 seconds to escape</h1>
-
-        <div className="hud-main">
-          <div className="escaped-count">Escaped balls: {escapedCount}</div>
-          <div className="timer" role="timer" aria-live="polite">
-            Timer: {ui.phase === "complete" ? "0.0" : ui.elapsed.toFixed(1)} s
-          </div>
-        </div>
+      <div className="hud">
+        <h1>Ball grows bigger, boundary gets smaller!</h1>
+        {phase === "running" && <p className="bc">Bounces: {bounceCount}</p>}
       </div>
 
-      {ui.phase === "intro" ? (
-        <div className="start-panel">
-          <button type="button" onClick={startChallenge}>
-            START
-          </button>
+      {phase === "idle" && (
+        <div className="panel">
+          <button onClick={startGame}>Start</button>
         </div>
-      ) : null}
+      )}
 
       <style jsx>{`
-        .country-root {
+        .root {
           position: relative;
           width: 100%;
           height: 100dvh;
-          min-height: 100dvh;
-          max-height: 100dvh;
           overflow: hidden;
           background: #020617;
-          color: #f8fafc;
         }
-
-        .country-canvas {
+        .cv {
+          display: block;
           width: 100%;
           height: 100dvh;
-          min-height: 100dvh;
-          max-height: 100dvh;
         }
-
         .hud {
           position: fixed;
-          top: 48px;
+          top: 52px;
           left: 50%;
+          transform: translateX(-50%);
           z-index: 6;
           width: min(560px, calc(100% - 40px));
-          transform: translateX(-50%);
+          text-align: center;
           pointer-events: none;
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 10px;
-          text-align: center;
+          gap: 6px;
         }
-
-        .hud h1 {
+        h1 {
           margin: 0;
-          font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
-          font-size: clamp(1.4rem, 3.8vw, 2rem);
-          line-height: 1.2;
+          font-family: Arial, Helvetica, sans-serif;
+          font-size: clamp(1rem, 3.5vw, 1.65rem);
           font-weight: 900;
-          color: #ffffff;
-          text-align: center;
+          color: #fff;
           text-shadow:
             0 0 18px rgba(255, 255, 255, 0.12),
-            0 10px 28px rgba(2, 6, 23, 0.72);
-          letter-spacing: 0.04em;
+            0 8px 24px rgba(2, 6, 23, 0.72);
+          letter-spacing: 0.02em;
+          line-height: 1.2;
         }
-
-        .hud-main {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 18px;
-          flex-wrap: wrap;
+        .bc {
+          margin: 0;
+          font-family: Arial, Helvetica, sans-serif;
+          font-size: clamp(0.85rem, 2vw, 1rem);
+          font-weight: 700;
+          color: rgba(248, 250, 252, 0.78);
         }
-
-        .escaped-count {
-          font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
-          font-size: clamp(0.9rem, 2.2vw, 1.05rem);
-          line-height: 1;
-          font-weight: 800;
-          color: rgba(248, 250, 252, 0.86);
-          text-shadow: 0 0 10px rgba(255, 255, 255, 0.16);
-        }
-
-        .timer {
-          font-family: "Geist Mono", "SFMono-Regular", "Roboto Mono", monospace;
-          font-weight: 800;
-          color: #ffffff;
-          font-size: clamp(0.9rem, 2.2vw, 1.05rem);
-          line-height: 1;
-          text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
-          padding: 4px 8px;
-          border-radius: 6px;
-          background: rgba(255, 255, 255, 0.02);
-        }
-
-        .start-panel {
+        .panel {
           position: fixed;
-          bottom: 28px;
+          bottom: 36px;
           left: 50%;
-          z-index: 8;
           transform: translateX(-50%);
+          z-index: 8;
           display: flex;
+          flex-direction: column;
           align-items: center;
-          justify-content: center;
-          gap: 18px;
-          min-height: 60px;
-          padding: 8px 14px;
-          border-radius: 8px;
-          border: 1px solid rgba(148, 163, 184, 0.26);
-          background: rgba(2, 6, 23, 0.76);
-          box-shadow:
-            0 18px 52px rgba(2, 6, 23, 0.48),
-            inset 0 1px 0 rgba(255, 255, 255, 0.12);
+          gap: 10px;
+          padding: 14px 22px;
+          border-radius: 12px;
+          border: 1px solid rgba(148, 163, 184, 0.22);
+          background: rgba(2, 6, 23, 0.82);
           backdrop-filter: blur(12px);
+          box-shadow: 0 16px 48px rgba(2, 6, 23, 0.5);
         }
-
+        .msg {
+          margin: 0;
+          font-family: Arial, Helvetica, sans-serif;
+          font-size: 1rem;
+          font-weight: 700;
+          color: rgba(248, 250, 252, 0.85);
+        }
         button {
           min-height: 44px;
-          padding: 0 20px;
-          border: 1px solid rgba(34, 197, 94, 0.5);
+          padding: 0 28px;
+          border: 1.5px solid rgba(34, 197, 94, 0.55);
           border-radius: 8px;
-          background: rgba(22, 163, 74, 0.24);
+          background: rgba(22, 163, 74, 0.2);
           color: #dcfce7;
           font-weight: 900;
-          letter-spacing: 0.1em;
+          font-size: 14px;
+          font-family: Arial, Helvetica, sans-serif;
+          letter-spacing: 0.08em;
           cursor: pointer;
         }
-
-        @media (max-width: 680px) {
+        button:hover {
+          background: rgba(22, 163, 74, 0.32);
+        }
+        @media (max-width: 600px) {
           .hud {
-            top: calc(14px + env(safe-area-inset-top, 0px) + 52px);
-            width: min(90vw, calc(100% - 36px));
+            top: calc(14px + env(safe-area-inset-top, 0px) + 48px);
           }
-
-          .hud-main {
-            gap: 10px 14px;
-            align-items: center;
-          }
-
-          .start-panel {
-            bottom: max(24px, calc(env(safe-area-inset-bottom, 0px) + 16px));
+          .panel {
+            bottom: max(20px, calc(env(safe-area-inset-bottom, 0px) + 12px));
             width: calc(100% - 32px);
-            flex-direction: column;
-            gap: 10px;
           }
         }
       `}</style>

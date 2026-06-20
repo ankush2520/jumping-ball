@@ -38,9 +38,9 @@ export const simulations: Simulation[] = [
   },
   {
     id: "country-escape-challenge",
-    title: "Ball Escape",
-    subtitle: "ROTATING EXIT RACE",
-    description: "Five balls race to escape through the same rotating gap.",
+    title: "Growing Ball in Shrinking Boundary",
+    subtitle: "HOW LONG CAN IT BOUNCE?",
+    description: "A ball grows bigger with every bounce while the boundary keeps shrinking.",
     component: CountryEscapeChallenge,
     status: "experimental",
     accentColor: "#22c55e",
