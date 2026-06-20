@@ -24,6 +24,7 @@ type Piece = {
   edges: EdgeSlot[];
   filled: boolean; // false = ghost slot on cluster, true = real piece
   colorIdx: number; // 0-4: which color group this slot/piece belongs to
+  checkerParity: number; // (col + row) % 2 — used for two-color checker pattern
 };
 
 type Body = {
@@ -51,7 +52,6 @@ type Arena = {
   dpr: number;
 };
 
-type Collision = { normal: Point; overlap: number };
 
 type AssemblyAudio = {
   unlock: () => Promise<void>;
@@ -67,7 +67,19 @@ const PHYSICS_SUBSTEPS = 4;
 const RESTITUTION = 1.0;
 const GRID_DIVISIONS = 25;
 const BODY_SPEED_RATIO = 0.45; // 2× the previous 0.225
-const PLAY_COLOR = "#f97316"; // all pieces render as orange during simulation
+
+const SIM_PALETTE = [
+  "#f97316", // orange
+  "#ef4444", // red
+  "#f59e0b", // amber
+  "#facc15", // yellow
+  "#22c55e", // green
+  "#06b6d4", // cyan
+  "#3b82f6", // blue
+  "#a855f7", // purple
+  "#ec4899", // pink
+  "#f1f5f9", // white
+] as const;
 
 const SELECTOR_COLORS = [
   "#ef4444", // red
@@ -94,18 +106,7 @@ const rotatePoint = ({ x, y }: Point, a: number): Point => ({
   y: x * Math.sin(a) + y * Math.cos(a),
 });
 
-const subPoints = (a: Point, b: Point): Point => ({
-  x: a.x - b.x,
-  y: a.y - b.y,
-});
-const scalePoint = (p: Point, s: number): Point => ({ x: p.x * s, y: p.y * s });
-const dotProduct = (a: Point, b: Point) => a.x * b.x + a.y * b.y;
 const distancePt = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
-
-const normalize = ({ x, y }: Point): Point => {
-  const len = Math.hypot(x, y) || 1;
-  return { x: x / len, y: y / len };
-};
 
 // ─── Shape geometry ───────────────────────────────────────────────────────────
 
@@ -352,6 +353,7 @@ const createClusterBody = (
     edges: getEdgeSlots(),
     filled: false,
     colorIdx: t.colorIdx,
+    checkerParity: (t.col + t.row) % 2,
   }));
 
   const speed = getBodySpeed(arena);
@@ -446,6 +448,7 @@ const trySpawnShape = (
         edges: getEdgeSlots(),
         filled: true,
         colorIdx,
+        checkerParity: 0,
       },
     ],
     glowColor: "none",
@@ -455,100 +458,6 @@ const trySpawnShape = (
     isAssembled: false,
     colorIdx,
   };
-};
-
-// ─── SAT collision ────────────────────────────────────────────────────────────
-
-const projectPolygon = (verts: Point[], axis: Point) => {
-  let min = dotProduct(verts[0], axis),
-    max = min;
-  for (const v of verts) {
-    const p = dotProduct(v, axis);
-    if (p < min) min = p;
-    if (p > max) max = p;
-  }
-  return { min, max };
-};
-
-const getAxes = (verts: Point[]): Point[] =>
-  verts.map((v, i) => {
-    const n = verts[(i + 1) % verts.length];
-    const e = subPoints(n, v);
-    return normalize({ x: -e.y, y: e.x });
-  });
-
-const getPolyCollision = (
-  aV: Point[],
-  bV: Point[],
-  aC: Point,
-  bC: Point,
-): Collision | null => {
-  const axes = [...getAxes(aV), ...getAxes(bV)];
-  let minOverlap = Infinity,
-    minAxis = axes[0];
-  for (const axis of axes) {
-    const a = projectPolygon(aV, axis);
-    const b = projectPolygon(bV, axis);
-    const overlap = Math.min(a.max, b.max) - Math.max(a.min, b.min);
-    if (overlap <= 0) return null;
-    if (overlap < minOverlap) {
-      minOverlap = overlap;
-      minAxis = axis;
-    }
-  }
-  const d = subPoints(bC, aC);
-  return {
-    normal: dotProduct(d, minAxis) < 0 ? scalePoint(minAxis, -1) : minAxis,
-    overlap: minOverlap,
-  };
-};
-
-const getBodyCollision = (a: Body, b: Body): Collision | null => {
-  // Skeleton with NO filled pieces = pure ghost position marker, always passable
-  if (a.isCluster && a.pieces.every((p) => !p.filled)) return null;
-  if (b.isCluster && b.pieces.every((p) => !p.filled)) return null;
-
-  // Default to all pieces; may be overridden to filled-only for partial skeletons
-  let aPieces: Piece[] = a.pieces;
-  let bPieces: Piece[] = b.pieces;
-
-  if (a.isCluster || b.isCluster) {
-    const skeleton = a.isCluster ? a : b;
-    const mover = a.isCluster ? b : a;
-
-    // Mega skeleton: always passable (assembled groups snap through it; squares ignore it)
-    if (skeleton.colorIdx === -1) return null;
-    // Assembled group passes through any color-group skeleton (it targets mega only)
-    if (mover.isAssembled) return null;
-    // Same-color loose square passes through its own skeleton to snap into empty slots
-    if (mover.colorIdx === skeleton.colorIdx) return null;
-
-    // Different-color loose square bounces off only the FILLED pieces of the skeleton
-    if (a.isCluster) aPieces = a.pieces.filter((p) => p.filled);
-    else bPieces = b.pieces.filter((p) => p.filled);
-  } else {
-    // Both solid: loose square passes through assembled group of its own color
-    if (a.isAssembled !== b.isAssembled) {
-      const assembled = a.isAssembled ? a : b;
-      const loose = a.isAssembled ? b : a;
-      if (assembled.colorIdx === loose.colorIdx) return null;
-    }
-  }
-
-  if (aPieces.length === 0 || bPieces.length === 0) return null;
-  let best: Collision | null = null;
-  for (const ap of aPieces) {
-    for (const bp of bPieces) {
-      const col = getPolyCollision(
-        getPieceWorldVerts(a, ap),
-        getPieceWorldVerts(b, bp),
-        { x: a.x, y: a.y },
-        { x: b.x, y: b.y },
-      );
-      if (col && (!best || col.overlap > best.overlap)) best = col;
-    }
-  }
-  return best;
 };
 
 // ─── Target snapping ──────────────────────────────────────────────────────────
@@ -674,55 +583,6 @@ const resolveWallCollisions = (
   });
 };
 
-const resolveBodyCollisions = (
-  arena: Arena,
-  bodies: Body[],
-  audio: AssemblyAudio | null,
-) => {
-  for (let i = 0; i < bodies.length; i++) {
-    for (let j = i + 1; j < bodies.length; j++) {
-      const a = bodies[i],
-        b = bodies[j];
-      const col = getBodyCollision(a, b);
-      if (!col) continue;
-      const { normal, overlap } = col;
-      const correction = overlap * 0.6 + 0.5;
-      // Skeletons and assembled groups are heavy — absorb very little correction
-      const aHeavy = a.isCluster || a.isAssembled;
-      const bHeavy = b.isCluster || b.isAssembled;
-      const aShare = aHeavy ? 0.05 : bHeavy ? 0.95 : 0.5;
-      const bShare = 1 - aShare;
-      a.x -= normal.x * correction * aShare;
-      a.y -= normal.y * correction * aShare;
-      b.x += normal.x * correction * bShare;
-      b.y += normal.y * correction * bShare;
-      const relV = subPoints({ x: b.vx, y: b.vy }, { x: a.vx, y: a.vy });
-      const vn = dotProduct(relV, normal);
-      if (vn < 0) {
-        const ma = a.pieces.length;
-        const mb = b.pieces.length;
-        const impulse = (-(1 + RESTITUTION) * vn) / (1 / ma + 1 / mb);
-        a.vx -= (impulse * normal.x) / ma;
-        a.vy -= (impulse * normal.y) / ma;
-        b.vx += (impulse * normal.x) / mb;
-        b.vy += (impulse * normal.y) / mb;
-        preserveBodySpeed(a, arena);
-        preserveBodySpeed(b, arena);
-      }
-      // Only loose squares flash red on hit; skeletons and assembled groups don't glow
-      if (!a.isAssembled && !a.isCluster) {
-        a.glowColor = "red";
-        a.glowTime = 0.25;
-      }
-      if (!b.isAssembled && !b.isCluster) {
-        b.glowColor = "red";
-        b.glowTime = 0.25;
-      }
-      audio?.playCollision(a.id);
-      audio?.playCollision(b.id);
-    }
-  }
-};
 
 // ─── Drawing ──────────────────────────────────────────────────────────────────
 
@@ -919,7 +779,12 @@ const drawEditorGrid = (
 };
 
 // Draws each body. Ghost cluster pieces (filled=false) are drawn faded.
-const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
+const drawBody = (
+  ctx: CanvasRenderingContext2D,
+  body: Body,
+  simColors: readonly [string, string],
+  colorMode: "solid" | "checker",
+) => {
   const glowCol =
     body.glowColor === "green"
       ? "rgba(34, 197, 94, 0.9)"
@@ -952,9 +817,13 @@ const drawBody = (ctx: CanvasRenderingContext2D, body: Body) => {
       else ctx.lineTo(v.x, v.y);
     });
     ctx.closePath();
+    const fillColor =
+      colorMode === "checker"
+        ? simColors[piece.checkerParity % 2]
+        : simColors[0];
     ctx.shadowColor = glowCol;
     ctx.shadowBlur = 12 + body.glowTime * 38;
-    ctx.fillStyle = PLAY_COLOR;
+    ctx.fillStyle = fillColor;
     ctx.fill();
     ctx.shadowBlur = 0;
     ctx.strokeStyle = piece.filled
@@ -996,6 +865,12 @@ const SquareAssembly = () => {
   const [editorError, setEditorError] = useState(false);
   const [mergeCountdown, setMergeCountdown] = useState<number | null>(null);
   const [activeBrush, setActiveBrush] = useState<number>(0);
+  const [simColors, setSimColors] = useState<[string, string]>([SIM_PALETTE[0], SIM_PALETTE[4]]);
+  const [simColorMode, setSimColorMode] = useState<"solid" | "checker">("solid");
+  const [activeColorSlot, setActiveColorSlot] = useState<0 | 1>(0);
+  const [showColorPopup, setShowColorPopup] = useState(false);
+  const simColorsRef = useRef<[string, string]>([SIM_PALETTE[0], SIM_PALETTE[4]]);
+  const simColorModeRef = useRef<"solid" | "checker">("solid");
 
   if (audioRef.current === null) audioRef.current = createAudio();
 
@@ -1173,8 +1048,6 @@ const SquareAssembly = () => {
           resolveWallCollisions(arena, bodiesRef.current, (bodyId) =>
             audioRef.current?.playCollision(bodyId),
           );
-
-          resolveBodyCollisions(arena, bodiesRef.current, audioRef.current);
           if (mergingStarted) {
             // Level 1: loose squares snap into color-group skeletons
             snapToCluster(bodiesRef.current, clusters, arena, elapsedSec, () =>
@@ -1203,7 +1076,9 @@ const SquareAssembly = () => {
         }
 
         drawArenaFrame(ctx, arena, "What Shape will these squares form?");
-        bodiesRef.current.forEach((b) => drawBody(ctx, b));
+        bodiesRef.current.forEach((b) =>
+          drawBody(ctx, b, simColorsRef.current, simColorModeRef.current),
+        );
       }
 
       rafRef.current = requestAnimationFrame(draw);
@@ -1278,6 +1153,7 @@ const SquareAssembly = () => {
                 />
               ))}
             </div>
+
             {editorError && (
               <p className="editor-error">Select at least one cell first</p>
             )}
@@ -1290,8 +1166,24 @@ const SquareAssembly = () => {
               >
                 Clear
               </button>
+              <button
+                className="btn-color-edit"
+                onClick={() => setShowColorPopup(true)}
+                style={
+                  {
+                    "--preview-a": simColors[0],
+                    "--preview-b": simColors[1],
+                  } as React.CSSProperties
+                }
+              >
+                <span className="color-preview-dot preview-a" />
+                {simColorMode === "checker" && (
+                  <span className="color-preview-dot preview-b" />
+                )}
+                Edit Color
+              </button>
               <button className="btn-start" onClick={startSimulation}>
-                ▶ Start Simulation
+                ▶ Play
               </button>
             </div>
           </>
@@ -1299,8 +1191,7 @@ const SquareAssembly = () => {
           <>
             {mergeCountdown !== null && (
               <p className="merge-countdown">
-                Merging will begin in {mergeCountdown} sec
-                {mergeCountdown !== 1 ? "s" : ""}
+                Merging in {mergeCountdown}s
               </p>
             )}
             <button className="btn-edit" onClick={resetToEditor}>
@@ -1309,6 +1200,83 @@ const SquareAssembly = () => {
           </>
         )}
       </div>
+
+      {showColorPopup && (
+        <div className="popup-backdrop" onClick={() => setShowColorPopup(false)}>
+          <div className="color-popup" onClick={(e) => e.stopPropagation()}>
+            <div className="popup-header">
+              <span className="popup-title">Simulation Color</span>
+              <button className="popup-close" onClick={() => setShowColorPopup(false)}>✕</button>
+            </div>
+
+            <div className="mode-toggle">
+              <button
+                className={`mode-btn${simColorMode === "solid" ? " mode-active" : ""}`}
+                onClick={() => {
+                  setSimColorMode("solid");
+                  simColorModeRef.current = "solid";
+                  setActiveColorSlot(0);
+                }}
+              >
+                1 Color
+              </button>
+              <button
+                className={`mode-btn${simColorMode === "checker" ? " mode-active" : ""}`}
+                onClick={() => {
+                  setSimColorMode("checker");
+                  simColorModeRef.current = "checker";
+                }}
+              >
+                2 Checker
+              </button>
+            </div>
+
+            {simColorMode === "checker" && (
+              <div className="color-slots">
+                <button
+                  className={`color-slot${activeColorSlot === 0 ? " slot-active" : ""}`}
+                  style={{ background: simColors[0] }}
+                  onClick={() => setActiveColorSlot(0)}
+                  title="Color A"
+                />
+                <span className="slot-sep">+</span>
+                <button
+                  className={`color-slot${activeColorSlot === 1 ? " slot-active" : ""}`}
+                  style={{ background: simColors[1] }}
+                  onClick={() => setActiveColorSlot(1)}
+                  title="Color B"
+                />
+              </div>
+            )}
+
+            <div className="sim-palette">
+              {SIM_PALETTE.map((color) => (
+                <button
+                  key={color}
+                  className={`sim-swatch${
+                    simColors[simColorMode === "checker" ? activeColorSlot : 0] === color
+                      ? " swatch-active"
+                      : ""
+                  }`}
+                  style={{ "--sw-color": color } as React.CSSProperties}
+                  onClick={() => {
+                    const slot = simColorMode === "checker" ? activeColorSlot : 0;
+                    const next: [string, string] = [...simColors] as [string, string];
+                    next[slot] = color;
+                    setSimColors(next);
+                    simColorsRef.current = next;
+                  }}
+                  aria-label={color}
+                />
+              ))}
+            </div>
+
+            <button className="popup-done" onClick={() => setShowColorPopup(false)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         .assembly-root {
@@ -1427,6 +1395,173 @@ const SquareAssembly = () => {
         }
         .btn-edit:hover {
           background: rgba(100, 120, 150, 0.18);
+        }
+        .btn-color-edit {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          background: rgba(100, 120, 150, 0.08);
+          border: 1.5px solid rgba(100, 120, 150, 0.3);
+          color: rgba(241, 245, 249, 0.7);
+          padding: 8px 14px;
+          border-radius: 7px;
+          font-size: 13px;
+          font-family: Arial, Helvetica, sans-serif;
+          cursor: pointer;
+        }
+        .btn-color-edit:hover {
+          background: rgba(100, 120, 150, 0.16);
+          color: rgba(241, 245, 249, 0.95);
+        }
+        .color-preview-dot {
+          display: inline-block;
+          width: 10px;
+          height: 10px;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+        .preview-a { background: var(--preview-a); }
+        .preview-b { background: var(--preview-b); }
+        .popup-backdrop {
+          position: absolute;
+          inset: 0;
+          background: rgba(2, 6, 23, 0.6);
+          display: flex;
+          align-items: flex-end;
+          justify-content: center;
+          z-index: 10;
+          padding-bottom: 80px;
+        }
+        .color-popup {
+          background: #0f172a;
+          border: 1px solid rgba(100, 120, 150, 0.3);
+          border-radius: 14px;
+          padding: 16px 18px 14px;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 12px;
+          width: min(340px, 92vw);
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+        }
+        .popup-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          width: 100%;
+        }
+        .popup-title {
+          font-size: 13px;
+          font-weight: 700;
+          font-family: Arial, Helvetica, sans-serif;
+          letter-spacing: 0.05em;
+          color: rgba(241, 245, 249, 0.85);
+        }
+        .popup-close {
+          background: none;
+          border: none;
+          color: rgba(148, 163, 184, 0.6);
+          font-size: 14px;
+          cursor: pointer;
+          padding: 2px 4px;
+          line-height: 1;
+        }
+        .popup-close:hover {
+          color: rgba(241, 245, 249, 0.9);
+        }
+        .popup-done {
+          background: rgba(34, 197, 94, 0.12);
+          border: 1.5px solid rgba(34, 197, 94, 0.45);
+          color: #4ade80;
+          padding: 7px 28px;
+          border-radius: 7px;
+          font-size: 13px;
+          font-weight: 700;
+          font-family: Arial, Helvetica, sans-serif;
+          cursor: pointer;
+          width: 100%;
+        }
+        .popup-done:hover {
+          background: rgba(34, 197, 94, 0.22);
+        }
+        .slot-sep {
+          font-size: 12px;
+          color: rgba(148, 163, 184, 0.4);
+          font-family: Arial, Helvetica, sans-serif;
+          user-select: none;
+        }
+        .mode-toggle {
+          display: flex;
+          gap: 6px;
+        }
+        .mode-btn {
+          background: rgba(100, 120, 150, 0.1);
+          border: 1.5px solid rgba(100, 120, 150, 0.28);
+          color: rgba(241, 245, 249, 0.5);
+          padding: 4px 12px;
+          border-radius: 6px;
+          font-size: 11px;
+          font-weight: 700;
+          font-family: Arial, Helvetica, sans-serif;
+          cursor: pointer;
+          transition: background 0.12s, color 0.12s, border-color 0.12s;
+        }
+        .mode-btn:hover {
+          background: rgba(100, 120, 150, 0.2);
+          color: rgba(241, 245, 249, 0.8);
+        }
+        .mode-btn.mode-active {
+          background: rgba(249, 115, 22, 0.18);
+          border-color: rgba(249, 115, 22, 0.6);
+          color: #fb923c;
+        }
+        .color-slots {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+        }
+        .color-slot {
+          width: 26px;
+          height: 26px;
+          border-radius: 6px;
+          border: 2.5px solid rgba(255, 255, 255, 0.2);
+          cursor: pointer;
+          transition: transform 0.12s, border-color 0.12s, box-shadow 0.12s;
+          flex-shrink: 0;
+        }
+        .color-slot.slot-active {
+          border-color: #fff;
+          transform: scale(1.18);
+          box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+        }
+        .sim-palette {
+          display: flex;
+          gap: 7px;
+          align-items: center;
+          justify-content: center;
+          flex-wrap: wrap;
+          max-width: 320px;
+        }
+        .sim-swatch {
+          width: 22px;
+          height: 22px;
+          border-radius: 50%;
+          background: var(--sw-color);
+          border: 2px solid transparent;
+          cursor: pointer;
+          opacity: 0.72;
+          transition: opacity 0.12s, transform 0.12s, border-color 0.12s;
+          flex-shrink: 0;
+        }
+        .sim-swatch:hover {
+          opacity: 1;
+          transform: scale(1.15);
+        }
+        .sim-swatch.swatch-active {
+          border-color: #fff;
+          opacity: 1;
+          transform: scale(1.22);
+          box-shadow: 0 0 7px var(--sw-color);
         }
       `}</style>
     </div>
