@@ -101,7 +101,7 @@ function resizeCanvas(canvas: HTMLCanvasElement): { arena: Arena; dpr: number } 
   const H      = window.innerHeight;
   const ctx    = canvas.getContext("2d");
   const mobile = W < 600;
-  const headH  = mobile ? 120 : 100;
+  const headH  = mobile ? 60 : 80;
   const pad    = mobile ? 24 : 40;
   const avail  = Math.min(W - pad * 2, H - headH - 20);
   const r      = Math.max(100, Math.min(avail, 560)) / 2;
@@ -239,6 +239,7 @@ const CountryEscapeChallenge = () => {
 
   const [phase,       setPhase]       = useState<Phase>("idle");
   const [bounceCount, setBounceCount] = useState(0);
+  const [hudAnchorY,  setHudAnchorY]  = useState<number | null>(null);
 
   const startGame = () => {
     const arena = arenaRef.current;
@@ -275,8 +276,14 @@ const CountryEscapeChallenge = () => {
     const ctx    = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
 
+    const applyArena = (arena: Arena) => {
+      arenaRef.current = arena;
+      const circleTop = arena.cy - arena.radius * 0.93;
+      setHudAnchorY(Math.max(60, circleTop - 24));
+    };
+
     const { arena, dpr } = resizeCanvas(canvas);
-    arenaRef.current = arena;
+    applyArena(arena);
     dprRef.current   = dpr;
     lastTRef.current = performance.now();
 
@@ -358,7 +365,7 @@ const CountryEscapeChallenge = () => {
 
     const onResize = () => {
       const { arena, dpr } = resizeCanvas(canvas);
-      arenaRef.current = arena;
+      applyArena(arena);
       dprRef.current   = dpr;
       // Trail canvas is re-initialised on next startGame; resize clears it for now
       if (trailCanvasRef.current) initTrailCanvas(trailCanvasRef.current, arena, dpr);
@@ -380,7 +387,10 @@ const CountryEscapeChallenge = () => {
     <div className="root">
       <canvas ref={canvasRef} className="cv" />
 
-      <div className="hud">
+      <div
+        className="hud"
+        style={hudAnchorY !== null ? { top: `${hudAnchorY}px` } : { visibility: "hidden" }}
+      >
         <h1>Ball grows bigger, boundary gets smaller!</h1>
         {phase === "running" && <p className="bc">Bounces: {bounceCount}</p>}
       </div>
@@ -406,9 +416,8 @@ const CountryEscapeChallenge = () => {
         }
         .hud {
           position: fixed;
-          top: 52px;
           left: 50%;
-          transform: translateX(-50%);
+          transform: translate(-50%, -100%);
           z-index: 6;
           width: min(560px, calc(100% - 40px));
           text-align: center;
@@ -417,11 +426,12 @@ const CountryEscapeChallenge = () => {
           flex-direction: column;
           align-items: center;
           gap: 6px;
+          padding-bottom: 8px;
         }
         h1 {
           margin: 0;
           font-family: Arial, Helvetica, sans-serif;
-          font-size: clamp(1rem, 3.5vw, 1.65rem);
+          font-size: clamp(1.5rem, 5.25vw, 2.475rem);
           font-weight: 900;
           color: #fff;
           text-shadow:
@@ -478,9 +488,6 @@ const CountryEscapeChallenge = () => {
           background: rgba(22, 163, 74, 0.32);
         }
         @media (max-width: 600px) {
-          .hud {
-            top: calc(14px + env(safe-area-inset-top, 0px) + 48px);
-          }
           .panel {
             bottom: max(20px, calc(env(safe-area-inset-bottom, 0px) + 12px));
             width: calc(100% - 32px);
