@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import BrokenSquare from "../components/games/broken-square/BrokenSquare";
 import CountryEscapeChallenge from "../components/games/country-escape-challenge/CountryEscapeChallenge";
+import MergingPerfectShape from "../components/games/merging-perfect-shape/MergingPerfectShape";
 import PlasmaBounce from "../components/games/plasma-bounce/PlasmaBounce";
 import ShrinkingEscape from "../components/games/shrinking-escape/ShrinkingEscape";
 import SquareAssembly from "../components/games/square-assembly/SquareAssembly";
@@ -20,11 +21,23 @@ export type Simulation = {
     | "plasma-bounce"
     | "broken-square"
     | "shrinking-escape"
-    | "square-assembly";
-  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose";
+    | "square-assembly"
+    | "merging-perfect-shape";
+  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose" | "card-orange";
 };
 
 export const simulations: Simulation[] = [
+  {
+    id: "merging-perfect-shape",
+    title: "Merging Perfect Shape",
+    subtitle: "PIECES TO PERFECTION",
+    description: "Scatter pieces of a perfect shape and watch them assemble back together.",
+    component: MergingPerfectShape,
+    status: "experimental",
+    accentColor: "#f97316",
+    icon: "merging-perfect-shape",
+    glow: "card-orange",
+  },
   {
     id: "square-assembly",
     title: "Interactive Square Shapes",

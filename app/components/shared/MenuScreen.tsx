@@ -345,6 +345,77 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
+  if (icon === "merging-perfect-shape") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter id="merge-glow" x="-45%" y="-45%" width="190%" height="190%">
+            <feGaussianBlur stdDeviation="2.4" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        {/* background plate */}
+        <rect
+          x="12"
+          y="12"
+          width="48"
+          height="48"
+          rx="5"
+          fill="rgba(2,6,23,0.72)"
+          stroke="rgba(148,163,184,0.28)"
+        />
+        {/* assembled triangle outline */}
+        <polygon
+          points="36,20 22,48 50,48"
+          fill="rgba(249,115,22,0.12)"
+          stroke="#f97316"
+          strokeWidth="1.5"
+          filter="url(#merge-glow)"
+        />
+        {/* scattered piece 1 — top left */}
+        <rect
+          x="17"
+          y="17"
+          width="8"
+          height="8"
+          rx="1"
+          fill="#f97316"
+          opacity="0.9"
+          filter="url(#merge-glow)"
+          transform="rotate(15,21,21)"
+        />
+        {/* scattered piece 2 — top right */}
+        <polygon
+          points="54,16 59,25 49,25"
+          fill="#f97316"
+          opacity="0.85"
+          filter="url(#merge-glow)"
+        />
+        {/* scattered piece 3 — bottom */}
+        <rect
+          x="30"
+          y="52"
+          width="8"
+          height="8"
+          rx="1"
+          fill="#f97316"
+          opacity="0.9"
+          filter="url(#merge-glow)"
+          transform="rotate(-20,34,56)"
+        />
+      </svg>
+    );
+  }
+
   return null;
 };
 
@@ -761,6 +832,11 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
         .card-rose {
           --card-rgb: 244, 63, 94;
           --card-rgb-soft: 168, 85, 247;
+        }
+
+        .card-orange {
+          --card-rgb: 249, 115, 22;
+          --card-rgb-soft: 251, 191, 36;
         }
 
         .launch-button::before {
