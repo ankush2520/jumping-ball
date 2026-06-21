@@ -7,17 +7,17 @@ import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 type Arena = { cx: number; cy: number; radius: number; W: number; H: number };
 type Ball  = { x: number; y: number; vx: number; vy: number; r: number; hue: number };
-type Phase = "idle" | "running" | "gameover";
+type Phase = "idle" | "running";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const MAX_DT          = 1 / 30;
-const SPEED_RATIO     = 1.65;
-const INIT_R_RATIO    = 0.0092;
-const GROWTH_RATE     = 0.011;   // fraction of original arena radius / sec
-const SHRINK_RATE     = 0.0055;  // proportional to growth (50% of growth rate)
-const HUE_RATE        = 38;      // degrees / sec
-
+const MAX_DT        = 1 / 30;
+const SPEED_RATIO   = 1.65;
+const INIT_R_RATIO  = 0.0092;
+const GROWTH_RATE   = 0.011;
+const SHRINK_RATE   = 0.0055;
+const HUE_RATE      = 38;
+const INIT_BR_RATIO = 0.74;
 
 const PIANO_NOTES = [
   261.63, 293.66, 329.63, 349.23, 392.0,
@@ -115,9 +115,8 @@ function resizeCanvas(canvas: HTMLCanvasElement): { arena: Arena; dpr: number } 
   return { arena: { cx, cy, radius: r, W, H }, dpr };
 }
 
-// ─── Trail canvas helpers ─────────────────────────────────────────────────────
+// ─── Trail canvas ─────────────────────────────────────────────────────────────
 
-// Prepare (or clear) the offscreen trail canvas to match the main canvas dimensions.
 function initTrailCanvas(tc: HTMLCanvasElement, arena: Arena, dpr: number) {
   tc.width  = Math.floor(arena.W * dpr);
   tc.height = Math.floor(arena.H * dpr);
@@ -129,19 +128,13 @@ function initTrailCanvas(tc: HTMLCanvasElement, arena: Arena, dpr: number) {
   }
 }
 
-// Burn one disc into the offscreen trail canvas.
-// Each disc is a copy of the ball: dark fill + thin coloured edge accent.
-function burnRing(tc: HTMLCanvasElement, x: number, y: number, r: number, hue: number) {
+function burnDisc(tc: HTMLCanvasElement, x: number, y: number, r: number, hue: number) {
   const tctx = tc.getContext("2d");
   if (!tctx) return;
-
-  // Solid dark disc (the "body" of the worm segment)
   tctx.beginPath();
   tctx.arc(x, y, r, 0, Math.PI * 2);
   tctx.fillStyle = "#020617";
   tctx.fill();
-
-  // Thin coloured accent ring on the edge (≤8% of radius)
   tctx.beginPath();
   tctx.arc(x, y, r, 0, Math.PI * 2);
   tctx.strokeStyle = `hsl(${hue}, 100%, 62%)`;
@@ -152,21 +145,19 @@ function burnRing(tc: HTMLCanvasElement, x: number, y: number, r: number, hue: n
 // ─── Drawing ──────────────────────────────────────────────────────────────────
 
 function drawFrame(
-  ctx:        CanvasRenderingContext2D,
-  arena:      Arena,
+  ctx:         CanvasRenderingContext2D,
+  arena:       Arena,
   trailCanvas: HTMLCanvasElement,
-  bR:         number,
-  ball:       Ball,
+  bR:          number,
+  ball:        Ball,
 ) {
   const { cx, cy, W, H } = arena;
 
-  // Background
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = "#020617";
   ctx.fillRect(0, 0, W, H);
   drawCanvasWatermark(ctx, W, H);
 
-  // Blit the persistent trail canvas clipped to the circle so nothing leaks outside
   ctx.save();
   ctx.beginPath();
   ctx.arc(cx, cy, bR - 1, 0, Math.PI * 2);
@@ -174,7 +165,6 @@ function drawFrame(
   ctx.drawImage(trailCanvas, 0, 0, W, H);
   ctx.restore();
 
-  // Circular boundary
   ctx.save();
   ctx.beginPath();
   ctx.arc(cx, cy, bR, 0, Math.PI * 2);
@@ -185,7 +175,6 @@ function drawFrame(
   ctx.stroke();
   ctx.restore();
 
-  // Ball
   ctx.save();
   ctx.beginPath();
   ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
@@ -195,9 +184,8 @@ function drawFrame(
   ctx.fill();
   ctx.restore();
 
-  // Inner highlight
   ctx.save();
-  ctx.globalAlpha = 0.32;
+  ctx.globalAlpha = 0.28;
   ctx.beginPath();
   ctx.arc(ball.x - ball.r * 0.27, ball.y - ball.r * 0.27, ball.r * 0.4, 0, Math.PI * 2);
   ctx.fillStyle = "#fff";
@@ -212,30 +200,29 @@ function drawIdle(ctx: CanvasRenderingContext2D, arena: Arena) {
   ctx.fillRect(0, 0, W, H);
   drawCanvasWatermark(ctx, W, H);
   ctx.beginPath();
-  ctx.arc(cx, cy, arena.radius * 0.93, 0, Math.PI * 2);
+  ctx.arc(cx, cy, arena.radius * INIT_BR_RATIO, 0, Math.PI * 2);
   ctx.strokeStyle = "rgba(148,163,184,0.3)";
-  ctx.lineWidth   = 3;
+  ctx.lineWidth   = 2;
   ctx.stroke();
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const CountryEscapeChallenge = () => {
-  const canvasRef     = useRef<HTMLCanvasElement>(null);
+  const canvasRef      = useRef<HTMLCanvasElement>(null);
   const trailCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const audioRef      = useRef(createAudio());
-  const arenaRef      = useRef<Arena | null>(null);
-  const dprRef        = useRef(1);
-  const ballRef       = useRef<Ball | null>(null);
-  const bRRef         = useRef(0);
-  const origRRef      = useRef(0);
-  const lastTRef      = useRef(0);
-  const rafRef        = useRef<number | null>(null);
-  const phaseRef      = useRef<Phase>("idle");
-  const bounceRef     = useRef(0);
-  // Distance accumulator for ring spawning
-  const trailAccRef   = useRef(0);
-  const prevPosRef    = useRef({ x: 0, y: 0 });
+  const audioRef       = useRef(createAudio());
+  const arenaRef       = useRef<Arena | null>(null);
+  const dprRef         = useRef(1);
+  const ballRef        = useRef<Ball | null>(null);
+  const bRRef          = useRef(0);
+  const origRRef       = useRef(0);
+  const lastTRef       = useRef(0);
+  const rafRef         = useRef<number | null>(null);
+  const phaseRef       = useRef<Phase>("idle");
+  const bounceRef      = useRef(0);
+  const trailAccRef    = useRef(0);
+  const prevPosRef     = useRef({ x: 0, y: 0 });
 
   const [phase,       setPhase]       = useState<Phase>("idle");
   const [bounceCount, setBounceCount] = useState(0);
@@ -246,7 +233,6 @@ const CountryEscapeChallenge = () => {
     if (!arena) return;
     void audioRef.current.unlock();
 
-    // Clear / (re-)initialise the offscreen trail canvas
     if (!trailCanvasRef.current) trailCanvasRef.current = document.createElement("canvas");
     initTrailCanvas(trailCanvasRef.current, arena, dprRef.current);
 
@@ -254,15 +240,10 @@ const CountryEscapeChallenge = () => {
     const angle = Math.random() * Math.PI * 2;
     const speed = arena.radius * SPEED_RATIO;
 
-    ballRef.current = {
-      x: arena.cx, y: arena.cy,
-      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-      r: initR, hue: Math.random() * 360,
-    };
+    ballRef.current     = { x: arena.cx, y: arena.cy, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed, r: initR, hue: Math.random() * 360 };
     prevPosRef.current  = { x: arena.cx, y: arena.cy };
     trailAccRef.current = 0;
-
-    bRRef.current       = arena.radius * 0.93;
+    bRRef.current       = arena.radius * INIT_BR_RATIO;
     origRRef.current    = arena.radius;
     bounceRef.current   = 0;
     phaseRef.current    = "running";
@@ -278,8 +259,7 @@ const CountryEscapeChallenge = () => {
 
     const applyArena = (arena: Arena) => {
       arenaRef.current = arena;
-      const circleTop = arena.cy - arena.radius * 0.93;
-      setHudAnchorY(Math.max(60, circleTop - 24));
+      setHudAnchorY(Math.max(60, arena.cy - arena.radius * INIT_BR_RATIO - 24));
     };
 
     const { arena, dpr } = resizeCanvas(canvas);
@@ -293,61 +273,58 @@ const CountryEscapeChallenge = () => {
       lastTRef.current = t;
 
       if (phaseRef.current === "running") {
-        const ball   = ballRef.current!;
-        const origR  = origRRef.current;
+        const ball  = ballRef.current!;
+        const origR = origRRef.current;
 
-        // Grow ball and shrink boundary
         ball.r        += origR * GROWTH_RATE * dt;
-        bRRef.current -= origR * SHRINK_RATE * dt;
-        ball.hue = (ball.hue + HUE_RATE * dt) % 360;
+        bRRef.current  = Math.max(origR * 0.05, bRRef.current - origR * SHRINK_RATE * dt);
+        ball.hue       = (ball.hue + HUE_RATE * dt) % 360;
+        ball.x        += ball.vx * dt;
+        ball.y        += ball.vy * dt;
 
-        // Move
-        ball.x += ball.vx * dt;
-        ball.y += ball.vy * dt;
-
-        // Bounce off circular boundary (before ring-burn so trail stays inside)
+        // Pure elastic reflection — angle of incidence = angle of reflection
         const bR   = bRRef.current;
         const cdx  = ball.x - arena.cx;
         const cdy  = ball.y - arena.cy;
         const dist = Math.hypot(cdx, cdy) || 0.001;
 
         if (dist + ball.r >= bR) {
-          const nx = cdx / dist;
-          const ny = cdy / dist;
+          const nx = cdx / dist, ny = cdy / dist;
           const vn = ball.vx * nx + ball.vy * ny;
           if (vn > 0) {
+            // Elastic reflection
             ball.vx -= 2 * vn * nx;
             ball.vy -= 2 * vn * ny;
-            // Random angle jitter ±18° so the ball never follows a fixed pattern
-            const jitter = (Math.random() - 0.5) * 0.63;
-            const c = Math.cos(jitter), s = Math.sin(jitter);
-            const jx = ball.vx * c - ball.vy * s;
-            const jy = ball.vx * s + ball.vy * c;
-            ball.vx = jx; ball.vy = jy;
+            // Small random rotation ±15° — breaks repeating polygon patterns
+            // while still feeling physically plausible
+            const angle = (Math.random() - 0.5) * 0.52;
+            const cos = Math.cos(angle), sin = Math.sin(angle);
+            const rx = ball.vx * cos - ball.vy * sin;
+            const ry = ball.vx * sin + ball.vy * cos;
+            // Re-normalize to keep speed perfectly constant
+            const spd = Math.hypot(rx, ry) || 1;
+            const tgt = origR * SPEED_RATIO;
+            ball.vx = (rx / spd) * tgt;
+            ball.vy = (ry / spd) * tgt;
             audioRef.current.bounce();
             bounceRef.current++;
             setBounceCount(bounceRef.current);
           }
-          // Push ball back inside before recording trail position
           ball.x = arena.cx + nx * (bR - ball.r - 0.5);
           ball.y = arena.cy + ny * (bR - ball.r - 0.5);
         }
 
-        // Distance-based ring spawning — runs after collision so position is always inside
-        const dx   = ball.x - prevPosRef.current.x;
-        const dy   = ball.y - prevPosRef.current.y;
+        // Trail
+        const dx = ball.x - prevPosRef.current.x;
+        const dy = ball.y - prevPosRef.current.y;
         trailAccRef.current += Math.hypot(dx, dy);
         prevPosRef.current   = { x: ball.x, y: ball.y };
 
-        // Each disc = current ball size; spacing = 15% of diameter → ~85% overlap
-        const drawR   = ball.r;
-        const spacing = Math.max(1, drawR * 0.15);
+        const spacing = Math.max(1, ball.r * 0.15);
         while (trailAccRef.current >= spacing && trailCanvasRef.current) {
-          burnRing(trailCanvasRef.current, ball.x, ball.y, drawR, ball.hue);
+          burnDisc(trailCanvasRef.current, ball.x, ball.y, ball.r, ball.hue);
           trailAccRef.current -= spacing;
         }
-
-        // Simulation runs until the user stops it manually
       }
 
       const ball = ballRef.current;
@@ -366,13 +343,12 @@ const CountryEscapeChallenge = () => {
     const onResize = () => {
       const { arena, dpr } = resizeCanvas(canvas);
       applyArena(arena);
-      dprRef.current   = dpr;
-      // Trail canvas is re-initialised on next startGame; resize clears it for now
+      dprRef.current = dpr;
       if (trailCanvasRef.current) initTrailCanvas(trailCanvasRef.current, arena, dpr);
     };
     const onPtr = () => void audioRef.current.unlock();
 
-    window.addEventListener("resize",     onResize);
+    window.addEventListener("resize",      onResize);
     window.addEventListener("pointerdown", onPtr, { passive: true });
 
     return () => {
@@ -391,7 +367,7 @@ const CountryEscapeChallenge = () => {
         className="hud"
         style={hudAnchorY !== null ? { top: `${hudAnchorY}px` } : { visibility: "hidden" }}
       >
-        <h1>Ball grows bigger, boundary gets smaller!</h1>
+        <h1>Growing Ball in Shrinking Boundary</h1>
         {phase === "running" && <p className="bc">Bounces: {bounceCount}</p>}
       </div>
 
@@ -402,96 +378,39 @@ const CountryEscapeChallenge = () => {
       )}
 
       <style jsx>{`
-        .root {
-          position: relative;
-          width: 100%;
-          height: 100dvh;
-          overflow: hidden;
-          background: #020617;
-        }
-        .cv {
-          display: block;
-          width: 100%;
-          height: 100dvh;
-        }
+        .root { position: relative; width: 100%; height: 100dvh; overflow: hidden; background: #020617; }
+        .cv { display: block; width: 100%; height: 100dvh; }
         .hud {
-          position: fixed;
-          left: 50%;
-          transform: translate(-50%, -100%);
-          z-index: 6;
-          width: min(560px, calc(100% - 40px));
-          text-align: center;
-          pointer-events: none;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 6px;
-          padding-bottom: 8px;
+          position: fixed; left: 50%; transform: translate(-50%, -100%);
+          z-index: 6; width: min(560px, calc(100% - 40px));
+          text-align: center; pointer-events: none;
+          display: flex; flex-direction: column; align-items: center; gap: 6px; padding-bottom: 8px;
         }
         h1 {
-          margin: 0;
-          font-family: Arial, Helvetica, sans-serif;
-          font-size: clamp(1.5rem, 5.25vw, 2.475rem);
-          font-weight: 900;
-          color: #fff;
-          text-shadow:
-            0 0 18px rgba(255, 255, 255, 0.12),
-            0 8px 24px rgba(2, 6, 23, 0.72);
-          letter-spacing: 0.02em;
-          line-height: 1.2;
+          margin: 0; font-family: Arial, Helvetica, sans-serif;
+          font-size: clamp(1.5rem, 5.25vw, 2.475rem); font-weight: 900; color: #fff;
+          text-shadow: 0 0 18px rgba(255,255,255,0.12), 0 8px 24px rgba(2,6,23,0.72);
+          letter-spacing: 0.02em; line-height: 1.2;
         }
-        .bc {
-          margin: 0;
-          font-family: Arial, Helvetica, sans-serif;
-          font-size: clamp(0.85rem, 2vw, 1rem);
-          font-weight: 700;
-          color: rgba(248, 250, 252, 0.78);
-        }
+        .bc { margin: 0; font-family: Arial, Helvetica, sans-serif; font-size: clamp(0.85rem, 2vw, 1rem); font-weight: 700; color: rgba(248,250,252,0.78); }
         .panel {
-          position: fixed;
-          bottom: 36px;
-          left: 50%;
-          transform: translateX(-50%);
-          z-index: 8;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 10px;
-          padding: 14px 22px;
-          border-radius: 12px;
-          border: 1px solid rgba(148, 163, 184, 0.22);
-          background: rgba(2, 6, 23, 0.82);
-          backdrop-filter: blur(12px);
-          box-shadow: 0 16px 48px rgba(2, 6, 23, 0.5);
-        }
-        .msg {
-          margin: 0;
-          font-family: Arial, Helvetica, sans-serif;
-          font-size: 1rem;
-          font-weight: 700;
-          color: rgba(248, 250, 252, 0.85);
+          position: fixed; bottom: 36px; left: 50%; transform: translateX(-50%);
+          z-index: 8; display: flex; flex-direction: column; align-items: center; gap: 10px;
+          padding: 14px 22px; border-radius: 12px;
+          border: 1px solid rgba(148,163,184,0.22); background: rgba(2,6,23,0.82);
+          backdrop-filter: blur(12px); box-shadow: 0 16px 48px rgba(2,6,23,0.5);
         }
         button {
-          min-height: 44px;
-          padding: 0 28px;
-          border: 1.5px solid rgba(34, 197, 94, 0.55);
-          border-radius: 8px;
-          background: rgba(22, 163, 74, 0.2);
-          color: #dcfce7;
-          font-weight: 900;
-          font-size: 14px;
-          font-family: Arial, Helvetica, sans-serif;
-          letter-spacing: 0.08em;
-          cursor: pointer;
+          min-height: 44px; padding: 0 28px;
+          border: 1.5px solid rgba(34,197,94,0.55); border-radius: 8px;
+          background: rgba(22,163,74,0.2); color: #dcfce7;
+          font-weight: 900; font-size: 14px; font-family: Arial, Helvetica, sans-serif;
+          letter-spacing: 0.08em; cursor: pointer;
         }
-        button:hover {
-          background: rgba(22, 163, 74, 0.32);
-        }
+        button:hover { background: rgba(22,163,74,0.32); }
         @media (max-width: 600px) {
-          .panel {
-            bottom: max(20px, calc(env(safe-area-inset-bottom, 0px) + 12px));
-            width: calc(100% - 32px);
-          }
+          .hud { top: calc(14px + env(safe-area-inset-top, 0px) + 48px) !important; transform: translateX(-50%); }
+          .panel { bottom: max(20px, calc(env(safe-area-inset-bottom, 0px) + 12px)); width: calc(100% - 32px); }
         }
       `}</style>
     </div>
