@@ -127,14 +127,23 @@ const drawScene = (
   }
   ctx.restore();
 
-  ctx.fillStyle = "rgba(248, 250, 252, 0.82)";
-  ctx.font = "700 18px Arial, Helvetica, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+  ctx.font = "900 28px Arial, Helvetica, sans-serif";
   ctx.fillText(
-    "Collision of 2 balls gives birth to new ball",
+    "Kessler Effect",
     arena.centerX,
-    arena.centerY - arena.circleRadius - 32,
+    arena.centerY - arena.circleRadius - 52,
+  );
+
+  ctx.fillStyle = "rgba(248, 250, 252, 0.72)";
+  ctx.font = "700 15px Arial, Helvetica, sans-serif";
+  ctx.fillText(
+    "Collision of 2 balls creates new ball",
+    arena.centerX,
+    arena.centerY - arena.circleRadius - 26,
   );
 
   balls.forEach((ball) => {

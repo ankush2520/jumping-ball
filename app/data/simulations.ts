@@ -71,7 +71,7 @@ export const simulations: Simulation[] = [
   },
   {
     id: "plasma-bounce",
-    title: "Plasma Bounce",
+    title: "Kessler Effect",
     subtitle: "COLLISION CASCADE",
     description: "Split glowing balls inside a charged arena.",
     component: PlasmaBounce,
