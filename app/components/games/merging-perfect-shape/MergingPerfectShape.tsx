@@ -6,16 +6,19 @@ import { drawCanvasWatermark } from "@/app/lib/watermark";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type ShapeType = "square" | "circle" | "triangle";
-type Phase    = "editor" | "simulation" | "done";
-type Arena    = { x: number; y: number; size: number; cx: number; cy: number };
+// assembled  = all pieces merged, cracked shape held still for ASSEMBLED_PAUSE seconds
+// transition = cracked fades out, solid shape fades in with blur (TRANSITION_DUR seconds)
+// bouncing   = plain solid shape bounces forever
+type Phase = "editor" | "simulation" | "assembled" | "transition" | "bouncing";
+type Arena = { x: number; y: number; size: number; cx: number; cy: number };
 
 type Cell = {
   id: number;
   gridRow: number; gridCol: number;
-  targetX: number; targetY: number; // centroid in assembled shape (world)
-  localX: number;  localY: number;  // centroid offset from owning body's (x, y)
-  verts: [number, number][];        // polygon vertices relative to centroid
-  tileSize: number;                 // nominal grid step (used for merge threshold)
+  targetX: number; targetY: number;
+  localX: number;  localY: number;
+  verts: [number, number][];
+  tileSize: number;
 };
 
 type Body = {
@@ -28,14 +31,19 @@ type Body = {
   color: string;
 };
 
+type Solid = { x: number; y: number; vx: number; vy: number };
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PIECE_SPEED      = 136;  // px/s — constant for every body
-const MERGE_DELAY      = 5.0;  // seconds before merging is enabled
-const ATTACH_THRESHOLD = 0.80; // fraction of tileSize: proximity for merge-snap
-const ARENA_PAD        = 14;
-const GRID_JITTER      = 0.42; // fraction of tileSize to jitter interior corners
-const VERT_INSET       = 0.87; // scale polygon inward (visual gap between pieces)
+const PIECE_SPEED        = 136;
+const MERGE_DELAY        = 5.0;
+const ATTACH_THRESHOLD   = 0.80;
+const ARENA_PAD          = 14;
+const GRID_JITTER        = 0.42;
+const VERT_INSET         = 0.87;
+const ASSEMBLED_RATIO    = 0.29;
+const ASSEMBLED_PAUSE    = 0.75; // seconds the cracked shape freezes after full merge
+const TRANSITION_DUR     = 0.55; // seconds for cracked → solid dissolve
 
 const COLORS: Record<ShapeType, string> = {
   square:   "#f97316",
@@ -69,11 +77,11 @@ function isInShape(
   return px >= aCx - hw && px <= aCx + hw;
 }
 
-// ─── Piece generation (jittered grid → irregular polygons) ────────────────────
+// ─── Piece generation ─────────────────────────────────────────────────────────
 
 function generateBodies(shape: ShapeType, arena: Arena): Body[] {
   const N         = 5;
-  const ASSEMBLED = arena.size * 0.29;  // assembled shape size (half of arena)
+  const ASSEMBLED = arena.size * ASSEMBLED_RATIO;
   const tileSize  = ASSEMBLED / N;
   const ox        = arena.cx - ASSEMBLED / 2;
   const oy        = arena.cy - ASSEMBLED / 2;
@@ -85,14 +93,13 @@ function generateBodies(shape: ShapeType, arena: Arena): Body[] {
   const triLeft  = arena.cx - ASSEMBLED / 2;
   const triRight = arena.cx + ASSEMBLED / 2;
 
-  // Build (N+1)×(N+1) grid of control points with random jitter on interior nodes
   const jitter = tileSize * GRID_JITTER;
   const pts: [number, number][][] = [];
   for (let row = 0; row <= N; row++) {
     pts[row] = [];
     for (let col = 0; col <= N; col++) {
-      const bx = ox + col * tileSize;
-      const by = oy + row * tileSize;
+      const bx     = ox + col * tileSize;
+      const by     = oy + row * tileSize;
       const isEdge = row === 0 || row === N || col === 0 || col === N;
       pts[row][col] = isEdge
         ? [bx, by]
@@ -106,33 +113,26 @@ function generateBodies(shape: ShapeType, arena: Arena): Body[] {
 
   for (let row = 0; row < N; row++) {
     for (let col = 0; col < N; col++) {
-      // Four corners of this jittered cell (clockwise)
       const corners: [number, number][] = [
         pts[row][col],
         pts[row][col + 1],
         pts[row + 1][col + 1],
         pts[row + 1][col],
       ];
-
-      // Centroid of the quadrilateral
       const cx = (corners[0][0] + corners[1][0] + corners[2][0] + corners[3][0]) / 4;
       const cy = (corners[0][1] + corners[1][1] + corners[2][1] + corners[3][1]) / 4;
 
-      // Shape inclusion check on centroid
       if (!isInShape(shape, cx, cy, arena.cx, arena.cy, r, triTop, triBot, triLeft, triRight)) continue;
 
-      // Vertex offsets from centroid, scaled inward for a visual gap
       const verts: [number, number][] = corners.map(([vx, vy]) => [
         (vx - cx) * VERT_INSET,
         (vy - cy) * VERT_INSET,
       ]);
 
-      // Random scatter position inside arena
       const inner = arena.size - ARENA_PAD * 2 - tileSize;
       const sx    = arena.x + ARENA_PAD + tileSize / 2 + Math.random() * inner;
       const sy    = arena.y + ARENA_PAD + tileSize / 2 + Math.random() * inner;
 
-      // Random direction (avoid perfectly axis-aligned)
       let angle = Math.random() * Math.PI * 2;
       const AVOID = Math.PI / 36;
       if (Math.abs(Math.sin(angle)) < AVOID) angle += AVOID;
@@ -157,11 +157,10 @@ function generateBodies(shape: ShapeType, arena: Arena): Body[] {
       });
     }
   }
-
   return bodies;
 }
 
-// ─── Physics ──────────────────────────────────────────────────────────────────
+// ─── Piece physics ────────────────────────────────────────────────────────────
 
 function getBodyBounds(b: Body) {
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -182,11 +181,9 @@ function setSpeed(b: Body) {
   const spd = Math.hypot(b.vx, b.vy);
   if (spd < 0.001) {
     const a = Math.random() * Math.PI * 2;
-    b.vx = Math.cos(a) * PIECE_SPEED;
-    b.vy = Math.sin(a) * PIECE_SPEED;
+    b.vx = Math.cos(a) * PIECE_SPEED; b.vy = Math.sin(a) * PIECE_SPEED;
   } else {
-    b.vx = (b.vx / spd) * PIECE_SPEED;
-    b.vy = (b.vy / spd) * PIECE_SPEED;
+    b.vx = (b.vx / spd) * PIECE_SPEED; b.vy = (b.vy / spd) * PIECE_SPEED;
   }
 }
 
@@ -195,13 +192,31 @@ function bounceWall(b: Body, arena: Arena) {
   const L = arena.x, R = arena.x + arena.size;
   const T = arena.y, Bo = arena.y + arena.size;
   let hit = false;
-
   if (minX < L)  { b.x += L  - minX; b.vx =  Math.abs(b.vx); hit = true; }
   if (maxX > R)  { b.x -= maxX - R;  b.vx = -Math.abs(b.vx); hit = true; }
   if (minY < T)  { b.y += T  - minY; b.vy =  Math.abs(b.vy); hit = true; }
   if (maxY > Bo) { b.y -= maxY - Bo; b.vy = -Math.abs(b.vy); hit = true; }
-
   if (hit) { setSpeed(b); b.glowColor = "red"; b.glowTimer = 0.14; }
+}
+
+// ─── Solid shape bounce ───────────────────────────────────────────────────────
+
+function getSolidBounds(s: Solid, shape: ShapeType, S: number) {
+  const hw = S / 2;
+  if (shape === "circle") { const r = S * 0.46; return { minX: s.x - r, maxX: s.x + r, minY: s.y - r, maxY: s.y + r }; }
+  return { minX: s.x - hw, maxX: s.x + hw, minY: s.y - hw, maxY: s.y + hw };
+}
+
+function bounceSolid(s: Solid, arena: Arena, shape: ShapeType, S: number) {
+  const { minX, maxX, minY, maxY } = getSolidBounds(s, shape, S);
+  const L = arena.x, R = arena.x + arena.size;
+  const T = arena.y, Bo = arena.y + arena.size;
+  if (minX < L)  { s.x += L  - minX; s.vx =  Math.abs(s.vx); }
+  if (maxX > R)  { s.x -= maxX - R;  s.vx = -Math.abs(s.vx); }
+  if (minY < T)  { s.y += T  - minY; s.vy =  Math.abs(s.vy); }
+  if (maxY > Bo) { s.y -= maxY - Bo; s.vy = -Math.abs(s.vy); }
+  const spd = Math.hypot(s.vx, s.vy);
+  if (spd > 0.001) { s.vx = (s.vx / spd) * PIECE_SPEED; s.vy = (s.vy / spd) * PIECE_SPEED; }
 }
 
 // ─── Merge ────────────────────────────────────────────────────────────────────
@@ -211,17 +226,12 @@ type MergeCandidate = { canMerge: false } | { canMerge: true; c1: Cell; c2: Cell
 function checkCanMerge(b1: Body, b2: Body): MergeCandidate {
   const tileSize  = b1.cells[0]?.tileSize ?? 1;
   const threshold = tileSize * ATTACH_THRESHOLD;
-
   for (const c1 of b1.cells) {
-    const w1x = b1.x + c1.localX;
-    const w1y = b1.y + c1.localY;
+    const w1x = b1.x + c1.localX, w1y = b1.y + c1.localY;
     for (const c2 of b2.cells) {
       if (Math.abs(c1.gridRow - c2.gridRow) + Math.abs(c1.gridCol - c2.gridCol) !== 1) continue;
-      const w2x = b2.x + c2.localX;
-      const w2y = b2.y + c2.localY;
-      const expDX = c2.targetX - c1.targetX;
-      const expDY = c2.targetY - c1.targetY;
-      if (Math.hypot((w2x - w1x) - expDX, (w2y - w1y) - expDY) < threshold) {
+      const expDX = c2.targetX - c1.targetX, expDY = c2.targetY - c1.targetY;
+      if (Math.hypot((b2.x + c2.localX - w1x) - expDX, (b2.y + c2.localY - w1y) - expDY) < threshold) {
         return { canMerge: true, c1, c2 };
       }
     }
@@ -230,39 +240,26 @@ function checkCanMerge(b1: Body, b2: Body): MergeCandidate {
 }
 
 function mergeBodies(bodies: Body[], iIdx: number, jIdx: number, mc1: Cell, mc2: Cell) {
-  const b1 = bodies[iIdx];
-  const b2 = bodies[jIdx];
-  const m1 = b1.cells.length;
-  const m2 = b2.cells.length;
-
-  // Snap b2 so mc2's centroid is exactly at the correct position relative to mc1
+  const b1 = bodies[iIdx], b2 = bodies[jIdx];
+  const m1 = b1.cells.length, m2 = b2.cells.length;
   b2.x = b1.x + mc1.localX + (mc2.targetX - mc1.targetX) - mc2.localX;
   b2.y = b1.y + mc1.localY + (mc2.targetY - mc1.targetY) - mc2.localY;
-
   for (const c of b2.cells) {
     b1.cells.push({ ...c, localX: b2.x + c.localX - b1.x, localY: b2.y + c.localY - b1.y });
   }
-
   b1.vx = (b1.vx * m1 + b2.vx * m2) / (m1 + m2);
   b1.vy = (b1.vy * m1 + b2.vy * m2) / (m1 + m2);
   setSpeed(b1);
-
-  b1.glowColor = "green";
-  b1.glowTimer = 0.55;
+  b1.glowColor = "green"; b1.glowTimer = 0.55;
   bodies.splice(jIdx, 1);
 }
-
-// ─── Merge scan (no collision response — pieces pass through each other) ──────
 
 function scanMerges(bodies: Body[], mergingEnabled: boolean): boolean {
   if (!mergingEnabled) return false;
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
-      const result = checkCanMerge(bodies[i], bodies[j]);
-      if (result.canMerge) {
-        mergeBodies(bodies, i, j, result.c1, result.c2);
-        return true; // restart after splice
-      }
+      const r = checkCanMerge(bodies[i], bodies[j]);
+      if (r.canMerge) { mergeBodies(bodies, i, j, r.c1, r.c2); return true; }
     }
   }
   return false;
@@ -274,65 +271,87 @@ function drawArena(ctx: CanvasRenderingContext2D, arena: Arena) {
   ctx.save();
   ctx.fillStyle = "rgba(2,6,23,0.55)";
   ctx.fillRect(arena.x, arena.y, arena.size, arena.size);
-  ctx.shadowColor = "rgba(148,163,184,0.45)";
-  ctx.shadowBlur  = 14;
-  ctx.strokeStyle = "rgba(148,163,184,0.75)";
-  ctx.lineWidth   = 1.5;
+  ctx.shadowColor = "rgba(148,163,184,0.45)"; ctx.shadowBlur = 14;
+  ctx.strokeStyle = "rgba(148,163,184,0.75)"; ctx.lineWidth = 1.5;
   ctx.strokeRect(arena.x, arena.y, arena.size, arena.size);
-  ctx.shadowBlur  = 0;
-  ctx.strokeStyle = "rgba(226,232,240,0.07)";
-  ctx.lineWidth   = 1;
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(226,232,240,0.07)"; ctx.lineWidth = 1;
   ctx.strokeRect(arena.x + 5, arena.y + 5, arena.size - 10, arena.size - 10);
   ctx.restore();
 }
 
-function drawBody(ctx: CanvasRenderingContext2D, body: Body) {
-  const isGreen = body.glowColor === "green";
-  const isRed   = body.glowColor === "red";
-  const glowCol = isGreen ? "rgba(74,222,128,0.7)" : isRed ? "rgba(248,113,113,0.55)" : null;
-
+function drawBodies(ctx: CanvasRenderingContext2D, bodies: Body[], alpha: number) {
   ctx.save();
-  if (glowCol) { ctx.shadowColor = glowCol; ctx.shadowBlur = 14; }
-
-  for (const c of body.cells) {
-    const px = body.x + c.localX;
-    const py = body.y + c.localY;
-
-    ctx.beginPath();
-    ctx.moveTo(px + c.verts[0][0], py + c.verts[0][1]);
-    for (let i = 1; i < c.verts.length; i++) {
-      ctx.lineTo(px + c.verts[i][0], py + c.verts[i][1]);
+  ctx.globalAlpha = alpha;
+  for (const body of bodies) {
+    const isGreen = body.glowColor === "green";
+    const isRed   = body.glowColor === "red";
+    if (isGreen) { ctx.shadowColor = "rgba(74,222,128,0.7)";  ctx.shadowBlur = 14; }
+    else if (isRed) { ctx.shadowColor = "rgba(248,113,113,0.55)"; ctx.shadowBlur = 14; }
+    else { ctx.shadowBlur = 0; }
+    for (const c of body.cells) {
+      const px = body.x + c.localX, py = body.y + c.localY;
+      ctx.beginPath();
+      ctx.moveTo(px + c.verts[0][0], py + c.verts[0][1]);
+      for (let i = 1; i < c.verts.length; i++) ctx.lineTo(px + c.verts[i][0], py + c.verts[i][1]);
+      ctx.closePath();
+      ctx.fillStyle   = body.color; ctx.fill();
+      ctx.strokeStyle = "rgba(255,255,255,0.28)"; ctx.lineWidth = 1; ctx.stroke();
     }
-    ctx.closePath();
-
-    ctx.fillStyle   = body.color;
-    ctx.fill();
-    ctx.strokeStyle = "rgba(255,255,255,0.28)";
-    ctx.lineWidth   = 1;
-    ctx.stroke();
   }
+  ctx.restore();
+}
+
+function drawSolid(
+  ctx: CanvasRenderingContext2D,
+  shape: ShapeType, s: Solid, S: number,
+  color: string, alpha: number, blurPx: number,
+) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  if (blurPx > 0.5) ctx.filter = `blur(${blurPx.toFixed(1)}px)`;
+  ctx.fillStyle   = color;
+  ctx.shadowColor = color;
+  ctx.shadowBlur  = 20;
+  ctx.beginPath();
+  if (shape === "square") {
+    ctx.rect(s.x - S / 2, s.y - S / 2, S, S);
+  } else if (shape === "circle") {
+    ctx.arc(s.x, s.y, S * 0.46, 0, Math.PI * 2);
+  } else {
+    // equilateral-style triangle pointing up, bounding box S×S centered at (s.x, s.y)
+    const hw = S / 2;
+    ctx.moveTo(s.x,      s.y - hw);
+    ctx.lineTo(s.x - hw, s.y + hw);
+    ctx.lineTo(s.x + hw, s.y + hw);
+    ctx.closePath();
+  }
+  ctx.fill();
   ctx.restore();
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function MergingPerfectShape() {
-  const canvasRef  = useRef<HTMLCanvasElement>(null);
-  const bodiesRef  = useRef<Body[]>([]);
-  const arenaRef   = useRef<Arena>({ x: 0, y: 0, size: 0, cx: 0, cy: 0 });
-  const phaseRef   = useRef<Phase>("editor");
-  const elapsedRef = useRef(0);
-  const lastTRef   = useRef(0);
-  const rafRef     = useRef<number | null>(null);
-  const dimRef     = useRef({ W: 0, H: 0 });
-  const shapeRef   = useRef<ShapeType>("square");
-  const frameRef   = useRef(0);
-  const totalRef   = useRef(0);
+  const canvasRef        = useRef<HTMLCanvasElement>(null);
+  const bodiesRef        = useRef<Body[]>([]);
+  const arenaRef         = useRef<Arena>({ x: 0, y: 0, size: 0, cx: 0, cy: 0 });
+  const phaseRef         = useRef<Phase>("editor");
+  const elapsedRef       = useRef(0);
+  const lastTRef         = useRef(0);
+  const rafRef           = useRef<number | null>(null);
+  const dimRef           = useRef({ W: 0, H: 0 });
+  const shapeRef         = useRef<ShapeType>("square");
+  const frameRef         = useRef(0);
+  const totalRef         = useRef(0);
+  const solidRef         = useRef<Solid>({ x: 0, y: 0, vx: 0, vy: 0 });
+  const solidSizeRef     = useRef(0);
+  const assembledTimeRef = useRef(0); // counts down from ASSEMBLED_PAUSE
+  const transPRef        = useRef(0); // 0→1 over TRANSITION_DUR
 
   const [phase,     setPhase]     = useState<Phase>("editor");
   const [shape,     setShape]     = useState<ShapeType>("square");
   const [timerMs,   setTimerMs]   = useState(0);
-  const [doneMs,    setDoneMs]    = useState(0);
   const [arenaY,    setArenaY]    = useState(0);
   const [remaining, setRemaining] = useState(0);
   const [merging,   setMerging]   = useState(false);
@@ -357,7 +376,7 @@ export default function MergingPerfectShape() {
   useEffect(() => {
     setupCanvas();
     const canvas = canvasRef.current!;
-    const ctx = canvas.getContext("2d")!;
+    const ctx    = canvas.getContext("2d")!;
 
     const tick = (t: number) => {
       const rawDt = (t - lastTRef.current) / 1000;
@@ -366,17 +385,18 @@ export default function MergingPerfectShape() {
 
       const { W, H } = dimRef.current;
       const arena     = arenaRef.current;
+      const curPhase  = phaseRef.current;
 
-      if (phaseRef.current === "simulation") {
+      // ── Update ─────────────────────────────────────────────────────────────
+
+      if (curPhase === "simulation") {
         elapsedRef.current += dt;
         const bodies = bodiesRef.current;
 
         for (const b of bodies) {
-          b.x += b.vx * dt;
-          b.y += b.vy * dt;
+          b.x += b.vx * dt; b.y += b.vy * dt;
           if (b.glowTimer > 0) { b.glowTimer -= dt; if (b.glowTimer <= 0) b.glowColor = "none"; }
         }
-
         for (const b of bodies) bounceWall(b, arena);
 
         const mergingEnabled = elapsedRef.current >= MERGE_DELAY;
@@ -390,19 +410,72 @@ export default function MergingPerfectShape() {
           setMerging(mergingEnabled);
         }
 
-        if (bodies.length === 1 && totalRef.current > 1 && phaseRef.current === "simulation") {
-          phaseRef.current = "done";
-          setDoneMs(elapsedRef.current * 1000);
-          setPhase("done");
+        // All merged → freeze cracked shape for a moment
+        if (bodies.length === 1 && totalRef.current > 1) {
+          phaseRef.current      = "assembled";
+          assembledTimeRef.current = ASSEMBLED_PAUSE;
+          setPhase("assembled");
         }
+
+      } else if (curPhase === "assembled") {
+        assembledTimeRef.current -= dt;
+        if (assembledTimeRef.current <= 0) {
+          // Hand off to solid shape
+          const b      = bodiesRef.current[0];
+          const bounds = getBodyBounds(b);
+          solidRef.current = {
+            x:  (bounds.minX + bounds.maxX) / 2,
+            y:  (bounds.minY + bounds.maxY) / 2,
+            vx: b.vx, vy: b.vy,
+          };
+          solidSizeRef.current = arena.size * ASSEMBLED_RATIO;
+          transPRef.current    = 0;
+          phaseRef.current     = "transition";
+          setPhase("transition");
+        }
+
+      } else if (curPhase === "transition") {
+        transPRef.current += dt / TRANSITION_DUR;
+        if (transPRef.current >= 1) {
+          transPRef.current = 1;
+          phaseRef.current  = "bouncing";
+          setPhase("bouncing");
+        }
+        const s = solidRef.current;
+        s.x += s.vx * dt; s.y += s.vy * dt;
+        bounceSolid(s, arena, shapeRef.current, solidSizeRef.current);
+
+      } else if (curPhase === "bouncing") {
+        const s = solidRef.current;
+        s.x += s.vx * dt; s.y += s.vy * dt;
+        bounceSolid(s, arena, shapeRef.current, solidSizeRef.current);
       }
+
+      // ── Render ─────────────────────────────────────────────────────────────
 
       ctx.clearRect(0, 0, W, H);
       ctx.fillStyle = "#020617";
       ctx.fillRect(0, 0, W, H);
       drawCanvasWatermark(ctx, W, H);
       drawArena(ctx, arena);
-      for (const b of bodiesRef.current) drawBody(ctx, b);
+
+      if (curPhase === "simulation" || curPhase === "assembled") {
+        drawBodies(ctx, bodiesRef.current, 1);
+      }
+
+      if (curPhase === "transition") {
+        const tp  = transPRef.current;
+        // Cracked shape fades out (stationary)
+        drawBodies(ctx, bodiesRef.current, 1 - tp);
+        // Solid shape fades in with dissolving blur
+        drawSolid(ctx, shapeRef.current, solidRef.current, solidSizeRef.current,
+                  COLORS[shapeRef.current], tp, (1 - tp) * 22);
+      }
+
+      if (curPhase === "bouncing") {
+        drawSolid(ctx, shapeRef.current, solidRef.current, solidSizeRef.current,
+                  COLORS[shapeRef.current], 1, 0);
+      }
 
       rafRef.current = requestAnimationFrame(tick);
     };
@@ -444,7 +517,7 @@ export default function MergingPerfectShape() {
     <div style={{ position: "relative", width: "100%", height: "100dvh", overflow: "hidden", background: "#020617" }}>
       <canvas ref={canvasRef} style={{ display: "block" }} />
 
-      {/* Heading — bottom sits 15 px above arena top */}
+      {/* Heading — bottom sits 15 px above arena */}
       <div style={{
         position: "fixed", top: 0, left: 0, right: 0,
         height: arenaY > 0 ? arenaY - 15 : undefined,
@@ -472,8 +545,17 @@ export default function MergingPerfectShape() {
             }
           </p>
         )}
+        {(phase === "assembled" || phase === "transition") && (
+          <p style={{
+            margin: "4px 0 0", fontFamily: "Arial, Helvetica, sans-serif",
+            fontSize: "0.9rem", fontWeight: 700, color: "#4ade80",
+          }}>
+            ✦ COMPLETE  ⏱ {fmtTime(timerMs)}
+          </p>
+        )}
       </div>
 
+      {/* Shape selector */}
       {phase === "editor" && (
         <div style={{
           position: "fixed", bottom: 32, left: "50%", transform: "translateX(-50%)",
@@ -509,22 +591,17 @@ export default function MergingPerfectShape() {
         </div>
       )}
 
-      {phase === "done" && (
+      {/* Play Again — shown while solid shape bounces */}
+      {phase === "bouncing" && (
         <div style={{
           position: "fixed", bottom: 32, left: "50%", transform: "translateX(-50%)",
-          zIndex: 8, display: "flex", flexDirection: "column", alignItems: "center", gap: 14,
-          padding: "22px 32px", borderRadius: 14,
-          border: "1px solid rgba(34,197,94,0.3)",
-          background: "rgba(2,6,23,0.92)", backdropFilter: "blur(14px)",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.6)", fontFamily: "Arial, Helvetica, sans-serif",
+          zIndex: 8,
         }}>
-          <p style={{ margin: 0, color: "#4ade80", fontWeight: 900, fontSize: "1.15rem" }}>
-            ✓ Assembled in {fmtTime(doneMs)}!
-          </p>
           <button onClick={handleReset} style={{
             minWidth: 150, minHeight: 44, borderRadius: 8, cursor: "pointer",
             border: "1.5px solid rgba(34,197,94,0.5)", background: "rgba(22,163,74,0.18)",
             color: "#bbf7d0", fontWeight: 900, fontSize: 14, letterSpacing: "0.08em",
+            fontFamily: "Arial, Helvetica, sans-serif",
           }}>
             Play Again
           </button>
