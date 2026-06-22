@@ -43,6 +43,7 @@ type RaceEntry = {
   transP: number;
   solid: Solid;
   solidSize: number;
+  completionGlow: number; // 1→0 over ASSEMBLED_PAUSE when shape finishes
 };
 
 type Solid = { x: number; y: number; vx: number; vy: number };
@@ -283,7 +284,7 @@ function setSpeed(b: Body) {
   }
 }
 
-function bounceWall(b: Body, arena: Arena) {
+function bounceWall(b: Body, arena: Arena, onBounce?: (shape: ShapeType) => void) {
   const { minX, maxX, minY, maxY } = getBodyBounds(b);
   const L = arena.x, R = arena.x + arena.size;
   const T = arena.y, Bo = arena.y + arena.size;
@@ -292,7 +293,39 @@ function bounceWall(b: Body, arena: Arena) {
   if (maxX > R)  { b.x -= maxX - R;  b.vx = -Math.abs(b.vx); hit = true; }
   if (minY < T)  { b.y += T  - minY; b.vy =  Math.abs(b.vy); hit = true; }
   if (maxY > Bo) { b.y -= maxY - Bo; b.vy = -Math.abs(b.vy); hit = true; }
-  if (hit) { setSpeed(b); b.glowColor = "red"; b.glowTimer = 0.14; }
+  if (hit) { setSpeed(b); b.glowColor = "red"; b.glowTimer = 0.14; onBounce?.(b.shape); }
+}
+
+// Elastic AABB collision between bodies of DIFFERENT shapes only.
+// Same-shape pieces pass through each other freely so they can self-assemble.
+function resolveBodyCollisions(bodies: Body[]) {
+  for (let i = 0; i < bodies.length; i++) {
+    for (let j = i + 1; j < bodies.length; j++) {
+      const a = bodies[i], b = bodies[j];
+      if (a.shape === b.shape) continue;
+
+      const ba = getBodyBounds(a);
+      const bb = getBodyBounds(b);
+      const ox = Math.min(ba.maxX, bb.maxX) - Math.max(ba.minX, bb.minX);
+      const oy = Math.min(ba.maxY, bb.maxY) - Math.max(ba.minY, bb.minY);
+      if (ox <= 0 || oy <= 0) continue;
+
+      if (ox < oy) {
+        // Horizontal collision — exchange vx, push apart in X
+        const half = ox / 2;
+        if (a.x < b.x) { a.x -= half; b.x += half; } else { a.x += half; b.x -= half; }
+        const tvx = a.vx; a.vx = b.vx; b.vx = tvx;
+      } else {
+        // Vertical collision — exchange vy, push apart in Y
+        const half = oy / 2;
+        if (a.y < b.y) { a.y -= half; b.y += half; } else { a.y += half; b.y -= half; }
+        const tvy = a.vy; a.vy = b.vy; b.vy = tvy;
+      }
+      setSpeed(a); setSpeed(b);
+      a.glowColor = "red"; a.glowTimer = 0.14;
+      b.glowColor = "red"; b.glowTimer = 0.14;
+    }
+  }
 }
 
 // ─── Solid shape bounce ───────────────────────────────────────────────────────
@@ -351,12 +384,21 @@ function mergeBodies(bodies: Body[], iIdx: number, jIdx: number, mc1: Cell, mc2:
   bodies.splice(jIdx, 1);
 }
 
-function scanMerges(bodies: Body[], mergingEnabled: boolean): boolean {
+function scanMerges(
+  bodies: Body[],
+  mergingEnabled: boolean,
+  onMerge?: (shape: ShapeType) => void,
+): boolean {
   if (!mergingEnabled) return false;
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
       const r = checkCanMerge(bodies[i], bodies[j]);
-      if (r.canMerge) { mergeBodies(bodies, i, j, r.c1, r.c2); return true; }
+      if (r.canMerge) {
+        const sh = bodies[i].shape;
+        mergeBodies(bodies, i, j, r.c1, r.c2);
+        onMerge?.(sh);
+        return true;
+      }
     }
   }
   return false;
@@ -446,6 +488,92 @@ function drawSolid(
   ctx.restore();
 }
 
+// ─── Audio (piano-style Web Audio) ───────────────────────────────────────────
+
+// Sine partial with piano envelope: fast attack → quick decay → long release
+function _partial(ctx: AudioContext, freq: number, vol: number, t: number, dur: number) {
+  const osc = ctx.createOscillator();
+  const g   = ctx.createGain();
+  osc.connect(g); g.connect(ctx.destination);
+  osc.type = "sine"; osc.frequency.value = freq;
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(vol,        t + 0.004);  // fast attack
+  g.gain.exponentialRampToValueAtTime(vol * 0.35, t + 0.06); // hammer decay
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  osc.start(t); osc.stop(t + dur + 0.05);
+}
+
+// Piano note = fundamental + harmonics
+function _pianoNote(ctx: AudioContext, freq: number, vol: number, t: number, dur: number) {
+  _partial(ctx, freq,      vol,        t, dur);
+  _partial(ctx, freq * 2,  vol * 0.30, t, dur * 0.65);
+  _partial(ctx, freq * 3,  vol * 0.12, t, dur * 0.45);
+  _partial(ctx, freq * 4,  vol * 0.05, t, dur * 0.30);
+}
+
+// ── Per-event sounds ──────────────────────────────────────────────────────────
+
+function playMergeSound(ctx: AudioContext, shape: ShapeType) {
+  const t = ctx.currentTime;
+  if      (shape === "square")   _pianoNote(ctx, 130.8, 0.22, t, 0.32); // C3 – deep
+  else if (shape === "circle")   _pianoNote(ctx, 329.6, 0.18, t, 0.26); // E4 – mid
+  else                           _pianoNote(ctx, 783.9, 0.15, t, 0.18); // G5 – bright
+}
+
+function playCollisionSound(ctx: AudioContext, shape: ShapeType) {
+  const t = ctx.currentTime;
+  if      (shape === "square")   _pianoNote(ctx,  98.0, 0.10, t, 0.14); // G2 – thud
+  else if (shape === "circle")   _pianoNote(ctx, 246.9, 0.08, t, 0.11); // B3 – tap
+  else                           _pianoNote(ctx, 659.3, 0.07, t, 0.09); // E5 – ping
+}
+
+function playCompleteSound(ctx: AudioContext, shape: ShapeType) {
+  const t = ctx.currentTime;
+  if (shape === "square") {
+    // C3–E3–G3–C4 ascending, deep piano chord
+    [130.8, 164.8, 196.0, 261.6].forEach((f, i) =>
+      _pianoNote(ctx, f, 0.20, t + i * 0.08, 0.55));
+  } else if (shape === "circle") {
+    // C4+E4+G4 together then C5 — bright mid chord
+    [261.6, 329.6, 392.0].forEach(f => _pianoNote(ctx, f, 0.17, t,        0.55));
+    _pianoNote(ctx, 523.3, 0.12, t + 0.08, 0.45);
+  } else {
+    // G4–B4–D5–G5 quick arpeggio — sharp, high
+    [392.0, 493.9, 587.3, 783.9].forEach((f, i) =>
+      _pianoNote(ctx, f, 0.17, t + i * 0.06, 0.38));
+  }
+}
+
+// ─── Completion glow draw ─────────────────────────────────────────────────────
+
+function drawCompletionGlow(
+  ctx: CanvasRenderingContext2D,
+  { shape, cx, cy, S }: ClipInfo,
+  intensity: number,
+  color: string,
+) {
+  if (intensity <= 0) return;
+  ctx.save();
+  ctx.globalAlpha  = intensity * 0.80;
+  ctx.shadowColor  = color;
+  ctx.shadowBlur   = 50 * intensity;
+  ctx.strokeStyle  = color;
+  ctx.lineWidth    = 5;
+  ctx.beginPath();
+  if (shape === "circle") {
+    ctx.arc(cx, cy, S * 0.46, 0, Math.PI * 2);
+  } else if (shape === "triangle") {
+    ctx.moveTo(cx,           cy - S * 0.5);
+    ctx.lineTo(cx - S * 0.5, cy + S * 0.5);
+    ctx.lineTo(cx + S * 0.5, cy + S * 0.5);
+    ctx.closePath();
+  } else {
+    ctx.rect(cx - S * 0.5, cy - S * 0.5, S, S);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
 // ─── Race clip helper ─────────────────────────────────────────────────────────
 
 function getRaceClip(arena: Arena, shape: ShapeType, shapeBodies: Body[]): ClipInfo | undefined {
@@ -479,6 +607,10 @@ export default function MergingPerfectShape() {
   const raceShapesRef  = useRef<ShapeType[]>(["square", "circle"]);
   const raceEntriesRef = useRef<Partial<Record<ShapeType, RaceEntry>>>({});
   const racePlaceRef   = useRef(0);
+  // Audio refs
+  const audioCtxRef         = useRef<AudioContext | null>(null);
+  const soloGlowRef         = useRef(0); // 1→0 highlight intensity during solo assembled phase
+  const lastBounceSoundRef  = useRef<Partial<Record<ShapeType, number>>>({});
 
   const [phase,     setPhase]     = useState<Phase>("editor");
   const [shape,     setShape]     = useState<ShapeType>("square");
@@ -533,11 +665,22 @@ export default function MergingPerfectShape() {
           b.x += b.vx * dt; b.y += b.vy * dt;
           if (b.glowTimer > 0) { b.glowTimer -= dt; if (b.glowTimer <= 0) b.glowColor = "none"; }
         }
-        for (const b of bodies) bounceWall(b, arena);
+        const soloBounceCb = (sh: ShapeType) => {
+          const ac = audioCtxRef.current; if (!ac) return;
+          const now = ac.currentTime;
+          if ((now - (lastBounceSoundRef.current[sh] ?? 0)) < 0.12) return;
+          lastBounceSoundRef.current[sh] = now;
+          playCollisionSound(ac, sh);
+        };
+        for (const b of bodies) bounceWall(b, arena, soloBounceCb);
+        resolveBodyCollisions(bodies);
 
         const mergingEnabled = elapsedRef.current >= MERGE_DELAY;
+        const soloMergeCb = (sh: ShapeType) => {
+          const ac = audioCtxRef.current; if (ac) playMergeSound(ac, sh);
+        };
         let mergeHappened = true;
-        while (mergeHappened) mergeHappened = scanMerges(bodies, mergingEnabled);
+        while (mergeHappened) mergeHappened = scanMerges(bodies, mergingEnabled, soloMergeCb);
 
         frameRef.current++;
         if (frameRef.current % 6 === 0) {
@@ -548,20 +691,23 @@ export default function MergingPerfectShape() {
 
         // All merged → freeze cracked shape for a moment
         if (bodies.length === 1 && totalRef.current > 1) {
-          phaseRef.current      = "assembled";
+          phaseRef.current         = "assembled";
           assembledTimeRef.current = ASSEMBLED_PAUSE;
+          soloGlowRef.current      = 1.0;
+          const ac = audioCtxRef.current; if (ac) playCompleteSound(ac, shapeRef.current);
           setPhase("assembled");
         }
 
       } else if (curPhase === "assembled") {
+        soloGlowRef.current = Math.max(0, soloGlowRef.current - dt / ASSEMBLED_PAUSE);
         assembledTimeRef.current -= dt;
         if (assembledTimeRef.current <= 0) {
-          // Hand off to solid shape
-          const b      = bodiesRef.current[0];
-          const bounds = getBodyBounds(b);
+          // Hand off to solid shape — place it at the exact assembled position
+          const b   = bodiesRef.current[0];
+          const ref = b.cells[0];
           solidRef.current = {
-            x:  (bounds.minX + bounds.maxX) / 2,
-            y:  (bounds.minY + bounds.maxY) / 2,
+            x:  arena.cx + (b.x + ref.localX - ref.targetX),
+            y:  arena.cy + (b.y + ref.localY - ref.targetY),
             vx: b.vx, vy: b.vy,
           };
           solidSizeRef.current = arena.size * ASSEMBLED_RATIO;
@@ -577,9 +723,7 @@ export default function MergingPerfectShape() {
           phaseRef.current  = "bouncing";
           setPhase("bouncing");
         }
-        const s = solidRef.current;
-        s.x += s.vx * dt; s.y += s.vy * dt;
-        bounceSolid(s, arena, shapeRef.current, solidSizeRef.current);
+        // Solid stays in place during the dissolve; only moves once fully bouncing
 
       } else if (curPhase === "bouncing") {
         const s = solidRef.current;
@@ -599,12 +743,23 @@ export default function MergingPerfectShape() {
         for (const b of bodies) {
           if (entries[b.shape]?.subPhase === "racing") { b.x += b.vx * dt; b.y += b.vy * dt; }
         }
+        const raceBounceCb = (sh: ShapeType) => {
+          const ac = audioCtxRef.current; if (!ac) return;
+          const now = ac.currentTime;
+          if ((now - (lastBounceSoundRef.current[sh] ?? 0)) < 0.12) return;
+          lastBounceSoundRef.current[sh] = now;
+          playCollisionSound(ac, sh);
+        };
         for (const b of bodies) {
-          if (entries[b.shape]?.subPhase === "racing") bounceWall(b, arena);
+          if (entries[b.shape]?.subPhase === "racing") bounceWall(b, arena, raceBounceCb);
         }
+        resolveBodyCollisions(bodies.filter(b => entries[b.shape]?.subPhase === "racing"));
         // Merge — same-shape only (enforced by checkCanMerge), immediate (no delay)
+        const raceMergeCb = (sh: ShapeType) => {
+          const ac = audioCtxRef.current; if (ac) playMergeSound(ac, sh);
+        };
         let mergeHappened = true;
-        while (mergeHappened) mergeHappened = scanMerges(bodies, true);
+        while (mergeHappened) mergeHappened = scanMerges(bodies, true, raceMergeCb);
 
         // Per-shape sub-state transitions
         let stateChanged = false;
@@ -617,17 +772,25 @@ export default function MergingPerfectShape() {
             if (cnt === 1 && entry.total > 1) {
               entry.subPhase       = "assembled";
               entry.assembledTimer = ASSEMBLED_PAUSE;
+              entry.completionGlow = 1.0;
               entry.place          = ++racePlaceRef.current;
               entry.finishTime     = elapsedRef.current;
+              const ac = audioCtxRef.current; if (ac) playCompleteSound(ac, sh);
               stateChanged         = true;
             }
           } else if (entry.subPhase === "assembled") {
+            entry.completionGlow = Math.max(0, entry.completionGlow - dt / ASSEMBLED_PAUSE);
             entry.assembledTimer -= dt;
             if (entry.assembledTimer <= 0) {
               const sb = bodies.filter(b => b.shape === sh);
               if (sb.length === 1) {
-                const bnd = getBodyBounds(sb[0]);
-                entry.solid     = { x: (bnd.minX + bnd.maxX) / 2, y: (bnd.minY + bnd.maxY) / 2, vx: sb[0].vx, vy: sb[0].vy };
+                const b0  = sb[0];
+                const ref = b0.cells[0];
+                entry.solid     = {
+                  x: arena.cx + (b0.x + ref.localX - ref.targetX),
+                  y: arena.cy + (b0.y + ref.localY - ref.targetY),
+                  vx: b0.vx, vy: b0.vy,
+                };
                 entry.solidSize = arena.size * ASSEMBLED_RATIO;
                 entry.transP    = 0;
                 entry.subPhase  = "transition";
@@ -637,8 +800,7 @@ export default function MergingPerfectShape() {
           } else if (entry.subPhase === "transition") {
             entry.transP += dt / TRANSITION_DUR;
             if (entry.transP >= 1) { entry.transP = 1; entry.subPhase = "bouncing"; stateChanged = true; }
-            entry.solid.x += entry.solid.vx * dt; entry.solid.y += entry.solid.vy * dt;
-            bounceSolid(entry.solid, arena, sh, entry.solidSize);
+            // Solid stays in place during the dissolve
           } else if (entry.subPhase === "bouncing") {
             entry.solid.x += entry.solid.vx * dt; entry.solid.y += entry.solid.vy * dt;
             bounceSolid(entry.solid, arena, sh, entry.solidSize);
@@ -679,7 +841,10 @@ export default function MergingPerfectShape() {
       };
 
       if (curPhase === "simulation" || curPhase === "assembled") {
-        drawBodies(ctx, bodiesRef.current, 1, getAssembledClip());
+        const clip = getAssembledClip();
+        drawBodies(ctx, bodiesRef.current, 1, clip);
+        if (clip && soloGlowRef.current > 0)
+          drawCompletionGlow(ctx, clip, soloGlowRef.current, COLORS[shapeRef.current]);
       }
 
       if (curPhase === "transition") {
@@ -713,6 +878,8 @@ export default function MergingPerfectShape() {
           const clip = getRaceClip(arena, sh, shapeBodies);
           if (entry.subPhase === "assembled") {
             drawBodies(ctx, shapeBodies, 1, clip);
+            if (clip && entry.completionGlow > 0)
+              drawCompletionGlow(ctx, clip, entry.completionGlow, COLORS[sh]);
           } else if (entry.subPhase === "transition") {
             drawBodies(ctx, shapeBodies, 1 - entry.transP, clip);
             drawSolid(ctx, sh, entry.solid, entry.solidSize, COLORS[sh], entry.transP, (1 - entry.transP) * 22);
@@ -735,6 +902,10 @@ export default function MergingPerfectShape() {
   }, [setupCanvas]);
 
   const handleSoloPlay = () => {
+    if (!audioCtxRef.current) {
+      try { audioCtxRef.current = new AudioContext(); } catch { /* ignore */ }
+    }
+    audioCtxRef.current?.resume();
     const bodies = generateBodies(shapeRef.current, arenaRef.current);
     bodiesRef.current  = bodies;
     totalRef.current   = bodies.length;
@@ -749,6 +920,10 @@ export default function MergingPerfectShape() {
   };
 
   const handleRacePlay = () => {
+    if (!audioCtxRef.current) {
+      try { audioCtxRef.current = new AudioContext(); } catch { /* ignore */ }
+    }
+    audioCtxRef.current?.resume();
     const shapes = raceConfig;
     raceShapesRef.current = shapes;
     const arena    = arenaRef.current;
@@ -760,6 +935,7 @@ export default function MergingPerfectShape() {
       entries[sh] = {
         shape: sh, total: bs.length, place: null, finishTime: 0,
         subPhase: "racing", assembledTimer: 0, transP: 0,
+        completionGlow: 0,
         solid: { x: arena.cx, y: arena.cy, vx: PIECE_SPEED * 0.7, vy: PIECE_SPEED * 0.7 },
         solidSize: arena.size * ASSEMBLED_RATIO,
       };
