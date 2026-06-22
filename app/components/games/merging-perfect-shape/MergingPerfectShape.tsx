@@ -377,6 +377,84 @@ function bounceSolid(s: Solid, arena: Arena, shape: ShapeType, S: number) {
   if (spd > 0.001) { s.vx = (s.vx / spd) * PIECE_SPEED; s.vy = (s.vy / spd) * PIECE_SPEED; }
 }
 
+// Collision between a bouncing solid and a body (per-cell check avoids false
+// positives from large merged-body bounding boxes).
+function resolveSolidBodyCollision(
+  solid: Solid, solidShape: ShapeType, S: number, body: Body,
+) {
+  const sb = getSolidBounds(solid, solidShape, S);
+  for (const c of body.cells) {
+    const cx = body.x + c.localX, cy = body.y + c.localY;
+    const hs = c.tileSize * 0.5;
+    const ox = Math.min(sb.maxX, cx + hs) - Math.max(sb.minX, cx - hs);
+    const oy = Math.min(sb.maxY, cy + hs) - Math.max(sb.minY, cy - hs);
+    if (ox <= 0 || oy <= 0) continue;
+
+    const scx = (sb.minX + sb.maxX) * 0.5, scy = (sb.minY + sb.maxY) * 0.5;
+    if (ox <= oy) {
+      const push = (ox + 1) * 0.5;
+      if (cx <= scx) { body.x -= push; solid.x += push; } else { body.x += push; solid.x -= push; }
+    } else {
+      const push = (oy + 1) * 0.5;
+      if (cy <= scy) { body.y -= push; solid.y += push; } else { body.y += push; solid.y -= push; }
+    }
+
+    let nx = scx - cx, ny = scy - cy;
+    const nlen = Math.hypot(nx, ny);
+    if (nlen < 0.1) { nx = 1; ny = 0; } else { nx /= nlen; ny /= nlen; }
+
+    const bn = body.vx * nx + body.vy * ny;
+    if (bn > 0) { body.vx -= 2 * bn * nx; body.vy -= 2 * bn * ny; setSpeed(body); }
+
+    const sn = solid.vx * nx + solid.vy * ny;
+    if (sn < 0) {
+      solid.vx -= 2 * sn * nx; solid.vy -= 2 * sn * ny;
+      const spd = Math.hypot(solid.vx, solid.vy);
+      if (spd > 0.001) { solid.vx = (solid.vx / spd) * PIECE_SPEED; solid.vy = (solid.vy / spd) * PIECE_SPEED; }
+    }
+
+    body.glowColor = "red"; body.glowTimer = 0.14;
+    break;
+  }
+}
+
+// Collision between two bouncing solid shapes.
+function resolveSolidSolidCollision(
+  sA: Solid, shA: ShapeType, szA: number,
+  sB: Solid, shB: ShapeType, szB: number,
+) {
+  const bA = getSolidBounds(sA, shA, szA);
+  const bB = getSolidBounds(sB, shB, szB);
+  const ox = Math.min(bA.maxX, bB.maxX) - Math.max(bA.minX, bB.minX);
+  const oy = Math.min(bA.maxY, bB.maxY) - Math.max(bA.minY, bB.minY);
+  if (ox <= 0 || oy <= 0) return;
+
+  const acx = (bA.minX + bA.maxX) * 0.5, acy = (bA.minY + bA.maxY) * 0.5;
+  const bcx = (bB.minX + bB.maxX) * 0.5, bcy = (bB.minY + bB.maxY) * 0.5;
+
+  if (ox <= oy) {
+    const push = (ox + 1) * 0.5;
+    if (acx <= bcx) { sA.x -= push; sB.x += push; } else { sA.x += push; sB.x -= push; }
+  } else {
+    const push = (oy + 1) * 0.5;
+    if (acy <= bcy) { sA.y -= push; sB.y += push; } else { sA.y += push; sB.y -= push; }
+  }
+
+  let nx = bcx - acx, ny = bcy - acy;
+  const nlen = Math.hypot(nx, ny);
+  if (nlen < 0.1) { nx = 1; ny = 0; } else { nx /= nlen; ny /= nlen; }
+
+  const normS = (s: Solid) => {
+    const spd = Math.hypot(s.vx, s.vy);
+    if (spd > 0.001) { s.vx = (s.vx / spd) * PIECE_SPEED; s.vy = (s.vy / spd) * PIECE_SPEED; }
+  };
+
+  const an = sA.vx * nx + sA.vy * ny;
+  const bn = sB.vx * nx + sB.vy * ny;
+  if (an > 0) { sA.vx -= 2 * an * nx; sA.vy -= 2 * an * ny; normS(sA); }
+  if (bn < 0) { sB.vx -= 2 * bn * nx; sB.vy -= 2 * bn * ny; normS(sB); }
+}
+
 // ─── Merge ────────────────────────────────────────────────────────────────────
 
 type MergeCandidate = { canMerge: false } | { canMerge: true; c1: Cell; c2: Cell };
@@ -723,7 +801,6 @@ export default function MergingPerfectShape() {
           phaseRef.current         = "assembled";
           assembledTimeRef.current = ASSEMBLED_PAUSE;
           soloGlowRef.current      = 1.0;
-          const ac = audioCtxRef.current; if (ac) playCompleteSound(ac, shapeRef.current);
           setPhase("assembled");
         }
 
@@ -751,6 +828,7 @@ export default function MergingPerfectShape() {
           transPRef.current = 1;
           phaseRef.current  = "bouncing";
           bodiesRef.current = []; // solid takes over; body no longer needed
+          const ac = audioCtxRef.current; if (ac) playCompleteSound(ac, shapeRef.current);
           setPhase("bouncing");
         }
         // Solid stays in place during the dissolve; only moves once fully bouncing
@@ -805,7 +883,6 @@ export default function MergingPerfectShape() {
               entry.completionGlow = 1.0;
               entry.place          = ++racePlaceRef.current;
               entry.finishTime     = elapsedRef.current;
-              const ac = audioCtxRef.current; if (ac) playCompleteSound(ac, sh);
               stateChanged         = true;
             }
           } else if (entry.subPhase === "assembled") {
@@ -832,15 +909,37 @@ export default function MergingPerfectShape() {
             if (entry.transP >= 1) {
               entry.transP = 1;
               entry.subPhase = "bouncing";
-              // Drop this shape's body — solid takes over; prevents phantom collision
-              // with racing pieces of other shapes in subsequent frames
               bodiesRef.current = bodiesRef.current.filter(b => b.shape !== sh);
+              const ac = audioCtxRef.current; if (ac) playCompleteSound(ac, sh);
               stateChanged = true;
             }
             // Solid stays in place during the dissolve
           } else if (entry.subPhase === "bouncing") {
             entry.solid.x += entry.solid.vx * dt; entry.solid.y += entry.solid.vy * dt;
             bounceSolid(entry.solid, arena, sh, entry.solidSize);
+          }
+        }
+
+        // Solid ↔ racing-body collision
+        const racingBodies = bodies.filter(b => entries[b.shape]?.subPhase === "racing");
+        for (const sh of raceShapesRef.current) {
+          const entry = entries[sh];
+          if (!entry || entry.subPhase !== "bouncing") continue;
+          for (const body of racingBodies) {
+            if (body.shape === sh) continue;
+            resolveSolidBodyCollision(entry.solid, sh, entry.solidSize, body);
+          }
+        }
+
+        // Solid ↔ solid collision
+        const bouncingShapes = raceShapesRef.current.filter(s => entries[s]?.subPhase === "bouncing");
+        for (let si = 0; si < bouncingShapes.length; si++) {
+          for (let sj = si + 1; sj < bouncingShapes.length; sj++) {
+            const eA = entries[bouncingShapes[si]]!, eB = entries[bouncingShapes[sj]]!;
+            resolveSolidSolidCollision(
+              eA.solid, bouncingShapes[si], eA.solidSize,
+              eB.solid, bouncingShapes[sj], eB.solidSize,
+            );
           }
         }
 
