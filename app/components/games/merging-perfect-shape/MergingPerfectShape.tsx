@@ -61,20 +61,65 @@ function computeArena(W: number, H: number): Arena {
   return { x: cx - size / 2, y: cy - size / 2, size, cx, cy };
 }
 
-// ─── Shape filter ─────────────────────────────────────────────────────────────
+// ─── Polygon clip utilities (Sutherland-Hodgman) ─────────────────────────────
 
-function isInShape(
-  shape: ShapeType, px: number, py: number,
-  aCx: number, aCy: number, r: number,
-  triTop: number, triBot: number, triLeft: number, triRight: number,
-): boolean {
-  if (shape === "square") return true;
-  if (shape === "circle") return Math.hypot(px - aCx, py - aCy) <= r * 0.92;
-  const h = triBot - triTop;
-  const t = (py - triTop) / h;
-  if (t < 0 || t > 1) return false;
-  const hw = (triRight - triLeft) / 2 * t;
-  return px >= aCx - hw && px <= aCx + hw;
+function _clipInside(p: [number, number], a: [number, number], b: [number, number]): boolean {
+  return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) >= 0;
+}
+
+function _clipIntersect(a: [number, number], b: [number, number], c: [number, number], d: [number, number]): [number, number] {
+  const rx = b[0] - a[0], ry = b[1] - a[1];
+  const sx = d[0] - c[0], sy = d[1] - c[1];
+  const t  = ((c[0] - a[0]) * sy - (c[1] - a[1]) * sx) / (rx * sy - ry * sx);
+  return [a[0] + t * rx, a[1] + t * ry];
+}
+
+function clipToConvex(subject: [number, number][], clipper: [number, number][]): [number, number][] {
+  let out = [...subject];
+  for (let i = 0; i < clipper.length; i++) {
+    if (out.length === 0) return [];
+    const inp = out;
+    out = [];
+    const ca = clipper[i], cb = clipper[(i + 1) % clipper.length];
+    for (let j = 0; j < inp.length; j++) {
+      const cur  = inp[j];
+      const prev = inp[(j + inp.length - 1) % inp.length];
+      const cIn  = _clipInside(cur, ca, cb);
+      const pIn  = _clipInside(prev, ca, cb);
+      if (cIn) {
+        if (!pIn) out.push(_clipIntersect(prev, cur, ca, cb));
+        out.push(cur);
+      } else if (pIn) {
+        out.push(_clipIntersect(prev, cur, ca, cb));
+      }
+    }
+  }
+  return out;
+}
+
+function polygonArea(pts: [number, number][]): number {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    a += pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+  }
+  return Math.abs(a) * 0.5;
+}
+
+function polygonCentroid(pts: [number, number][]): [number, number] {
+  let area = 0, cx = 0, cy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j   = (i + 1) % pts.length;
+    const crs = pts[i][0] * pts[j][1] - pts[j][0] * pts[i][1];
+    area += crs; cx += (pts[i][0] + pts[j][0]) * crs; cy += (pts[i][1] + pts[j][1]) * crs;
+  }
+  area /= 2;
+  if (Math.abs(area) < 1e-9) {
+    let x = 0, y = 0;
+    for (const [px, py] of pts) { x += px; y += py; }
+    return [x / pts.length, y / pts.length];
+  }
+  return [cx / (6 * area), cy / (6 * area)];
 }
 
 // ─── Piece generation ─────────────────────────────────────────────────────────
@@ -86,12 +131,26 @@ function generateBodies(shape: ShapeType, arena: Arena): Body[] {
   const ox        = arena.cx - ASSEMBLED / 2;
   const oy        = arena.cy - ASSEMBLED / 2;
   const color     = COLORS[shape];
-  const r         = ASSEMBLED / 2;
 
-  const triTop   = arena.cy - ASSEMBLED * 0.58;
-  const triBot   = arena.cy + ASSEMBLED * 0.42;
-  const triLeft  = arena.cx - ASSEMBLED / 2;
-  const triRight = arena.cx + ASSEMBLED / 2;
+  // Build the clipper polygon that defines the target shape boundary.
+  // Circle uses a 64-gon approximation; triangle uses exact vertices.
+  // Both are wound clockwise in screen-space (Y-down) so _clipInside works correctly.
+  let clipper: [number, number][] | null = null;
+  if (shape === "circle") {
+    const r = ASSEMBLED * 0.46; // matches applyShapeClip and drawSolid
+    clipper = Array.from({ length: 64 }, (_, i) => {
+      const a = (i / 64) * Math.PI * 2;
+      return [arena.cx + Math.cos(a) * r, arena.cy + Math.sin(a) * r] as [number, number];
+    });
+  } else if (shape === "triangle") {
+    const hw = ASSEMBLED / 2; // matches applyShapeClip and drawSolid
+    // top → bottom-right → bottom-left (CW in screen space)
+    clipper = [
+      [arena.cx,       arena.cy - hw],
+      [arena.cx + hw,  arena.cy + hw],
+      [arena.cx - hw,  arena.cy + hw],
+    ];
+  }
 
   const jitter = tileSize * GRID_JITTER;
   const pts: [number, number][][] = [];
@@ -119,12 +178,24 @@ function generateBodies(shape: ShapeType, arena: Arena): Body[] {
         pts[row + 1][col + 1],
         pts[row + 1][col],
       ];
-      const cx = (corners[0][0] + corners[1][0] + corners[2][0] + corners[3][0]) / 4;
-      const cy = (corners[0][1] + corners[1][1] + corners[2][1] + corners[3][1]) / 4;
 
-      if (!isInShape(shape, cx, cy, arena.cx, arena.cy, r, triTop, triBot, triLeft, triRight)) continue;
+      let poly: [number, number][] = corners;
+      let cx: number, cy: number;
 
-      const verts: [number, number][] = corners.map(([vx, vy]) => [
+      if (clipper !== null) {
+        // Clip the grid quad to the actual shape boundary
+        const origArea = polygonArea(corners);
+        poly = clipToConvex(corners, clipper);
+        // Discard cells fully outside or tiny slivers (< 4 % of original cell)
+        if (poly.length < 3 || polygonArea(poly) < origArea * 0.04) continue;
+        [cx, cy] = polygonCentroid(poly);
+      } else {
+        // Square: keep original vertex-average centroid (no clipping)
+        cx = (corners[0][0] + corners[1][0] + corners[2][0] + corners[3][0]) / 4;
+        cy = (corners[0][1] + corners[1][1] + corners[2][1] + corners[3][1]) / 4;
+      }
+
+      const verts: [number, number][] = poly.map(([vx, vy]) => [
         (vx - cx) * VERT_INSET,
         (vy - cy) * VERT_INSET,
       ]);
@@ -280,9 +351,28 @@ function drawArena(ctx: CanvasRenderingContext2D, arena: Arena) {
   ctx.restore();
 }
 
-function drawBodies(ctx: CanvasRenderingContext2D, bodies: Body[], alpha: number) {
+type ClipInfo = { shape: ShapeType; cx: number; cy: number; S: number };
+
+// When all pieces are assembled clip drawing to the exact shape boundary
+function applyShapeClip(ctx: CanvasRenderingContext2D, { shape, cx, cy, S }: ClipInfo) {
+  ctx.beginPath();
+  if (shape === "circle") {
+    ctx.arc(cx, cy, S * 0.46, 0, Math.PI * 2);
+  } else if (shape === "triangle") {
+    ctx.moveTo(cx,         cy - S * 0.5);
+    ctx.lineTo(cx - S * 0.5, cy + S * 0.5);
+    ctx.lineTo(cx + S * 0.5, cy + S * 0.5);
+    ctx.closePath();
+  } else {
+    ctx.rect(cx - S * 0.5, cy - S * 0.5, S, S);
+  }
+  ctx.clip();
+}
+
+function drawBodies(ctx: CanvasRenderingContext2D, bodies: Body[], alpha: number, clip?: ClipInfo) {
   ctx.save();
   ctx.globalAlpha = alpha;
+  if (clip) applyShapeClip(ctx, clip);
   for (const body of bodies) {
     const isGreen = body.glowColor === "green";
     const isRed   = body.glowColor === "red";
@@ -459,14 +549,28 @@ export default function MergingPerfectShape() {
       drawCanvasWatermark(ctx, W, H);
       drawArena(ctx, arena);
 
+      // Compute clip for the assembled shape in world space.
+      // When pieces snap together, their relative positions match the targets;
+      // the world offset from target space is constant across all cells.
+      const getAssembledClip = (): ClipInfo | undefined => {
+        const bodies = bodiesRef.current;
+        if (bodies.length !== 1 || bodies[0].cells.length === 0) return undefined;
+        const b   = bodies[0];
+        const ref = b.cells[0];
+        const ox  = (b.x + ref.localX) - ref.targetX;
+        const oy  = (b.y + ref.localY) - ref.targetY;
+        return { shape: shapeRef.current, cx: arena.cx + ox, cy: arena.cy + oy, S: arena.size * ASSEMBLED_RATIO };
+      };
+
       if (curPhase === "simulation" || curPhase === "assembled") {
-        drawBodies(ctx, bodiesRef.current, 1);
+        drawBodies(ctx, bodiesRef.current, 1, getAssembledClip());
       }
 
       if (curPhase === "transition") {
-        const tp  = transPRef.current;
-        // Cracked shape fades out (stationary)
-        drawBodies(ctx, bodiesRef.current, 1 - tp);
+        const tp   = transPRef.current;
+        const clip = getAssembledClip();
+        // Cracked shape fades out (stationary), still clipped to shape
+        drawBodies(ctx, bodiesRef.current, 1 - tp, clip);
         // Solid shape fades in with dissolving blur
         drawSolid(ctx, shapeRef.current, solidRef.current, solidSizeRef.current,
                   COLORS[shapeRef.current], tp, (1 - tp) * 22);
