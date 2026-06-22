@@ -300,52 +300,89 @@ function bounceWall(b: Body, arena: Arena, onBounce?: (shape: ShapeType) => void
 // Using individual cell AABBs instead of the whole-body bounding box prevents
 // false positives: merged bodies grow large bounding boxes that span most of the
 // arena, causing distant pieces to appear to collide.
+// SAT for two convex polygons. Returns penetration + normal (A→B) or null if separated.
+function satOverlap(
+  polyA: [number, number][],
+  polyB: [number, number][],
+): { pen: number; nx: number; ny: number } | null {
+  let minPen = Infinity, minNx = 0, minNy = 0;
+
+  for (let pass = 0; pass < 2; pass++) {
+    const poly = pass === 0 ? polyA : polyB;
+    for (let i = 0; i < poly.length; i++) {
+      const j  = (i + 1) % poly.length;
+      const ex = poly[j][0] - poly[i][0], ey = poly[j][1] - poly[i][1];
+      const len = Math.hypot(ex, ey);
+      if (len < 0.001) continue;
+      const nx = -ey / len, ny = ex / len;
+
+      let minA = Infinity, maxA = -Infinity;
+      for (const [x, y] of polyA) { const p = x * nx + y * ny; if (p < minA) minA = p; if (p > maxA) maxA = p; }
+      let minB = Infinity, maxB = -Infinity;
+      for (const [x, y] of polyB) { const p = x * nx + y * ny; if (p < minB) minB = p; if (p > maxB) maxB = p; }
+
+      const pen = Math.min(maxA, maxB) - Math.max(minA, minB);
+      if (pen <= 0) return null;
+      if (pen < minPen) { minPen = pen; minNx = nx; minNy = ny; }
+    }
+  }
+
+  // Orient normal from A centroid toward B centroid
+  let cAx = 0, cAy = 0, cBx = 0, cBy = 0;
+  for (const [x, y] of polyA) { cAx += x; cAy += y; }
+  for (const [x, y] of polyB) { cBx += x; cBy += y; }
+  if ((cBx - cAx) * minNx + (cBy - cAy) * minNy < 0) { minNx = -minNx; minNy = -minNy; }
+
+  return { pen: minPen, nx: minNx, ny: minNy };
+}
+
+// Cross-shape piece-piece collision using exact cell polygon SAT.
+// Broad phase uses actual vertex extents (not tileSize) so clipped/small cells
+// near shape boundaries don't trigger collisions before they visually touch.
 function resolveBodyCollisions(bodies: Body[]) {
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
       const a = bodies[i], b = bodies[j];
       if (a.shape === b.shape) continue;
 
-      // Find the first pair of cells (one from each body) whose AABBs overlap.
-      let wax = 0, way = 0, wbx = 0, wby = 0;
-      let cox = 0, coy = 0;
-      let found = false;
+      let sat: { pen: number; nx: number; ny: number } | null = null;
 
       outer:
       for (const ca of a.cells) {
         const cwax = a.x + ca.localX, cway = a.y + ca.localY;
-        const hsa  = ca.tileSize * 0.5;
+        // Tight AABB from actual polygon vertices
+        let aMinX = Infinity, aMaxX = -Infinity, aMinY = Infinity, aMaxY = -Infinity;
+        for (const [vx, vy] of ca.verts) {
+          const wx = cwax + vx, wy = cway + vy;
+          if (wx < aMinX) aMinX = wx; if (wx > aMaxX) aMaxX = wx;
+          if (wy < aMinY) aMinY = wy; if (wy > aMaxY) aMaxY = wy;
+        }
+
         for (const cb of b.cells) {
           const cwbx = b.x + cb.localX, cwby = b.y + cb.localY;
-          const hsb  = cb.tileSize * 0.5;
-          const ox   = (hsa + hsb) - Math.abs(cwax - cwbx);
-          const oy   = (hsa + hsb) - Math.abs(cway - cwby);
-          if (ox > 0 && oy > 0) {
-            wax = cwax; way = cway; wbx = cwbx; wby = cwby;
-            cox = ox; coy = oy;
-            found = true;
-            break outer;
+          let bMinX = Infinity, bMaxX = -Infinity, bMinY = Infinity, bMaxY = -Infinity;
+          for (const [vx, vy] of cb.verts) {
+            const wx = cwbx + vx, wy = cwby + vy;
+            if (wx < bMinX) bMinX = wx; if (wx > bMaxX) bMaxX = wx;
+            if (wy < bMinY) bMinY = wy; if (wy > bMaxY) bMaxY = wy;
           }
+          // AABB broad phase
+          if (aMaxX <= bMinX || aMinX >= bMaxX || aMaxY <= bMinY || aMinY >= bMaxY) continue;
+
+          // SAT narrow phase with exact cell polygons
+          const polyA = ca.verts.map(([vx, vy]) => [cwax + vx, cway + vy]) as [number, number][];
+          const polyB = cb.verts.map(([vx, vy]) => [cwbx + vx, cwby + vy]) as [number, number][];
+          sat = satOverlap(polyA, polyB);
+          if (sat) break outer;
         }
       }
-      if (!found) continue;
+      if (!sat) continue;
 
-      // 1. Push bodies apart by the cell-level penetration depth (+1 px gap)
-      if (cox <= coy) {
-        const push = (cox + 1) * 0.5;
-        if (wax <= wbx) { a.x -= push; b.x += push; } else { a.x += push; b.x -= push; }
-      } else {
-        const push = (coy + 1) * 0.5;
-        if (way <= wby) { a.y -= push; b.y += push; } else { a.y += push; b.y -= push; }
-      }
+      const { pen, nx, ny } = sat;
+      const push = (pen + 1) * 0.5;
+      a.x -= nx * push; a.y -= ny * push;
+      b.x += nx * push; b.y += ny * push;
 
-      // 2. Collision normal: colliding cell center A → center B
-      let nx = wbx - wax, ny = wby - way;
-      const nlen = Math.hypot(nx, ny);
-      if (nlen < 0.1) { nx = 1; ny = 0; } else { nx /= nlen; ny /= nlen; }
-
-      // 3. Wall-bounce: reflect each body's velocity component that points toward
-      //    the other — snappy and prevents sliding in same-direction cases
       const an = a.vx * nx + a.vy * ny;
       const bn = b.vx * nx + b.vy * ny;
       if (an > 0) { a.vx -= 2 * an * nx; a.vy -= 2 * an * ny; setSpeed(a); }
@@ -377,31 +414,56 @@ function bounceSolid(s: Solid, arena: Arena, shape: ShapeType, S: number) {
   if (spd > 0.001) { s.vx = (s.vx / spd) * PIECE_SPEED; s.vy = (s.vy / spd) * PIECE_SPEED; }
 }
 
-// Collision between a bouncing solid and a body (per-cell check avoids false
-// positives from large merged-body bounding boxes).
+// Exact polygon representation of each solid shape, matching drawSolid geometry.
+// Circle uses a 24-gon at the visual radius so the collider matches the drawn circle.
+function getSolidPoly(s: Solid, shape: ShapeType, S: number): [number, number][] {
+  const hw = S / 2;
+  if (shape === "square") {
+    return [[s.x - hw, s.y - hw], [s.x + hw, s.y - hw],
+            [s.x + hw, s.y + hw], [s.x - hw, s.y + hw]];
+  }
+  if (shape === "triangle") {
+    // Matches drawSolid: top → bottom-right → bottom-left
+    return [[s.x, s.y - hw], [s.x + hw, s.y + hw], [s.x - hw, s.y + hw]];
+  }
+  // Circle: 24-gon at exact visual radius (S * 0.46, same as drawSolid arc)
+  const r = S * 0.46;
+  const pts: [number, number][] = [];
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * Math.PI * 2;
+    pts.push([s.x + Math.cos(a) * r, s.y + Math.sin(a) * r]);
+  }
+  return pts;
+}
+
+// Solid ↔ piece-body collision.  Uses the exact solid polygon and each cell's
+// actual polygon vertices — no tileSize approximation.
 function resolveSolidBodyCollision(
   solid: Solid, solidShape: ShapeType, S: number, body: Body,
 ) {
-  const sb = getSolidBounds(solid, solidShape, S);
+  const solidPoly = getSolidPoly(solid, solidShape, S);
+  const sb = getSolidBounds(solid, solidShape, S); // used only for cheap broad phase
+
   for (const c of body.cells) {
     const cx = body.x + c.localX, cy = body.y + c.localY;
-    const hs = c.tileSize * 0.5;
-    const ox = Math.min(sb.maxX, cx + hs) - Math.max(sb.minX, cx - hs);
-    const oy = Math.min(sb.maxY, cy + hs) - Math.max(sb.minY, cy - hs);
-    if (ox <= 0 || oy <= 0) continue;
-
-    const scx = (sb.minX + sb.maxX) * 0.5, scy = (sb.minY + sb.maxY) * 0.5;
-    if (ox <= oy) {
-      const push = (ox + 1) * 0.5;
-      if (cx <= scx) { body.x -= push; solid.x += push; } else { body.x += push; solid.x -= push; }
-    } else {
-      const push = (oy + 1) * 0.5;
-      if (cy <= scy) { body.y -= push; solid.y += push; } else { body.y += push; solid.y -= push; }
+    // Cell AABB from actual vertices (tight, not tileSize)
+    let cMinX = Infinity, cMaxX = -Infinity, cMinY = Infinity, cMaxY = -Infinity;
+    for (const [vx, vy] of c.verts) {
+      const wx = cx + vx, wy = cy + vy;
+      if (wx < cMinX) cMinX = wx; if (wx > cMaxX) cMaxX = wx;
+      if (wy < cMinY) cMinY = wy; if (wy > cMaxY) cMaxY = wy;
     }
+    if (cMaxX <= sb.minX || cMinX >= sb.maxX || cMaxY <= sb.minY || cMinY >= sb.maxY) continue;
 
-    let nx = scx - cx, ny = scy - cy;
-    const nlen = Math.hypot(nx, ny);
-    if (nlen < 0.1) { nx = 1; ny = 0; } else { nx /= nlen; ny /= nlen; }
+    const cellPoly = c.verts.map(([vx, vy]) => [cx + vx, cy + vy]) as [number, number][];
+    const result = satOverlap(cellPoly, solidPoly);
+    if (!result) continue;
+
+    // nx, ny points from cell (A) toward solid (B)
+    const { pen, nx, ny } = result;
+    const push = (pen + 1) * 0.5;
+    body.x -= nx * push; body.y -= ny * push;
+    solid.x += nx * push; solid.y += ny * push;
 
     const bn = body.vx * nx + body.vy * ny;
     if (bn > 0) { body.vx -= 2 * bn * nx; body.vy -= 2 * bn * ny; setSpeed(body); }
@@ -418,37 +480,24 @@ function resolveSolidBodyCollision(
   }
 }
 
-// Collision between two bouncing solid shapes.
+// Solid ↔ solid collision using exact shape polygons.
+// Square = 4-gon, Triangle = 3-gon, Circle = 24-gon — all via SAT.
 function resolveSolidSolidCollision(
   sA: Solid, shA: ShapeType, szA: number,
   sB: Solid, shB: ShapeType, szB: number,
 ) {
-  const bA = getSolidBounds(sA, shA, szA);
-  const bB = getSolidBounds(sB, shB, szB);
-  const ox = Math.min(bA.maxX, bB.maxX) - Math.max(bA.minX, bB.minX);
-  const oy = Math.min(bA.maxY, bB.maxY) - Math.max(bA.minY, bB.minY);
-  if (ox <= 0 || oy <= 0) return;
+  const result = satOverlap(getSolidPoly(sA, shA, szA), getSolidPoly(sB, shB, szB));
+  if (!result) return;
 
-  const acx = (bA.minX + bA.maxX) * 0.5, acy = (bA.minY + bA.maxY) * 0.5;
-  const bcx = (bB.minX + bB.maxX) * 0.5, bcy = (bB.minY + bB.maxY) * 0.5;
-
-  if (ox <= oy) {
-    const push = (ox + 1) * 0.5;
-    if (acx <= bcx) { sA.x -= push; sB.x += push; } else { sA.x += push; sB.x -= push; }
-  } else {
-    const push = (oy + 1) * 0.5;
-    if (acy <= bcy) { sA.y -= push; sB.y += push; } else { sA.y += push; sB.y -= push; }
-  }
-
-  let nx = bcx - acx, ny = bcy - acy;
-  const nlen = Math.hypot(nx, ny);
-  if (nlen < 0.1) { nx = 1; ny = 0; } else { nx /= nlen; ny /= nlen; }
+  const { pen, nx, ny } = result;
+  const push = (pen + 1) * 0.5;
+  sA.x -= nx * push; sA.y -= ny * push;
+  sB.x += nx * push; sB.y += ny * push;
 
   const normS = (s: Solid) => {
     const spd = Math.hypot(s.vx, s.vy);
     if (spd > 0.001) { s.vx = (s.vx / spd) * PIECE_SPEED; s.vy = (s.vy / spd) * PIECE_SPEED; }
   };
-
   const an = sA.vx * nx + sA.vy * ny;
   const bn = sB.vx * nx + sB.vy * ny;
   if (an > 0) { sA.vx -= 2 * an * nx; sA.vy -= 2 * an * ny; normS(sA); }
