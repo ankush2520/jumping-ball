@@ -296,32 +296,61 @@ function bounceWall(b: Body, arena: Arena, onBounce?: (shape: ShapeType) => void
   if (hit) { setSpeed(b); b.glowColor = "red"; b.glowTimer = 0.14; onBounce?.(b.shape); }
 }
 
-// Elastic AABB collision between bodies of DIFFERENT shapes only.
-// Same-shape pieces pass through each other freely so they can self-assemble.
+// Per-cell collision between bodies of DIFFERENT shapes only.
+// Using individual cell AABBs instead of the whole-body bounding box prevents
+// false positives: merged bodies grow large bounding boxes that span most of the
+// arena, causing distant pieces to appear to collide.
 function resolveBodyCollisions(bodies: Body[]) {
   for (let i = 0; i < bodies.length; i++) {
     for (let j = i + 1; j < bodies.length; j++) {
       const a = bodies[i], b = bodies[j];
       if (a.shape === b.shape) continue;
 
-      const ba = getBodyBounds(a);
-      const bb = getBodyBounds(b);
-      const ox = Math.min(ba.maxX, bb.maxX) - Math.max(ba.minX, bb.minX);
-      const oy = Math.min(ba.maxY, bb.maxY) - Math.max(ba.minY, bb.minY);
-      if (ox <= 0 || oy <= 0) continue;
+      // Find the first pair of cells (one from each body) whose AABBs overlap.
+      let wax = 0, way = 0, wbx = 0, wby = 0;
+      let cox = 0, coy = 0;
+      let found = false;
 
-      if (ox < oy) {
-        // Horizontal collision — exchange vx, push apart in X
-        const half = ox / 2;
-        if (a.x < b.x) { a.x -= half; b.x += half; } else { a.x += half; b.x -= half; }
-        const tvx = a.vx; a.vx = b.vx; b.vx = tvx;
-      } else {
-        // Vertical collision — exchange vy, push apart in Y
-        const half = oy / 2;
-        if (a.y < b.y) { a.y -= half; b.y += half; } else { a.y += half; b.y -= half; }
-        const tvy = a.vy; a.vy = b.vy; b.vy = tvy;
+      outer:
+      for (const ca of a.cells) {
+        const cwax = a.x + ca.localX, cway = a.y + ca.localY;
+        const hsa  = ca.tileSize * 0.5;
+        for (const cb of b.cells) {
+          const cwbx = b.x + cb.localX, cwby = b.y + cb.localY;
+          const hsb  = cb.tileSize * 0.5;
+          const ox   = (hsa + hsb) - Math.abs(cwax - cwbx);
+          const oy   = (hsa + hsb) - Math.abs(cway - cwby);
+          if (ox > 0 && oy > 0) {
+            wax = cwax; way = cway; wbx = cwbx; wby = cwby;
+            cox = ox; coy = oy;
+            found = true;
+            break outer;
+          }
+        }
       }
-      setSpeed(a); setSpeed(b);
+      if (!found) continue;
+
+      // 1. Push bodies apart by the cell-level penetration depth (+1 px gap)
+      if (cox <= coy) {
+        const push = (cox + 1) * 0.5;
+        if (wax <= wbx) { a.x -= push; b.x += push; } else { a.x += push; b.x -= push; }
+      } else {
+        const push = (coy + 1) * 0.5;
+        if (way <= wby) { a.y -= push; b.y += push; } else { a.y += push; b.y -= push; }
+      }
+
+      // 2. Collision normal: colliding cell center A → center B
+      let nx = wbx - wax, ny = wby - way;
+      const nlen = Math.hypot(nx, ny);
+      if (nlen < 0.1) { nx = 1; ny = 0; } else { nx /= nlen; ny /= nlen; }
+
+      // 3. Wall-bounce: reflect each body's velocity component that points toward
+      //    the other — snappy and prevents sliding in same-direction cases
+      const an = a.vx * nx + a.vy * ny;
+      const bn = b.vx * nx + b.vy * ny;
+      if (an > 0) { a.vx -= 2 * an * nx; a.vy -= 2 * an * ny; setSpeed(a); }
+      if (bn < 0) { b.vx -= 2 * bn * nx; b.vy -= 2 * bn * ny; setSpeed(b); }
+
       a.glowColor = "red"; a.glowTimer = 0.14;
       b.glowColor = "red"; b.glowTimer = 0.14;
     }
@@ -721,6 +750,7 @@ export default function MergingPerfectShape() {
         if (transPRef.current >= 1) {
           transPRef.current = 1;
           phaseRef.current  = "bouncing";
+          bodiesRef.current = []; // solid takes over; body no longer needed
           setPhase("bouncing");
         }
         // Solid stays in place during the dissolve; only moves once fully bouncing
@@ -799,7 +829,14 @@ export default function MergingPerfectShape() {
             }
           } else if (entry.subPhase === "transition") {
             entry.transP += dt / TRANSITION_DUR;
-            if (entry.transP >= 1) { entry.transP = 1; entry.subPhase = "bouncing"; stateChanged = true; }
+            if (entry.transP >= 1) {
+              entry.transP = 1;
+              entry.subPhase = "bouncing";
+              // Drop this shape's body — solid takes over; prevents phantom collision
+              // with racing pieces of other shapes in subsequent frames
+              bodiesRef.current = bodiesRef.current.filter(b => b.shape !== sh);
+              stateChanged = true;
+            }
             // Solid stays in place during the dissolve
           } else if (entry.subPhase === "bouncing") {
             entry.solid.x += entry.solid.vx * dt; entry.solid.y += entry.solid.vy * dt;
@@ -981,11 +1018,16 @@ export default function MergingPerfectShape() {
       }}>
         <h1 style={{
           margin: 0, fontFamily: "Arial, Helvetica, sans-serif",
-          fontSize: "clamp(1.2rem, 4vw, 1.8rem)", fontWeight: 900,
+          fontSize: "clamp(1.0rem, 3.5vw, 1.6rem)", fontWeight: 900,
           color: "#fff", textShadow: "0 4px 20px rgba(0,0,0,0.7)",
-          letterSpacing: "-0.01em",
+          letterSpacing: "-0.01em", textAlign: "center",
         }}>
-          {phase === "race" ? "Merge Race" : "Merging Perfect Shape"}
+          {gameMode === "race"
+            ? raceConfig.length === 3
+              ? "Square, Circle, or Triangle: Which Will Assemble First?"
+              : `${raceConfig[0].charAt(0).toUpperCase() + raceConfig[0].slice(1)} or ${raceConfig[1].charAt(0).toUpperCase() + raceConfig[1].slice(1)}: Which Will Assemble First?`
+            : `How Long Will It Take to Assemble a Plain ${shape.charAt(0).toUpperCase() + shape.slice(1)}?`
+          }
         </h1>
 
         {/* Solo status */}
