@@ -9,7 +9,7 @@ type ShapeType = "square" | "circle" | "triangle";
 // assembled  = all pieces merged, cracked shape held still for ASSEMBLED_PAUSE seconds
 // transition = cracked fades out, solid shape fades in with blur (TRANSITION_DUR seconds)
 // bouncing   = plain solid shape bounces forever
-type Phase = "editor" | "simulation" | "assembled" | "transition" | "bouncing";
+type Phase = "editor" | "simulation" | "assembled" | "transition" | "bouncing" | "race";
 type Arena = { x: number; y: number; size: number; cx: number; cy: number };
 
 type Cell = {
@@ -29,6 +29,20 @@ type Body = {
   glowColor: "none" | "green" | "red";
   glowTimer: number;
   color: string;
+  shape: ShapeType;
+};
+
+type RaceSubPhase = "racing" | "assembled" | "transition" | "bouncing";
+type RaceEntry = {
+  shape: ShapeType;
+  total: number;
+  place: number | null;
+  finishTime: number;
+  subPhase: RaceSubPhase;
+  assembledTimer: number;
+  transP: number;
+  solid: Solid;
+  solidSize: number;
 };
 
 type Solid = { x: number; y: number; vx: number; vy: number };
@@ -50,6 +64,16 @@ const COLORS: Record<ShapeType, string> = {
   circle:   "#06b6d4",
   triangle: "#22c55e",
 };
+
+const RACE_OPTIONS: { label: string; shapes: ShapeType[] }[] = [
+  { label: "Square vs Circle",             shapes: ["square", "circle"] },
+  { label: "Circle vs Triangle",           shapes: ["circle", "triangle"] },
+  { label: "Triangle vs Square",           shapes: ["triangle", "square"] },
+  { label: "All Three",                    shapes: ["square", "circle", "triangle"] },
+];
+
+const PLACE_LABELS = ["🥇 1st", "🥈 2nd", "🥉 3rd"];
+const SHAPE_EMOJI: Record<ShapeType, string> = { square: "🟧", circle: "🔵", triangle: "🔺" };
 
 let _bodyId = 0;
 
@@ -225,6 +249,7 @@ function generateBodies(shape: ShapeType, arena: Arena): Body[] {
         glowColor: "none",
         glowTimer: 0,
         color,
+        shape,
       });
     }
   }
@@ -295,6 +320,7 @@ function bounceSolid(s: Solid, arena: Arena, shape: ShapeType, S: number) {
 type MergeCandidate = { canMerge: false } | { canMerge: true; c1: Cell; c2: Cell };
 
 function checkCanMerge(b1: Body, b2: Body): MergeCandidate {
+  if (b1.shape !== b2.shape) return { canMerge: false };
   const tileSize  = b1.cells[0]?.tileSize ?? 1;
   const threshold = tileSize * ATTACH_THRESHOLD;
   for (const c1 of b1.cells) {
@@ -420,6 +446,17 @@ function drawSolid(
   ctx.restore();
 }
 
+// ─── Race clip helper ─────────────────────────────────────────────────────────
+
+function getRaceClip(arena: Arena, shape: ShapeType, shapeBodies: Body[]): ClipInfo | undefined {
+  if (shapeBodies.length !== 1 || shapeBodies[0].cells.length === 0) return undefined;
+  const b   = shapeBodies[0];
+  const ref = b.cells[0];
+  const ox  = (b.x + ref.localX) - ref.targetX;
+  const oy  = (b.y + ref.localY) - ref.targetY;
+  return { shape, cx: arena.cx + ox, cy: arena.cy + oy, S: arena.size * ASSEMBLED_RATIO };
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function MergingPerfectShape() {
@@ -436,8 +473,12 @@ export default function MergingPerfectShape() {
   const totalRef         = useRef(0);
   const solidRef         = useRef<Solid>({ x: 0, y: 0, vx: 0, vy: 0 });
   const solidSizeRef     = useRef(0);
-  const assembledTimeRef = useRef(0); // counts down from ASSEMBLED_PAUSE
-  const transPRef        = useRef(0); // 0→1 over TRANSITION_DUR
+  const assembledTimeRef = useRef(0);
+  const transPRef        = useRef(0);
+  // Race refs
+  const raceShapesRef  = useRef<ShapeType[]>(["square", "circle"]);
+  const raceEntriesRef = useRef<Partial<Record<ShapeType, RaceEntry>>>({});
+  const racePlaceRef   = useRef(0);
 
   const [phase,     setPhase]     = useState<Phase>("editor");
   const [shape,     setShape]     = useState<ShapeType>("square");
@@ -445,6 +486,11 @@ export default function MergingPerfectShape() {
   const [arenaY,    setArenaY]    = useState(0);
   const [remaining, setRemaining] = useState(0);
   const [merging,   setMerging]   = useState(false);
+  // Race state
+  const [gameMode,   setGameMode]   = useState<"solo" | "race">("solo");
+  const [raceConfig, setRaceConfig] = useState<ShapeType[]>(["square", "circle"]);
+  const [rankings,   setRankings]   = useState<{ shape: ShapeType; place: number; time: number }[]>([]);
+  const [raceDone,   setRaceDone]   = useState(false);
 
   const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -539,6 +585,76 @@ export default function MergingPerfectShape() {
         const s = solidRef.current;
         s.x += s.vx * dt; s.y += s.vy * dt;
         bounceSolid(s, arena, shapeRef.current, solidSizeRef.current);
+
+      } else if (curPhase === "race") {
+        elapsedRef.current += dt;
+        const bodies  = bodiesRef.current;
+        const entries = raceEntriesRef.current;
+
+        // Update glow timers for all bodies
+        for (const b of bodies) {
+          if (b.glowTimer > 0) { b.glowTimer -= dt; if (b.glowTimer <= 0) b.glowColor = "none"; }
+        }
+        // Move + bounce only bodies still racing
+        for (const b of bodies) {
+          if (entries[b.shape]?.subPhase === "racing") { b.x += b.vx * dt; b.y += b.vy * dt; }
+        }
+        for (const b of bodies) {
+          if (entries[b.shape]?.subPhase === "racing") bounceWall(b, arena);
+        }
+        // Merge — same-shape only (enforced by checkCanMerge), immediate (no delay)
+        let mergeHappened = true;
+        while (mergeHappened) mergeHappened = scanMerges(bodies, true);
+
+        // Per-shape sub-state transitions
+        let stateChanged = false;
+        for (const sh of raceShapesRef.current) {
+          const entry = entries[sh];
+          if (!entry) continue;
+
+          if (entry.subPhase === "racing") {
+            const cnt = bodies.reduce((n, b) => n + (b.shape === sh ? 1 : 0), 0);
+            if (cnt === 1 && entry.total > 1) {
+              entry.subPhase       = "assembled";
+              entry.assembledTimer = ASSEMBLED_PAUSE;
+              entry.place          = ++racePlaceRef.current;
+              entry.finishTime     = elapsedRef.current;
+              stateChanged         = true;
+            }
+          } else if (entry.subPhase === "assembled") {
+            entry.assembledTimer -= dt;
+            if (entry.assembledTimer <= 0) {
+              const sb = bodies.filter(b => b.shape === sh);
+              if (sb.length === 1) {
+                const bnd = getBodyBounds(sb[0]);
+                entry.solid     = { x: (bnd.minX + bnd.maxX) / 2, y: (bnd.minY + bnd.maxY) / 2, vx: sb[0].vx, vy: sb[0].vy };
+                entry.solidSize = arena.size * ASSEMBLED_RATIO;
+                entry.transP    = 0;
+                entry.subPhase  = "transition";
+                stateChanged    = true;
+              }
+            }
+          } else if (entry.subPhase === "transition") {
+            entry.transP += dt / TRANSITION_DUR;
+            if (entry.transP >= 1) { entry.transP = 1; entry.subPhase = "bouncing"; stateChanged = true; }
+            entry.solid.x += entry.solid.vx * dt; entry.solid.y += entry.solid.vy * dt;
+            bounceSolid(entry.solid, arena, sh, entry.solidSize);
+          } else if (entry.subPhase === "bouncing") {
+            entry.solid.x += entry.solid.vx * dt; entry.solid.y += entry.solid.vy * dt;
+            bounceSolid(entry.solid, arena, sh, entry.solidSize);
+          }
+        }
+
+        frameRef.current++;
+        if (stateChanged || frameRef.current % 6 === 0) {
+          setTimerMs(elapsedRef.current * 1000);
+          const newRankings = raceShapesRef.current
+            .filter(s => entries[s]?.place != null)
+            .sort((a, b) => (entries[a]?.place ?? 99) - (entries[b]?.place ?? 99))
+            .map(s => ({ shape: s, place: entries[s]!.place!, time: entries[s]!.finishTime }));
+          setRankings(newRankings);
+          if (raceShapesRef.current.every(s => entries[s]?.subPhase === "bouncing")) setRaceDone(true);
+        }
       }
 
       // ── Render ─────────────────────────────────────────────────────────────
@@ -581,6 +697,31 @@ export default function MergingPerfectShape() {
                   COLORS[shapeRef.current], 1, 0);
       }
 
+      if (curPhase === "race") {
+        const entries   = raceEntriesRef.current;
+        const allBodies = bodiesRef.current;
+
+        // Draw all pieces still racing (no clip needed yet)
+        const racingBodies = allBodies.filter(b => entries[b.shape]?.subPhase === "racing");
+        if (racingBodies.length > 0) drawBodies(ctx, racingBodies, 1);
+
+        // Per-shape assembled / transition / bouncing
+        for (const sh of raceShapesRef.current) {
+          const entry = entries[sh];
+          if (!entry || entry.subPhase === "racing") continue;
+          const shapeBodies = allBodies.filter(b => b.shape === sh);
+          const clip = getRaceClip(arena, sh, shapeBodies);
+          if (entry.subPhase === "assembled") {
+            drawBodies(ctx, shapeBodies, 1, clip);
+          } else if (entry.subPhase === "transition") {
+            drawBodies(ctx, shapeBodies, 1 - entry.transP, clip);
+            drawSolid(ctx, sh, entry.solid, entry.solidSize, COLORS[sh], entry.transP, (1 - entry.transP) * 22);
+          } else if (entry.subPhase === "bouncing") {
+            drawSolid(ctx, sh, entry.solid, entry.solidSize, COLORS[sh], 1, 0);
+          }
+        }
+      }
+
       rafRef.current = requestAnimationFrame(tick);
     };
 
@@ -593,7 +734,7 @@ export default function MergingPerfectShape() {
     };
   }, [setupCanvas]);
 
-  const handlePlay = () => {
+  const handleSoloPlay = () => {
     const bodies = generateBodies(shapeRef.current, arenaRef.current);
     bodiesRef.current  = bodies;
     totalRef.current   = bodies.length;
@@ -607,12 +748,45 @@ export default function MergingPerfectShape() {
     setPhase("simulation");
   };
 
+  const handleRacePlay = () => {
+    const shapes = raceConfig;
+    raceShapesRef.current = shapes;
+    const arena    = arenaRef.current;
+    const allBodies: Body[] = [];
+    const entries: Partial<Record<ShapeType, RaceEntry>> = {};
+    for (const sh of shapes) {
+      const bs = generateBodies(sh, arena);
+      allBodies.push(...bs);
+      entries[sh] = {
+        shape: sh, total: bs.length, place: null, finishTime: 0,
+        subPhase: "racing", assembledTimer: 0, transP: 0,
+        solid: { x: arena.cx, y: arena.cy, vx: PIECE_SPEED * 0.7, vy: PIECE_SPEED * 0.7 },
+        solidSize: arena.size * ASSEMBLED_RATIO,
+      };
+    }
+    bodiesRef.current      = allBodies;
+    raceEntriesRef.current = entries;
+    racePlaceRef.current   = 0;
+    elapsedRef.current     = 0;
+    frameRef.current       = 0;
+    phaseRef.current       = "race";
+    lastTRef.current       = performance.now();
+    setTimerMs(0);
+    setRankings([]);
+    setRaceDone(false);
+    setPhase("race");
+  };
+
   const handleReset = () => {
-    bodiesRef.current = [];
-    phaseRef.current  = "editor";
+    bodiesRef.current      = [];
+    phaseRef.current       = "editor";
+    raceEntriesRef.current = {};
+    racePlaceRef.current   = 0;
     setPhase("editor");
     setTimerMs(0);
     setMerging(false);
+    setRankings([]);
+    setRaceDone(false);
   };
 
   const fmtTime = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
@@ -621,7 +795,7 @@ export default function MergingPerfectShape() {
     <div style={{ position: "relative", width: "100%", height: "100dvh", overflow: "hidden", background: "#020617" }}>
       <canvas ref={canvasRef} style={{ display: "block" }} />
 
-      {/* Heading — bottom sits 15 px above arena */}
+      {/* Heading */}
       <div style={{
         position: "fixed", top: 0, left: 0, right: 0,
         height: arenaY > 0 ? arenaY - 15 : undefined,
@@ -635,8 +809,10 @@ export default function MergingPerfectShape() {
           color: "#fff", textShadow: "0 4px 20px rgba(0,0,0,0.7)",
           letterSpacing: "-0.01em",
         }}>
-          Merging Perfect Shape
+          {phase === "race" ? "Merge Race" : "Merging Perfect Shape"}
         </h1>
+
+        {/* Solo status */}
         {phase === "simulation" && (
           <p style={{
             margin: "4px 0 0", fontFamily: "Arial, Helvetica, sans-serif",
@@ -645,62 +821,122 @@ export default function MergingPerfectShape() {
           }}>
             {merging
               ? `✦ MERGING  ⏱ ${fmtTime(timerMs)}  ·  ${remaining} left`
-              : `Merging in ${Math.max(0, MERGE_DELAY - timerMs / 1000).toFixed(1)}s  ·  ⏱ ${fmtTime(timerMs)}`
-            }
+              : `Merging in ${Math.max(0, MERGE_DELAY - timerMs / 1000).toFixed(1)}s  ·  ⏱ ${fmtTime(timerMs)}`}
           </p>
         )}
         {(phase === "assembled" || phase === "transition") && (
-          <p style={{
-            margin: "4px 0 0", fontFamily: "Arial, Helvetica, sans-serif",
-            fontSize: "0.9rem", fontWeight: 700, color: "#4ade80",
-          }}>
+          <p style={{ margin: "4px 0 0", fontFamily: "Arial, Helvetica, sans-serif", fontSize: "0.9rem", fontWeight: 700, color: "#4ade80" }}>
             ✦ COMPLETE  ⏱ {fmtTime(timerMs)}
           </p>
         )}
+
+        {/* Race status */}
+        {phase === "race" && rankings.length === 0 && (
+          <p style={{ margin: "4px 0 0", fontFamily: "Arial, Helvetica, sans-serif", fontSize: "0.85rem", fontWeight: 700, color: "rgba(248,250,252,0.5)" }}>
+            ⏱ {fmtTime(timerMs)} · Racing…
+          </p>
+        )}
+        {phase === "race" && rankings.length > 0 && (
+          <div style={{ margin: "6px 0 0", display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", fontFamily: "Arial, Helvetica, sans-serif" }}>
+            {rankings.map(r => (
+              <span key={r.shape} style={{
+                padding: "3px 10px", borderRadius: 6,
+                background: COLORS[r.shape] + "28", border: `1px solid ${COLORS[r.shape]}66`,
+                color: COLORS[r.shape], fontSize: "0.82rem", fontWeight: 800,
+              }}>
+                {PLACE_LABELS[r.place - 1]} {SHAPE_EMOJI[r.shape]} {r.shape.charAt(0).toUpperCase() + r.shape.slice(1)} · {fmtTime(r.time * 1000)}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
-      {/* Shape selector */}
+      {/* Editor panel */}
       {phase === "editor" && (
         <div style={{
           position: "fixed", bottom: 32, left: "50%", transform: "translateX(-50%)",
           zIndex: 8, display: "flex", flexDirection: "column", alignItems: "center", gap: 14,
-          padding: "20px 28px", borderRadius: 14,
+          padding: "20px 28px", borderRadius: 14, minWidth: 280,
           border: "1px solid rgba(148,163,184,0.18)",
           background: "rgba(2,6,23,0.9)", backdropFilter: "blur(14px)",
           boxShadow: "0 20px 60px rgba(0,0,0,0.6)", fontFamily: "Arial, Helvetica, sans-serif",
         }}>
-          <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
-            SELECT SHAPE
-          </p>
-          <div style={{ display: "flex", gap: 10 }}>
-            {(["square", "circle", "triangle"] as ShapeType[]).map(s => (
-              <button key={s} onClick={() => { shapeRef.current = s; setShape(s); }} style={{
-                minWidth: 90, minHeight: 44, padding: "0 16px", borderRadius: 8, cursor: "pointer",
-                border: `2px solid ${shape === s ? COLORS[s] : "rgba(148,163,184,0.22)"}`,
-                background: shape === s ? COLORS[s] + "28" : "rgba(15,23,42,0.7)",
-                color: shape === s ? COLORS[s] : "rgba(248,250,252,0.5)",
-                fontWeight: 800, fontSize: 13, letterSpacing: "0.05em", textTransform: "capitalize",
+          {/* Mode toggle */}
+          <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid rgba(148,163,184,0.22)", width: "100%" }}>
+            {(["solo", "race"] as const).map(m => (
+              <button key={m} onClick={() => setGameMode(m)} style={{
+                flex: 1, minHeight: 36, cursor: "pointer", border: "none",
+                background: gameMode === m ? "rgba(148,163,184,0.22)" : "transparent",
+                color: gameMode === m ? "#f8fafc" : "rgba(248,250,252,0.4)",
+                fontWeight: 800, fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase",
               }}>
-                {s}
+                {m === "solo" ? "Solo" : "Race"}
               </button>
             ))}
           </div>
-          <button onClick={handlePlay} style={{
-            minWidth: 170, minHeight: 46, borderRadius: 8, cursor: "pointer",
-            border: "1.5px solid rgba(34,197,94,0.5)", background: "rgba(22,163,74,0.18)",
-            color: "#bbf7d0", fontWeight: 900, fontSize: 14, letterSpacing: "0.08em",
-          }}>
-            ▶ Start Simulation
-          </button>
+
+          {/* Solo controls */}
+          {gameMode === "solo" && (<>
+            <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
+              SELECT SHAPE
+            </p>
+            <div style={{ display: "flex", gap: 10 }}>
+              {(["square", "circle", "triangle"] as ShapeType[]).map(s => (
+                <button key={s} onClick={() => { shapeRef.current = s; setShape(s); }} style={{
+                  minWidth: 90, minHeight: 44, padding: "0 16px", borderRadius: 8, cursor: "pointer",
+                  border: `2px solid ${shape === s ? COLORS[s] : "rgba(148,163,184,0.22)"}`,
+                  background: shape === s ? COLORS[s] + "28" : "rgba(15,23,42,0.7)",
+                  color: shape === s ? COLORS[s] : "rgba(248,250,252,0.5)",
+                  fontWeight: 800, fontSize: 13, letterSpacing: "0.05em", textTransform: "capitalize",
+                }}>
+                  {s}
+                </button>
+              ))}
+            </div>
+            <button onClick={handleSoloPlay} style={{
+              minWidth: 170, minHeight: 46, borderRadius: 8, cursor: "pointer",
+              border: "1.5px solid rgba(34,197,94,0.5)", background: "rgba(22,163,74,0.18)",
+              color: "#bbf7d0", fontWeight: 900, fontSize: 14, letterSpacing: "0.08em",
+            }}>
+              ▶ Start Simulation
+            </button>
+          </>)}
+
+          {/* Race controls */}
+          {gameMode === "race" && (<>
+            <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
+              SELECT RACE
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
+              {RACE_OPTIONS.map(opt => {
+                const sel = raceConfig.join(",") === opt.shapes.join(",");
+                return (
+                  <button key={opt.label} onClick={() => { setRaceConfig(opt.shapes); raceShapesRef.current = opt.shapes; }} style={{
+                    minHeight: 40, padding: "0 14px", borderRadius: 8, cursor: "pointer",
+                    border: `2px solid ${sel ? "rgba(99,179,237,0.7)" : "rgba(148,163,184,0.22)"}`,
+                    background: sel ? "rgba(99,179,237,0.12)" : "rgba(15,23,42,0.7)",
+                    color: sel ? "#93c5fd" : "rgba(248,250,252,0.5)",
+                    fontWeight: 700, fontSize: 12, letterSpacing: "0.04em", textAlign: "left",
+                  }}>
+                    {opt.shapes.map(s => SHAPE_EMOJI[s]).join(" vs ")}{"  "}{opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <button onClick={handleRacePlay} style={{
+              minWidth: 170, minHeight: 46, borderRadius: 8, cursor: "pointer",
+              border: "1.5px solid rgba(99,179,237,0.5)", background: "rgba(37,99,235,0.18)",
+              color: "#bfdbfe", fontWeight: 900, fontSize: 14, letterSpacing: "0.08em",
+            }}>
+              ▶ Start Race
+            </button>
+          </>)}
         </div>
       )}
 
-      {/* Play Again — shown while solid shape bounces */}
-      {phase === "bouncing" && (
-        <div style={{
-          position: "fixed", bottom: 32, left: "50%", transform: "translateX(-50%)",
-          zIndex: 8,
-        }}>
+      {/* Play Again */}
+      {(phase === "bouncing" || (phase === "race" && raceDone)) && (
+        <div style={{ position: "fixed", bottom: 32, left: "50%", transform: "translateX(-50%)", zIndex: 8 }}>
           <button onClick={handleReset} style={{
             minWidth: 150, minHeight: 44, borderRadius: 8, cursor: "pointer",
             border: "1.5px solid rgba(34,197,94,0.5)", background: "rgba(22,163,74,0.18)",
