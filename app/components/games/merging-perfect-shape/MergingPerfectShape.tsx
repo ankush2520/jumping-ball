@@ -157,28 +157,25 @@ function polygonCentroid(pts: [number, number][]): [number, number] {
 // ─── Piece generation ─────────────────────────────────────────────────────────
 
 function generateBodies(shape: ShapeType, arena: Arena, targetPieces = 6, imageEl: HTMLImageElement | null = null, laneIdx = 0): Body[] {
-  // Over-generate a grid large enough to give at least targetPieces cells after clipping,
-  // then pre-merge pairs down to the exact target count.
-  const N         = Math.max(2, Math.ceil(Math.sqrt(targetPieces * 1.5)));
+  // Use a fine grid so each "piece" is composed of multiple sub-cells.
+  // Pieces are formed by dividing ALL valid cells into equal-count groups (row-major order),
+  // guaranteeing approximately equal area per piece.
+  const N         = Math.max(4, Math.ceil(Math.sqrt(targetPieces * 2.5)));
   const ASSEMBLED = arena.size * ASSEMBLED_RATIO;
   const tileSize  = ASSEMBLED / N;
   const ox        = arena.cx - ASSEMBLED / 2;
   const oy        = arena.cy - ASSEMBLED / 2;
   const color     = COLORS[shape];
 
-  // Build the clipper polygon that defines the target shape boundary.
-  // Circle uses a 64-gon approximation; triangle uses exact vertices.
-  // Both are wound clockwise in screen-space (Y-down) so _clipInside works correctly.
   let clipper: [number, number][] | null = null;
   if (shape === "circle") {
-    const r = ASSEMBLED * 0.46; // matches applyShapeClip and drawSolid
+    const r = ASSEMBLED * 0.46;
     clipper = Array.from({ length: 64 }, (_, i) => {
       const a = (i / 64) * Math.PI * 2;
       return [arena.cx + Math.cos(a) * r, arena.cy + Math.sin(a) * r] as [number, number];
     });
   } else if (shape === "triangle") {
-    const hw = ASSEMBLED / 2; // matches applyShapeClip and drawSolid
-    // top → bottom-right → bottom-left (CW in screen space)
+    const hw = ASSEMBLED / 2;
     clipper = [
       [arena.cx,       arena.cy - hw],
       [arena.cx + hw,  arena.cy + hw],
@@ -201,88 +198,76 @@ function generateBodies(shape: ShapeType, arena: Arena, targetPieces = 6, imageE
     }
   }
 
-  const bodies: Body[] = [];
-  let cellId = 0;
-
+  // Pass 1: collect all valid cells in row-major order
+  type RawCell = { gridRow: number; gridCol: number; targetX: number; targetY: number; verts: [number, number][] };
+  const rawCells: RawCell[] = [];
   for (let row = 0; row < N; row++) {
     for (let col = 0; col < N; col++) {
       const corners: [number, number][] = [
-        pts[row][col],
-        pts[row][col + 1],
-        pts[row + 1][col + 1],
-        pts[row + 1][col],
+        pts[row][col], pts[row][col + 1], pts[row + 1][col + 1], pts[row + 1][col],
       ];
-
       let poly: [number, number][] = corners;
       let cx: number, cy: number;
-
       if (clipper !== null) {
-        // Clip the grid quad to the actual shape boundary
         const origArea = polygonArea(corners);
         poly = clipToConvex(corners, clipper);
-        // Discard cells fully outside or tiny slivers (< 4 % of original cell)
         if (poly.length < 3 || polygonArea(poly) < origArea * 0.04) continue;
         [cx, cy] = polygonCentroid(poly);
       } else {
-        // Square: keep original vertex-average centroid (no clipping)
         cx = (corners[0][0] + corners[1][0] + corners[2][0] + corners[3][0]) / 4;
         cy = (corners[0][1] + corners[1][1] + corners[2][1] + corners[3][1]) / 4;
       }
-
-      const verts: [number, number][] = poly.map(([vx, vy]) => [
-        (vx - cx) * VERT_INSET,
-        (vy - cy) * VERT_INSET,
-      ]);
-
-      const inner = arena.size - ARENA_PAD * 2 - tileSize;
-      const sx    = arena.x + ARENA_PAD + tileSize / 2 + Math.random() * inner;
-      const sy    = arena.y + ARENA_PAD + tileSize / 2 + Math.random() * inner;
-
-      let angle = Math.random() * Math.PI * 2;
-      const AVOID = Math.PI / 36;
-      if (Math.abs(Math.sin(angle)) < AVOID) angle += AVOID;
-      if (Math.abs(Math.cos(angle)) < AVOID) angle += AVOID;
-
-      bodies.push({
-        id: _bodyId++,
-        x: sx, y: sy,
-        vx: Math.cos(angle) * PIECE_SPEED,
-        vy: Math.sin(angle) * PIECE_SPEED,
-        cells: [{
-          id: cellId++,
-          gridRow: row, gridCol: col,
-          targetX: cx, targetY: cy,
-          localX: 0, localY: 0,
-          verts,
-          tileSize,
-        }],
-        glowColor: "none",
-        glowTimer: 0,
-        color,
-        shape,
-        laneIdx,
-        imageEl,
+      rawCells.push({
+        gridRow: row, gridCol: col, targetX: cx, targetY: cy,
+        verts: poly.map(([vx, vy]) => [(vx - cx) * VERT_INSET, (vy - cy) * VERT_INSET]),
       });
     }
   }
 
-  // Place bodies at their target positions so checkCanMerge proximity test passes,
-  // then merge pairs until we reach the requested piece count.
-  for (const b of bodies) { b.x = b.cells[0].targetX; b.y = b.cells[0].targetY; }
-  let canReduce = true;
-  while (bodies.length > targetPieces && canReduce) canReduce = scanMerges(bodies, true);
+  // Pass 2: divide cells into targetPieces equal groups → each group becomes one Body
+  const groupCount = Math.min(targetPieces, rawCells.length);
+  const bodies: Body[] = [];
+  const inner = arena.size - ARENA_PAD * 2 - tileSize;
+  let cellId  = 0;
 
-  // Rescatter to random arena positions with random velocities
-  for (const b of bodies) {
-    const inner = arena.size - ARENA_PAD * 2 - tileSize;
-    b.x = arena.x + ARENA_PAD + tileSize / 2 + Math.random() * inner;
-    b.y = arena.y + ARENA_PAD + tileSize / 2 + Math.random() * inner;
+  for (let g = 0; g < groupCount; g++) {
+    const startI = Math.floor(g * rawCells.length / groupCount);
+    const endI   = Math.floor((g + 1) * rawCells.length / groupCount);
+    const group  = rawCells.slice(startI, endI);
+    if (group.length === 0) continue;
+
+    // First cell in the group is the anchor; all others are stored relative to it
+    const anchor = group[0];
+    const cells: Cell[] = group.map((rc) => ({
+      id: cellId++,
+      gridRow: rc.gridRow, gridCol: rc.gridCol,
+      targetX: rc.targetX, targetY: rc.targetY,
+      localX: rc.targetX - anchor.targetX,
+      localY: rc.targetY - anchor.targetY,
+      verts: rc.verts as [number, number][],
+      tileSize,
+    }));
+
+    const sx = arena.x + ARENA_PAD + tileSize / 2 + Math.random() * inner;
+    const sy = arena.y + ARENA_PAD + tileSize / 2 + Math.random() * inner;
     let ang = Math.random() * Math.PI * 2;
     const AV = Math.PI / 36;
     if (Math.abs(Math.sin(ang)) < AV) ang += AV;
     if (Math.abs(Math.cos(ang)) < AV) ang += AV;
-    b.vx = Math.cos(ang) * PIECE_SPEED;
-    b.vy = Math.sin(ang) * PIECE_SPEED;
+
+    bodies.push({
+      id: _bodyId++,
+      x: sx, y: sy,
+      vx: Math.cos(ang) * PIECE_SPEED,
+      vy: Math.sin(ang) * PIECE_SPEED,
+      cells,
+      glowColor: "none",
+      glowTimer: 0,
+      color,
+      shape,
+      laneIdx,
+      imageEl,
+    });
   }
 
   return bodies;
@@ -448,45 +433,57 @@ function drawBodies(
   ctx.save();
   ctx.globalAlpha = alpha;
   if (clip) applyShapeClip(ctx, clip);
+
+  // Expand verts beyond VERT_INSET so adjacent sub-cells fill their shared gap.
+  // This makes each body render as one seamless solid piece.
+  const INV = 1 / VERT_INSET;
+
   for (const body of bodies) {
-    const isGreen = body.glowColor === "green";
-    const isRed   = body.glowColor === "red";
-    if (isGreen) { ctx.shadowColor = "rgba(74,222,128,0.7)";  ctx.shadowBlur = 14; }
-    else if (isRed) { ctx.shadowColor = "rgba(248,113,113,0.55)"; ctx.shadowBlur = 14; }
-    else { ctx.shadowBlur = 0; }
-    for (const c of body.cells) {
-      const px = body.x + c.localX, py = body.y + c.localY;
-      // Build path once
+    const anchor = body.cells[0];
+
+    if (body.glowColor === "green") { ctx.shadowColor = "rgba(74,222,128,0.7)";  ctx.shadowBlur = 14; }
+    else if (body.glowColor === "red") { ctx.shadowColor = "rgba(248,113,113,0.55)"; ctx.shadowBlur = 14; }
+    else { ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; }
+
+    // Build one composite path covering all sub-cells of this body
+    const tracePath = () => {
       ctx.beginPath();
-      ctx.moveTo(px + c.verts[0][0], py + c.verts[0][1]);
-      for (let i = 1; i < c.verts.length; i++) ctx.lineTo(px + c.verts[i][0], py + c.verts[i][1]);
-      ctx.closePath();
-      if (body.imageEl && assembledArea) {
-        // Clip to this piece polygon, draw the slice of the image that belongs here
-        ctx.save();
-        ctx.clip();
-        const ox = body.x + c.localX - c.targetX;
-        const oy = body.y + c.localY - c.targetY;
-        ctx.drawImage(
-          body.imageEl,
-          assembledArea.cx - assembledArea.S / 2 + ox,
-          assembledArea.cy - assembledArea.S / 2 + oy,
-          assembledArea.S,
-          assembledArea.S,
-        );
-        ctx.restore();
-        // Re-trace path for the outline
-        ctx.beginPath();
-        ctx.moveTo(px + c.verts[0][0], py + c.verts[0][1]);
-        for (let i = 1; i < c.verts.length; i++) ctx.lineTo(px + c.verts[i][0], py + c.verts[i][1]);
+      for (const c of body.cells) {
+        const px = body.x + c.localX, py = body.y + c.localY;
+        ctx.moveTo(px + c.verts[0][0] * INV, py + c.verts[0][1] * INV);
+        for (let i = 1; i < c.verts.length; i++) ctx.lineTo(px + c.verts[i][0] * INV, py + c.verts[i][1] * INV);
         ctx.closePath();
-      } else {
-        ctx.fillStyle = body.color;
-        ctx.fill();
       }
-      ctx.strokeStyle = "rgba(255,255,255,0.28)"; ctx.lineWidth = 1; ctx.stroke();
+    };
+
+    tracePath();
+
+    if (body.imageEl && assembledArea) {
+      // All sub-cells share the same image offset because localX = targetX - anchor.targetX
+      ctx.save();
+      ctx.clip();
+      const ox = body.x - anchor.targetX;
+      const oy = body.y - anchor.targetY;
+      ctx.drawImage(
+        body.imageEl,
+        assembledArea.cx - assembledArea.S / 2 + ox,
+        assembledArea.cy - assembledArea.S / 2 + oy,
+        assembledArea.S,
+        assembledArea.S,
+      );
+      ctx.restore();
+      tracePath(); // retrace after restore (ctx.save/restore does not preserve the path)
+    } else {
+      ctx.fillStyle = body.color;
+      ctx.fill();
     }
+
+    // Single outer stroke per body — no per-cell seam lines
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.lineWidth   = 1;
+    ctx.stroke();
   }
+
   ctx.restore();
 }
 
