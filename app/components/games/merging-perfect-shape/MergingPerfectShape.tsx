@@ -83,8 +83,6 @@ const COLORS: Record<ShapeType, string> = {
 };
 
 
-const PLACE_LABELS = ["🥇 1st", "🥈 2nd", "🥉 3rd"];
-const SHAPE_EMOJI: Record<ShapeType, string> = { square: "🟧", circle: "🔵", triangle: "🔺" };
 
 let _bodyId = 0;
 
@@ -303,7 +301,7 @@ function setSpeed(b: Body) {
   }
 }
 
-function bounceWall(b: Body, arena: Arena, onBounce?: (shape: ShapeType, laneIdx: number) => void) {
+function bounceWall(b: Body, arena: Arena, onBounce?: (b: Body) => void) {
   const { minX, maxX, minY, maxY } = getBodyBounds(b);
   const L = arena.x, R = arena.x + arena.size;
   const T = arena.y, Bo = arena.y + arena.size;
@@ -312,7 +310,7 @@ function bounceWall(b: Body, arena: Arena, onBounce?: (shape: ShapeType, laneIdx
   if (maxX > R)  { b.x -= maxX - R;  b.vx = -Math.abs(b.vx); hit = true; }
   if (minY < T)  { b.y += T  - minY; b.vy =  Math.abs(b.vy); hit = true; }
   if (maxY > Bo) { b.y -= maxY - Bo; b.vy = -Math.abs(b.vy); hit = true; }
-  if (hit) { setSpeed(b); b.glowColor = "red"; b.glowTimer = 0.14; onBounce?.(b.shape, b.laneIdx); }
+  if (hit) { setSpeed(b); b.glowColor = "red"; b.glowTimer = 0.14; onBounce?.(b); }
 }
 
 // ─── Solid shape bounce ───────────────────────────────────────────────────────
@@ -552,18 +550,19 @@ function _pianoNote(ctx: AudioContext, freq: number, vol: number, t: number, dur
 
 // ── Per-event sounds ──────────────────────────────────────────────────────────
 
-// One distinct piano note per lane (slot 0-3) for both merge and collision
-const MERGE_FREQS     = [130.8, 329.6, 783.9, 493.9]; // C3, E4, G5, B4
-const COLLISION_FREQS = [ 98.0, 246.9, 659.3, 293.7]; // G2, B3, E5, D4
+// One distinct piano note per lane (slot 0-3)
+// Merge: deeper, longer notes
+// Collision: same notes but shorter and slightly quieter
+const LANE_FREQS = [196.0, 261.6, 329.6, 392.0]; // G3, C4, E4, G4
 
 function playMergeSound(ctx: AudioContext, laneIdx: number) {
-  const freq = MERGE_FREQS[laneIdx] ?? MERGE_FREQS[0];
-  _pianoNote(ctx, freq, 0.20, ctx.currentTime, 0.28);
+  const freq = LANE_FREQS[laneIdx] ?? LANE_FREQS[0];
+  _pianoNote(ctx, freq, 0.22, ctx.currentTime, 0.30);
 }
 
 function playCollisionSound(ctx: AudioContext, laneIdx: number) {
-  const freq = COLLISION_FREQS[laneIdx] ?? COLLISION_FREQS[0];
-  _pianoNote(ctx, freq, 0.09, ctx.currentTime, 0.12);
+  const freq = LANE_FREQS[laneIdx] ?? LANE_FREQS[0];
+  _pianoNote(ctx, freq, 0.18, ctx.currentTime, 0.18);
 }
 
 // Play a user-uploaded AudioBuffer as a one-shot sound
@@ -667,9 +666,9 @@ export default function MergingPerfectShape() {
   const [arenaY,    setArenaY]    = useState(0);
   const [remaining, setRemaining] = useState(0);
   const [merging,   setMerging]   = useState(false);
-  const [rankings, setRankings] = useState<{ shape: ShapeType; place: number; time: number }[]>([]);
   const [raceDone, setRaceDone] = useState(false);
-  const [customHeading, setCustomHeading] = useState("How Long Will It Take to Assemble a Plain Square?");
+  const [customHeading,    setCustomHeading]    = useState("How Long Will It Take to Assemble a Plain Square?");
+  const [customSubheading, setCustomSubheading] = useState("");
   const [soloConfigs,   setSoloConfigs]   = useState<ShapeConfig[]>([{ shape: "square", pieces: 6, imageUrl: null, imageEl: null, mergeAudioBuffer: null, mergeAudioName: null }]);
 
   const setupCanvas = useCallback(() => {
@@ -713,13 +712,14 @@ export default function MergingPerfectShape() {
         for (const b of bodies) {
           if (b.glowTimer > 0) { b.glowTimer -= dt; if (b.glowTimer <= 0) b.glowColor = "none"; }
         }
-        const soloBounceCb = (_sh: ShapeType, li: number) => {
+        const soloBounceCb = (b: Body) => {
           const ac = audioCtxRef.current; if (!ac) return;
           ac.resume();
           const now = ac.currentTime;
-          if ((now - (lastBounceSoundRef.current[li] ?? 0)) < 0.12) return;
-          lastBounceSoundRef.current[li] = now;
-          playCollisionSound(ac, li);
+          const key = b.laneIdx;
+          if ((now - (lastBounceSoundRef.current[key] ?? -Infinity)) < 0.10) return;
+          lastBounceSoundRef.current[key] = now;
+          playCollisionSound(ac, key);
         };
         // Sub-step: 3 physics steps per rendered frame to prevent wall tunneling
         const SUB = 3, subDt = dt / SUB;
@@ -731,6 +731,9 @@ export default function MergingPerfectShape() {
         const mergingEnabled = elapsedRef.current >= MERGE_DELAY;
         const soloMergeCb = (b: Body) => {
           const ac = audioCtxRef.current; if (!ac) return;
+          // Suppress the next wall-bounce sound for the merged body so the
+          // merge sound isn't immediately followed by a bounce sound.
+          lastBounceSoundRef.current[b.laneIdx] = ac.currentTime + 0.35;
           const buf = soloConfigsRef.current[0]?.mergeAudioBuffer;
           if (buf) playCustomSound(ac, buf); else playMergeSound(ac, b.laneIdx);
         };
@@ -788,8 +791,9 @@ export default function MergingPerfectShape() {
           const ac = audioCtxRef.current; if (!ac) return;
           ac.resume();
           const now = ac.currentTime;
-          if ((now - (lastBounceSoundRef.current[0] ?? 0)) < 0.12) return;
-          lastBounceSoundRef.current[0] = now;
+          const key = -1; // negative: solid lane 0, won't clash with lane indices (≥0)
+          if ((now - (lastBounceSoundRef.current[key] ?? -Infinity)) < 0.10) return;
+          lastBounceSoundRef.current[key] = now;
           playCollisionSound(ac, 0);
         });
 
@@ -802,13 +806,14 @@ export default function MergingPerfectShape() {
         for (const b of bodies) {
           if (b.glowTimer > 0) { b.glowTimer -= dt; if (b.glowTimer <= 0) b.glowColor = "none"; }
         }
-        const raceBounceCb = (_sh: ShapeType, li: number) => {
+        const raceBounceCb = (b: Body) => {
           const ac = audioCtxRef.current; if (!ac) return;
           ac.resume();
           const now = ac.currentTime;
-          if ((now - (lastBounceSoundRef.current[li] ?? 0)) < 0.12) return;
-          lastBounceSoundRef.current[li] = now;
-          playCollisionSound(ac, li);
+          const key = b.laneIdx;
+          if ((now - (lastBounceSoundRef.current[key] ?? -Infinity)) < 0.10) return;
+          lastBounceSoundRef.current[key] = now;
+          playCollisionSound(ac, key);
         };
         // Sub-step physics to prevent wall tunneling
         const rSUB = 3, rSubDt = dt / rSUB;
@@ -823,6 +828,7 @@ export default function MergingPerfectShape() {
         // Merge — same-lane only (enforced by checkCanMerge via laneIdx), immediate (no delay)
         const raceMergeCb = (b: Body) => {
           const ac = audioCtxRef.current; if (!ac) return;
+          lastBounceSoundRef.current[b.laneIdx] = ac.currentTime + 0.35;
           const buf = raceEntriesRef.current[b.laneIdx]?.mergeAudioBuffer;
           if (buf) playCustomSound(ac, buf); else playMergeSound(ac, b.laneIdx);
         };
@@ -878,8 +884,9 @@ export default function MergingPerfectShape() {
             bounceSolid(entry.solid, arena, entry.shape, entry.solidSize, () => {
               const ac = audioCtxRef.current; if (!ac) return;
               const now = ac.currentTime;
-              if ((now - (lastBounceSoundRef.current[li] ?? 0)) < 0.12) return;
-              lastBounceSoundRef.current[li] = now;
+              const key = -(li + 1); // negative: solid per lane, won't clash with lane indices (≥0)
+              if ((now - (lastBounceSoundRef.current[key] ?? -Infinity)) < 0.10) return;
+              lastBounceSoundRef.current[key] = now;
               playCollisionSound(ac, li);
             });
           }
@@ -888,11 +895,6 @@ export default function MergingPerfectShape() {
         frameRef.current++;
         if (stateChanged || frameRef.current % 6 === 0) {
           setTimerMs(elapsedRef.current * 1000);
-          const newRankings = raceLanesRef.current
-            .filter(li => entries[li]?.place != null)
-            .sort((a, b) => (entries[a]?.place ?? 99) - (entries[b]?.place ?? 99))
-            .map(li => ({ shape: entries[li]!.shape, place: entries[li]!.place!, time: entries[li]!.finishTime }));
-          setRankings(newRankings);
           if (raceLanesRef.current.every(li => entries[li]?.subPhase === "bouncing")) setRaceDone(true);
         }
       }
@@ -1061,7 +1063,7 @@ export default function MergingPerfectShape() {
       phaseRef.current       = "race";
       lastTRef.current       = performance.now();
       setTimerMs(0);
-      setRankings([]);
+
       setRaceDone(false);
       setPhase("race");
     }
@@ -1076,7 +1078,6 @@ export default function MergingPerfectShape() {
     setPhase("editor");
     setTimerMs(0);
     setMerging(false);
-    setRankings([]);
     setRaceDone(false);
   };
 
@@ -1121,24 +1122,23 @@ export default function MergingPerfectShape() {
           </p>
         )}
 
+        {/* Subheading */}
+        {customSubheading ? (
+          <p style={{
+            margin: "4px 0 0", fontFamily: "Arial, Helvetica, sans-serif",
+            fontSize: "clamp(0.75rem, 2.5vw, 1.05rem)", fontWeight: 600,
+            color: "rgba(248,250,252,0.7)", textAlign: "center",
+            textShadow: "0 2px 10px rgba(0,0,0,0.6)",
+          }}>
+            {customSubheading}
+          </p>
+        ) : null}
+
         {/* Race status */}
-        {phase === "race" && rankings.length === 0 && (
+        {phase === "race" && (
           <p style={{ margin: "4px 0 0", fontFamily: "Arial, Helvetica, sans-serif", fontSize: "0.85rem", fontWeight: 700, color: "rgba(248,250,252,0.5)" }}>
             ⏱ {fmtTime(timerMs)} · Racing…
           </p>
-        )}
-        {phase === "race" && rankings.length > 0 && (
-          <div style={{ margin: "6px 0 0", display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", fontFamily: "Arial, Helvetica, sans-serif" }}>
-            {rankings.map((r, i) => (
-              <span key={`${r.shape}-${i}`} style={{
-                padding: "3px 10px", borderRadius: 6,
-                background: COLORS[r.shape] + "28", border: `1px solid ${COLORS[r.shape]}66`,
-                color: COLORS[r.shape], fontSize: "0.82rem", fontWeight: 800,
-              }}>
-                {PLACE_LABELS[r.place - 1]} {SHAPE_EMOJI[r.shape]} {r.shape.charAt(0).toUpperCase() + r.shape.slice(1)} · {fmtTime(r.time * 1000)}
-              </span>
-            ))}
-          </div>
         )}
       </div>
 
@@ -1175,6 +1175,24 @@ export default function MergingPerfectShape() {
                 value={customHeading}
                 onChange={e => setCustomHeading(e.target.value)}
                 placeholder="e.g. How fast can squares merge?"
+                style={{
+                  width: "100%", padding: "9px 12px", borderRadius: 8, boxSizing: "border-box",
+                  border: "1px solid rgba(148,163,184,0.25)", background: "rgba(15,23,42,0.85)",
+                  color: "#f8fafc", fontSize: 13, fontFamily: "Arial, Helvetica, sans-serif", outline: "none",
+                }}
+              />
+            </div>
+
+            {/* Custom subheading input */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <label style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
+                YOUR SUBHEADING
+              </label>
+              <input
+                type="text"
+                value={customSubheading}
+                onChange={e => setCustomSubheading(e.target.value)}
+                placeholder="e.g. Watch the pieces come together!"
                 style={{
                   width: "100%", padding: "9px 12px", borderRadius: 8, boxSizing: "border-box",
                   border: "1px solid rgba(148,163,184,0.25)", background: "rgba(15,23,42,0.85)",
