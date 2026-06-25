@@ -30,11 +30,14 @@ type Body = {
   glowTimer: number;
   color: string;
   shape: ShapeType;
+  laneIdx: number;
+  imageEl: HTMLImageElement | null;
 };
 
 type RaceSubPhase = "racing" | "assembled" | "transition" | "bouncing";
 type RaceEntry = {
   shape: ShapeType;
+  laneIdx: number;
   total: number;
   place: number | null;
   finishTime: number;
@@ -43,10 +46,20 @@ type RaceEntry = {
   transP: number;
   solid: Solid;
   solidSize: number;
-  completionGlow: number; // 1→0 over ASSEMBLED_PAUSE when shape finishes
+  completionGlow: number;
+  imageEl: HTMLImageElement | null;
 };
 
 type Solid = { x: number; y: number; vx: number; vy: number };
+
+type ShapeConfig = {
+  shape: ShapeType;
+  pieces: number;
+  imageUrl: string | null;
+  imageEl: HTMLImageElement | null;
+};
+
+type AssembledArea = { cx: number; cy: number; S: number };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -66,12 +79,6 @@ const COLORS: Record<ShapeType, string> = {
   triangle: "#22c55e",
 };
 
-const RACE_OPTIONS: { label: string; shapes: ShapeType[] }[] = [
-  { label: "Square vs Circle",             shapes: ["square", "circle"] },
-  { label: "Circle vs Triangle",           shapes: ["circle", "triangle"] },
-  { label: "Triangle vs Square",           shapes: ["triangle", "square"] },
-  { label: "All Three",                    shapes: ["square", "circle", "triangle"] },
-];
 
 const PLACE_LABELS = ["🥇 1st", "🥈 2nd", "🥉 3rd"];
 const SHAPE_EMOJI: Record<ShapeType, string> = { square: "🟧", circle: "🔵", triangle: "🔺" };
@@ -149,8 +156,10 @@ function polygonCentroid(pts: [number, number][]): [number, number] {
 
 // ─── Piece generation ─────────────────────────────────────────────────────────
 
-function generateBodies(shape: ShapeType, arena: Arena): Body[] {
-  const N         = 5;
+function generateBodies(shape: ShapeType, arena: Arena, targetPieces = 6, imageEl: HTMLImageElement | null = null, laneIdx = 0): Body[] {
+  // Over-generate a grid large enough to give at least targetPieces cells after clipping,
+  // then pre-merge pairs down to the exact target count.
+  const N         = Math.max(2, Math.ceil(Math.sqrt(targetPieces * 1.5)));
   const ASSEMBLED = arena.size * ASSEMBLED_RATIO;
   const tileSize  = ASSEMBLED / N;
   const ox        = arena.cx - ASSEMBLED / 2;
@@ -251,9 +260,31 @@ function generateBodies(shape: ShapeType, arena: Arena): Body[] {
         glowTimer: 0,
         color,
         shape,
+        laneIdx,
+        imageEl,
       });
     }
   }
+
+  // Place bodies at their target positions so checkCanMerge proximity test passes,
+  // then merge pairs until we reach the requested piece count.
+  for (const b of bodies) { b.x = b.cells[0].targetX; b.y = b.cells[0].targetY; }
+  let canReduce = true;
+  while (bodies.length > targetPieces && canReduce) canReduce = scanMerges(bodies, true);
+
+  // Rescatter to random arena positions with random velocities
+  for (const b of bodies) {
+    const inner = arena.size - ARENA_PAD * 2 - tileSize;
+    b.x = arena.x + ARENA_PAD + tileSize / 2 + Math.random() * inner;
+    b.y = arena.y + ARENA_PAD + tileSize / 2 + Math.random() * inner;
+    let ang = Math.random() * Math.PI * 2;
+    const AV = Math.PI / 36;
+    if (Math.abs(Math.sin(ang)) < AV) ang += AV;
+    if (Math.abs(Math.cos(ang)) < AV) ang += AV;
+    b.vx = Math.cos(ang) * PIECE_SPEED;
+    b.vy = Math.sin(ang) * PIECE_SPEED;
+  }
+
   return bodies;
 }
 
@@ -323,7 +354,7 @@ function bounceSolid(s: Solid, arena: Arena, shape: ShapeType, S: number, onBoun
 type MergeCandidate = { canMerge: false } | { canMerge: true; c1: Cell; c2: Cell };
 
 function checkCanMerge(b1: Body, b2: Body): MergeCandidate {
-  if (b1.shape !== b2.shape) return { canMerge: false };
+  if (b1.laneIdx !== b2.laneIdx) return { canMerge: false };
   const tileSize  = b1.cells[0]?.tileSize ?? 1;
   const threshold = tileSize * ATTACH_THRESHOLD;
   for (const c1 of b1.cells) {
@@ -407,7 +438,13 @@ function applyShapeClip(ctx: CanvasRenderingContext2D, { shape, cx, cy, S }: Cli
   ctx.clip();
 }
 
-function drawBodies(ctx: CanvasRenderingContext2D, bodies: Body[], alpha: number, clip?: ClipInfo) {
+function drawBodies(
+  ctx: CanvasRenderingContext2D,
+  bodies: Body[],
+  alpha: number,
+  clip?: ClipInfo,
+  assembledArea?: AssembledArea,
+) {
   ctx.save();
   ctx.globalAlpha = alpha;
   if (clip) applyShapeClip(ctx, clip);
@@ -419,11 +456,34 @@ function drawBodies(ctx: CanvasRenderingContext2D, bodies: Body[], alpha: number
     else { ctx.shadowBlur = 0; }
     for (const c of body.cells) {
       const px = body.x + c.localX, py = body.y + c.localY;
+      // Build path once
       ctx.beginPath();
       ctx.moveTo(px + c.verts[0][0], py + c.verts[0][1]);
       for (let i = 1; i < c.verts.length; i++) ctx.lineTo(px + c.verts[i][0], py + c.verts[i][1]);
       ctx.closePath();
-      ctx.fillStyle   = body.color; ctx.fill();
+      if (body.imageEl && assembledArea) {
+        // Clip to this piece polygon, draw the slice of the image that belongs here
+        ctx.save();
+        ctx.clip();
+        const ox = body.x + c.localX - c.targetX;
+        const oy = body.y + c.localY - c.targetY;
+        ctx.drawImage(
+          body.imageEl,
+          assembledArea.cx - assembledArea.S / 2 + ox,
+          assembledArea.cy - assembledArea.S / 2 + oy,
+          assembledArea.S,
+          assembledArea.S,
+        );
+        ctx.restore();
+        // Re-trace path for the outline
+        ctx.beginPath();
+        ctx.moveTo(px + c.verts[0][0], py + c.verts[0][1]);
+        for (let i = 1; i < c.verts.length; i++) ctx.lineTo(px + c.verts[i][0], py + c.verts[i][1]);
+        ctx.closePath();
+      } else {
+        ctx.fillStyle = body.color;
+        ctx.fill();
+      }
       ctx.strokeStyle = "rgba(255,255,255,0.28)"; ctx.lineWidth = 1; ctx.stroke();
     }
   }
@@ -434,27 +494,37 @@ function drawSolid(
   ctx: CanvasRenderingContext2D,
   shape: ShapeType, s: Solid, S: number,
   color: string, alpha: number, blurPx: number,
+  imageEl?: HTMLImageElement | null,
 ) {
   ctx.save();
   ctx.globalAlpha = alpha;
   if (blurPx > 0.5) ctx.filter = `blur(${blurPx.toFixed(1)}px)`;
-  ctx.fillStyle   = color;
-  ctx.shadowColor = color;
-  ctx.shadowBlur  = 20;
+
   ctx.beginPath();
   if (shape === "square") {
     ctx.rect(s.x - S / 2, s.y - S / 2, S, S);
   } else if (shape === "circle") {
     ctx.arc(s.x, s.y, S * 0.46, 0, Math.PI * 2);
   } else {
-    // equilateral-style triangle pointing up, bounding box S×S centered at (s.x, s.y)
     const hw = S / 2;
     ctx.moveTo(s.x,      s.y - hw);
     ctx.lineTo(s.x - hw, s.y + hw);
     ctx.lineTo(s.x + hw, s.y + hw);
     ctx.closePath();
   }
-  ctx.fill();
+
+  if (imageEl) {
+    ctx.save();
+    ctx.clip();
+    ctx.drawImage(imageEl, s.x - S / 2, s.y - S / 2, S, S);
+    ctx.restore();
+  } else {
+    ctx.fillStyle   = color;
+    ctx.shadowColor = color;
+    ctx.shadowBlur  = 20;
+    ctx.fill();
+  }
+
   ctx.restore();
 }
 
@@ -573,26 +643,27 @@ export default function MergingPerfectShape() {
   const solidSizeRef     = useRef(0);
   const assembledTimeRef = useRef(0);
   const transPRef        = useRef(0);
-  // Race refs
-  const raceShapesRef  = useRef<ShapeType[]>(["square", "circle"]);
-  const raceEntriesRef = useRef<Partial<Record<ShapeType, RaceEntry>>>({});
+  // Race refs (keyed by lane index, not shape type, to support duplicate shapes)
+  const raceLanesRef   = useRef<number[]>([]);
+  const raceEntriesRef = useRef<Record<number, RaceEntry>>({});
   const racePlaceRef   = useRef(0);
+  // Solo multi-shape refs
+  const soloConfigsRef    = useRef<ShapeConfig[]>([{ shape: "square", pieces: 6, imageUrl: null, imageEl: null }]);
+  const soloImageElRef    = useRef<HTMLImageElement | null>(null);
   // Audio refs
   const audioCtxRef         = useRef<AudioContext | null>(null);
   const soloGlowRef         = useRef(0); // 1→0 highlight intensity during solo assembled phase
   const lastBounceSoundRef  = useRef<Partial<Record<ShapeType, number>>>({});
 
-  const [phase,     setPhase]     = useState<Phase>("editor");
-  const [shape,     setShape]     = useState<ShapeType>("square");
-  const [timerMs,   setTimerMs]   = useState(0);
+  const [phase,   setPhase]   = useState<Phase>("editor");
+  const [timerMs, setTimerMs] = useState(0);
   const [arenaY,    setArenaY]    = useState(0);
   const [remaining, setRemaining] = useState(0);
   const [merging,   setMerging]   = useState(false);
-  // Race state
-  const [gameMode,   setGameMode]   = useState<"solo" | "race">("solo");
-  const [raceConfig, setRaceConfig] = useState<ShapeType[]>(["square", "circle"]);
-  const [rankings,   setRankings]   = useState<{ shape: ShapeType; place: number; time: number }[]>([]);
-  const [raceDone,   setRaceDone]   = useState(false);
+  const [rankings, setRankings] = useState<{ shape: ShapeType; place: number; time: number }[]>([]);
+  const [raceDone, setRaceDone] = useState(false);
+  const [customHeading, setCustomHeading] = useState("How Long Will It Take to Assemble a Plain Square?");
+  const [soloConfigs,   setSoloConfigs]   = useState<ShapeConfig[]>([{ shape: "square", pieces: 6, imageUrl: null, imageEl: null }]);
 
   const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -735,27 +806,27 @@ export default function MergingPerfectShape() {
         const rSUB = 3, rSubDt = dt / rSUB;
         for (let s = 0; s < rSUB; s++) {
           for (const b of bodies) {
-            if (entries[b.shape]?.subPhase === "racing") { b.x += b.vx * rSubDt; b.y += b.vy * rSubDt; }
+            if (entries[b.laneIdx]?.subPhase === "racing") { b.x += b.vx * rSubDt; b.y += b.vy * rSubDt; }
           }
           for (const b of bodies) {
-            if (entries[b.shape]?.subPhase === "racing") bounceWall(b, arena, raceBounceCb);
+            if (entries[b.laneIdx]?.subPhase === "racing") bounceWall(b, arena, raceBounceCb);
           }
         }
-        // Merge — same-shape only (enforced by checkCanMerge), immediate (no delay)
+        // Merge — same-lane only (enforced by checkCanMerge via laneIdx), immediate (no delay)
         const raceMergeCb = (sh: ShapeType) => {
           const ac = audioCtxRef.current; if (ac) playMergeSound(ac, sh);
         };
         let mergeHappened = true;
         while (mergeHappened) mergeHappened = scanMerges(bodies, true, raceMergeCb);
 
-        // Per-shape sub-state transitions
+        // Per-lane sub-state transitions
         let stateChanged = false;
-        for (const sh of raceShapesRef.current) {
-          const entry = entries[sh];
+        for (const li of raceLanesRef.current) {
+          const entry = entries[li];
           if (!entry) continue;
 
           if (entry.subPhase === "racing") {
-            const cnt = bodies.reduce((n, b) => n + (b.shape === sh ? 1 : 0), 0);
+            const cnt = bodies.reduce((n, b) => n + (b.laneIdx === li ? 1 : 0), 0);
             if (cnt === 1 && entry.total > 1) {
               entry.subPhase       = "assembled";
               entry.assembledTimer = ASSEMBLED_PAUSE;
@@ -768,7 +839,7 @@ export default function MergingPerfectShape() {
             entry.completionGlow = Math.max(0, entry.completionGlow - dt / ASSEMBLED_PAUSE);
             entry.assembledTimer -= dt;
             if (entry.assembledTimer <= 0) {
-              const sb = bodies.filter(b => b.shape === sh);
+              const sb = bodies.filter(b => b.laneIdx === li);
               if (sb.length === 1) {
                 const b0  = sb[0];
                 const ref = b0.cells[0];
@@ -788,26 +859,25 @@ export default function MergingPerfectShape() {
             if (entry.transP >= 1) {
               entry.transP = 1;
               entry.subPhase = "bouncing";
-              bodiesRef.current = bodiesRef.current.filter(b => b.shape !== sh);
-              const ac = audioCtxRef.current; if (ac) playCompleteSound(ac, sh);
+              bodiesRef.current = bodiesRef.current.filter(b => b.laneIdx !== li);
+              const ac = audioCtxRef.current; if (ac) playCompleteSound(ac, entry.shape);
               stateChanged = true;
             }
-            // Solid stays in place during the dissolve
           } else if (entry.subPhase === "bouncing") {
             entry.solid.x += entry.solid.vx * dt; entry.solid.y += entry.solid.vy * dt;
-            bounceSolid(entry.solid, arena, sh, entry.solidSize, raceBounceCb);
+            bounceSolid(entry.solid, arena, entry.shape, entry.solidSize, raceBounceCb);
           }
         }
 
         frameRef.current++;
         if (stateChanged || frameRef.current % 6 === 0) {
           setTimerMs(elapsedRef.current * 1000);
-          const newRankings = raceShapesRef.current
-            .filter(s => entries[s]?.place != null)
+          const newRankings = raceLanesRef.current
+            .filter(li => entries[li]?.place != null)
             .sort((a, b) => (entries[a]?.place ?? 99) - (entries[b]?.place ?? 99))
-            .map(s => ({ shape: s, place: entries[s]!.place!, time: entries[s]!.finishTime }));
+            .map(li => ({ shape: entries[li]!.shape, place: entries[li]!.place!, time: entries[li]!.finishTime }));
           setRankings(newRankings);
-          if (raceShapesRef.current.every(s => entries[s]?.subPhase === "bouncing")) setRaceDone(true);
+          if (raceLanesRef.current.every(li => entries[li]?.subPhase === "bouncing")) setRaceDone(true);
         }
       }
 
@@ -832,9 +902,11 @@ export default function MergingPerfectShape() {
         return { shape: shapeRef.current, cx: arena.cx + ox, cy: arena.cy + oy, S: arena.size * ASSEMBLED_RATIO };
       };
 
+      const assembledArea: AssembledArea = { cx: arena.cx, cy: arena.cy, S: arena.size * ASSEMBLED_RATIO };
+
       if (curPhase === "simulation" || curPhase === "assembled") {
         const clip = getAssembledClip();
-        drawBodies(ctx, bodiesRef.current, 1, clip);
+        drawBodies(ctx, bodiesRef.current, 1, clip, assembledArea);
         if (clip && soloGlowRef.current > 0)
           drawCompletionGlow(ctx, clip, soloGlowRef.current, COLORS[shapeRef.current]);
       }
@@ -842,41 +914,37 @@ export default function MergingPerfectShape() {
       if (curPhase === "transition") {
         const tp   = transPRef.current;
         const clip = getAssembledClip();
-        // Cracked shape fades out (stationary), still clipped to shape
-        drawBodies(ctx, bodiesRef.current, 1 - tp, clip);
-        // Solid shape fades in with dissolving blur
+        drawBodies(ctx, bodiesRef.current, 1 - tp, clip, assembledArea);
         drawSolid(ctx, shapeRef.current, solidRef.current, solidSizeRef.current,
-                  COLORS[shapeRef.current], tp, (1 - tp) * 22);
+                  COLORS[shapeRef.current], tp, (1 - tp) * 22, soloImageElRef.current);
       }
 
       if (curPhase === "bouncing") {
         drawSolid(ctx, shapeRef.current, solidRef.current, solidSizeRef.current,
-                  COLORS[shapeRef.current], 1, 0);
+                  COLORS[shapeRef.current], 1, 0, soloImageElRef.current);
       }
 
       if (curPhase === "race") {
         const entries   = raceEntriesRef.current;
         const allBodies = bodiesRef.current;
 
-        // Draw all pieces still racing (no clip needed yet)
-        const racingBodies = allBodies.filter(b => entries[b.shape]?.subPhase === "racing");
-        if (racingBodies.length > 0) drawBodies(ctx, racingBodies, 1);
+        const racingBodies = allBodies.filter(b => entries[b.laneIdx]?.subPhase === "racing");
+        if (racingBodies.length > 0) drawBodies(ctx, racingBodies, 1, undefined, assembledArea);
 
-        // Per-shape assembled / transition / bouncing
-        for (const sh of raceShapesRef.current) {
-          const entry = entries[sh];
+        for (const li of raceLanesRef.current) {
+          const entry = entries[li];
           if (!entry || entry.subPhase === "racing") continue;
-          const shapeBodies = allBodies.filter(b => b.shape === sh);
-          const clip = getRaceClip(arena, sh, shapeBodies);
+          const shapeBodies = allBodies.filter(b => b.laneIdx === li);
+          const clip = getRaceClip(arena, entry.shape, shapeBodies);
           if (entry.subPhase === "assembled") {
-            drawBodies(ctx, shapeBodies, 1, clip);
+            drawBodies(ctx, shapeBodies, 1, clip, assembledArea);
             if (clip && entry.completionGlow > 0)
-              drawCompletionGlow(ctx, clip, entry.completionGlow, COLORS[sh]);
+              drawCompletionGlow(ctx, clip, entry.completionGlow, COLORS[entry.shape]);
           } else if (entry.subPhase === "transition") {
-            drawBodies(ctx, shapeBodies, 1 - entry.transP, clip);
-            drawSolid(ctx, sh, entry.solid, entry.solidSize, COLORS[sh], entry.transP, (1 - entry.transP) * 22);
+            drawBodies(ctx, shapeBodies, 1 - entry.transP, clip, assembledArea);
+            drawSolid(ctx, entry.shape, entry.solid, entry.solidSize, COLORS[entry.shape], entry.transP, (1 - entry.transP) * 22, entry.imageEl);
           } else if (entry.subPhase === "bouncing") {
-            drawSolid(ctx, sh, entry.solid, entry.solidSize, COLORS[sh], 1, 0);
+            drawSolid(ctx, entry.shape, entry.solid, entry.solidSize, COLORS[entry.shape], 1, 0, entry.imageEl);
           }
         }
       }
@@ -893,57 +961,78 @@ export default function MergingPerfectShape() {
     };
   }, [setupCanvas]);
 
+  const handleImageUpload = (idx: number, file: File) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const url = e.target?.result as string;
+      const img = new Image();
+      img.onload = () => {
+        setSoloConfigs(prev => {
+          const next = prev.map((c, i) => i === idx ? { ...c, imageUrl: url, imageEl: img } : c);
+          soloConfigsRef.current = next;
+          return next;
+        });
+      };
+      img.src = url;
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleSoloPlay = () => {
     if (!audioCtxRef.current) {
       try { audioCtxRef.current = new AudioContext(); } catch { /* ignore */ }
     }
     audioCtxRef.current?.resume();
-    const bodies = generateBodies(shapeRef.current, arenaRef.current);
-    bodiesRef.current  = bodies;
-    totalRef.current   = bodies.length;
-    elapsedRef.current = 0;
-    frameRef.current   = 0;
-    phaseRef.current   = "simulation";
-    lastTRef.current   = performance.now();
-    setTimerMs(0);
-    setRemaining(bodies.length);
-    setMerging(false);
-    setPhase("simulation");
+    const configs = soloConfigsRef.current;
+    const arena   = arenaRef.current;
+
+    if (configs.length === 1) {
+      const cfg               = configs[0];
+      shapeRef.current        = cfg.shape;
+      soloImageElRef.current  = cfg.imageEl;
+      const bodies            = generateBodies(cfg.shape, arena, cfg.pieces, cfg.imageEl, 0);
+      bodiesRef.current       = bodies;
+      totalRef.current        = bodies.length;
+      elapsedRef.current      = 0;
+      frameRef.current        = 0;
+      phaseRef.current        = "simulation";
+      lastTRef.current        = performance.now();
+      setTimerMs(0);
+      setRemaining(bodies.length);
+      setMerging(false);
+      setPhase("simulation");
+    } else {
+      // Multi-shape: reuse race infrastructure, keyed by lane index (not shape type)
+      const allBodies: Body[] = [];
+      const entries: Record<number, RaceEntry> = {};
+      for (let i = 0; i < configs.length; i++) {
+        const cfg = configs[i];
+        const bs  = generateBodies(cfg.shape, arena, cfg.pieces, cfg.imageEl, i);
+        allBodies.push(...bs);
+        entries[i] = {
+          shape: cfg.shape, laneIdx: i, total: bs.length, place: null, finishTime: 0,
+          subPhase: "racing", assembledTimer: 0, transP: 0,
+          completionGlow: 0,
+          solid: { x: arena.cx, y: arena.cy, vx: PIECE_SPEED * 0.7, vy: PIECE_SPEED * 0.7 },
+          solidSize: arena.size * ASSEMBLED_RATIO,
+          imageEl: cfg.imageEl,
+        };
+      }
+      raceLanesRef.current   = configs.map((_, i) => i);
+      bodiesRef.current      = allBodies;
+      raceEntriesRef.current = entries;
+      racePlaceRef.current   = 0;
+      elapsedRef.current     = 0;
+      frameRef.current       = 0;
+      phaseRef.current       = "race";
+      lastTRef.current       = performance.now();
+      setTimerMs(0);
+      setRankings([]);
+      setRaceDone(false);
+      setPhase("race");
+    }
   };
 
-  const handleRacePlay = () => {
-    if (!audioCtxRef.current) {
-      try { audioCtxRef.current = new AudioContext(); } catch { /* ignore */ }
-    }
-    audioCtxRef.current?.resume();
-    const shapes = raceConfig;
-    raceShapesRef.current = shapes;
-    const arena    = arenaRef.current;
-    const allBodies: Body[] = [];
-    const entries: Partial<Record<ShapeType, RaceEntry>> = {};
-    for (const sh of shapes) {
-      const bs = generateBodies(sh, arena);
-      allBodies.push(...bs);
-      entries[sh] = {
-        shape: sh, total: bs.length, place: null, finishTime: 0,
-        subPhase: "racing", assembledTimer: 0, transP: 0,
-        completionGlow: 0,
-        solid: { x: arena.cx, y: arena.cy, vx: PIECE_SPEED * 0.7, vy: PIECE_SPEED * 0.7 },
-        solidSize: arena.size * ASSEMBLED_RATIO,
-      };
-    }
-    bodiesRef.current      = allBodies;
-    raceEntriesRef.current = entries;
-    racePlaceRef.current   = 0;
-    elapsedRef.current     = 0;
-    frameRef.current       = 0;
-    phaseRef.current       = "race";
-    lastTRef.current       = performance.now();
-    setTimerMs(0);
-    setRankings([]);
-    setRaceDone(false);
-    setPhase("race");
-  };
 
   const handleReset = () => {
     bodiesRef.current      = [];
@@ -977,12 +1066,7 @@ export default function MergingPerfectShape() {
           color: "#fff", textShadow: "0 4px 20px rgba(0,0,0,0.7)",
           letterSpacing: "-0.01em", textAlign: "center",
         }}>
-          {gameMode === "race"
-            ? raceConfig.length === 3
-              ? "Square, Circle, or Triangle: Which Will Assemble First?"
-              : `${raceConfig[0].charAt(0).toUpperCase() + raceConfig[0].slice(1)} or ${raceConfig[1].charAt(0).toUpperCase() + raceConfig[1].slice(1)}: Which Will Assemble First?`
-            : `How Long Will It Take to Assemble a Plain ${shape.charAt(0).toUpperCase() + shape.slice(1)}?`
-          }
+          {customHeading}
         </h1>
 
         {/* Solo status */}
@@ -1011,8 +1095,8 @@ export default function MergingPerfectShape() {
         )}
         {phase === "race" && rankings.length > 0 && (
           <div style={{ margin: "6px 0 0", display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "center", fontFamily: "Arial, Helvetica, sans-serif" }}>
-            {rankings.map(r => (
-              <span key={r.shape} style={{
+            {rankings.map((r, i) => (
+              <span key={`${r.shape}-${i}`} style={{
                 padding: "3px 10px", borderRadius: 6,
                 background: COLORS[r.shape] + "28", border: `1px solid ${COLORS[r.shape]}66`,
                 color: COLORS[r.shape], fontSize: "0.82rem", fontWeight: 800,
@@ -1027,83 +1111,169 @@ export default function MergingPerfectShape() {
       {/* Editor panel */}
       {phase === "editor" && (
         <div style={{
-          position: "fixed", bottom: 32, left: "50%", transform: "translateX(-50%)",
-          zIndex: 8, display: "flex", flexDirection: "column", alignItems: "center", gap: 14,
-          padding: "20px 28px", borderRadius: 14, minWidth: 280,
+          position: "fixed", bottom: 12, left: "50%", transform: "translateX(-50%)",
+          zIndex: 8,
+          width: "min(360px, calc(100vw - 24px))",
+          maxHeight: "calc(100dvh - 100px)",
+          display: "flex", flexDirection: "column",
+          borderRadius: 14, overflow: "hidden",
           border: "1px solid rgba(148,163,184,0.18)",
-          background: "rgba(2,6,23,0.9)", backdropFilter: "blur(14px)",
+          background: "rgba(2,6,23,0.95)", backdropFilter: "blur(14px)",
           boxShadow: "0 20px 60px rgba(0,0,0,0.6)", fontFamily: "Arial, Helvetica, sans-serif",
         }}>
-          {/* Mode toggle */}
-          <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid rgba(148,163,184,0.22)", width: "100%" }}>
-            {(["solo", "race"] as const).map(m => (
-              <button key={m} onClick={() => setGameMode(m)} style={{
-                flex: 1, minHeight: 36, cursor: "pointer", border: "none",
-                background: gameMode === m ? "rgba(148,163,184,0.22)" : "transparent",
-                color: gameMode === m ? "#f8fafc" : "rgba(248,250,252,0.4)",
-                fontWeight: 800, fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase",
+          {/* Scrollable content area */}
+          <div style={{
+            overflowY: "auto", flex: 1,
+            padding: "18px 18px 10px",
+            display: "flex", flexDirection: "column", gap: 14,
+            // Thin scrollbar on webkit
+            scrollbarWidth: "thin",
+            scrollbarColor: "rgba(148,163,184,0.25) transparent",
+          } as React.CSSProperties}>
+
+            {/* Custom heading input */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <label style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
+                YOUR HEADING
+              </label>
+              <input
+                type="text"
+                value={customHeading}
+                onChange={e => setCustomHeading(e.target.value)}
+                placeholder="e.g. How fast can squares merge?"
+                style={{
+                  width: "100%", padding: "9px 12px", borderRadius: 8, boxSizing: "border-box",
+                  border: "1px solid rgba(148,163,184,0.25)", background: "rgba(15,23,42,0.85)",
+                  color: "#f8fafc", fontSize: 13, fontFamily: "Arial, Helvetica, sans-serif", outline: "none",
+                }}
+              />
+            </div>
+
+            {/* Number of shapes toggle */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
+                NUMBER OF SHAPES
+              </p>
+              <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid rgba(148,163,184,0.22)" }}>
+                {[1, 2, 3, 4].map(n => (
+                  <button key={n} onClick={() => {
+                    setSoloConfigs(prev => {
+                      const next = [...prev];
+                      while (next.length < n) next.push({ shape: "square", pieces: 6, imageUrl: null, imageEl: null });
+                      // Slicing drops removed slots (and their image data) automatically
+                      const trimmed = next.slice(0, n);
+                      soloConfigsRef.current = trimmed;
+                      if (n === 1) shapeRef.current = trimmed[0].shape;
+                      return trimmed;
+                    });
+                  }} style={{
+                    flex: 1, minHeight: 44, cursor: "pointer", border: "none",
+                    background: soloConfigs.length === n ? "rgba(148,163,184,0.22)" : "transparent",
+                    color: soloConfigs.length === n ? "#f8fafc" : "rgba(248,250,252,0.4)",
+                    fontWeight: 800, fontSize: 15, letterSpacing: "0.04em",
+                  }}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Per-shape config blocks */}
+            {soloConfigs.map((cfg, idx) => (
+              <div key={idx} style={{
+                display: "flex", flexDirection: "column", gap: 12,
+                padding: "14px", borderRadius: 10,
+                border: "1px solid rgba(148,163,184,0.15)",
+                background: "rgba(15,23,42,0.5)",
               }}>
-                {m === "solo" ? "Solo" : "Race"}
-              </button>
+                {/* Block label */}
+                <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
+                  {soloConfigs.length === 1 ? "SHAPE CONFIG" : `SHAPE ${idx + 1}`}
+                </p>
+
+                {/* A) Pieces slider */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <label style={{ color: "rgba(248,250,252,0.6)", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
+                    PIECES: {cfg.pieces}
+                  </label>
+                  <input
+                    type="range" min={2} max={24} value={cfg.pieces}
+                    onChange={e => {
+                      const v = Number(e.target.value);
+                      setSoloConfigs(prev => {
+                        const next = prev.map((c, i) => i === idx ? { ...c, pieces: v } : c);
+                        soloConfigsRef.current = next;
+                        return next;
+                      });
+                    }}
+                    style={{ width: "100%", accentColor: COLORS[cfg.shape], cursor: "pointer", touchAction: "none" }}
+                  />
+                </div>
+
+                {/* B) Shape type */}
+                <div style={{ display: "flex", gap: 6 }}>
+                  {(["square", "circle", "triangle"] as ShapeType[]).map(s => (
+                    <button key={s} onClick={() => {
+                      setSoloConfigs(prev => {
+                        const next = prev.map((c, i) => i === idx ? { ...c, shape: s } : c);
+                        soloConfigsRef.current = next;
+                        if (idx === 0) shapeRef.current = s;
+                        return next;
+                      });
+                    }} style={{
+                      flex: 1, minHeight: 44, padding: "0 8px", borderRadius: 8, cursor: "pointer",
+                      border: `2px solid ${cfg.shape === s ? COLORS[s] : "rgba(148,163,184,0.22)"}`,
+                      background: cfg.shape === s ? COLORS[s] + "28" : "rgba(15,23,42,0.7)",
+                      color: cfg.shape === s ? COLORS[s] : "rgba(248,250,252,0.5)",
+                      fontWeight: 800, fontSize: 12, letterSpacing: "0.04em", textTransform: "capitalize",
+                    }}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
+
+                {/* C) Image upload */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <label style={{
+                    padding: "9px 14px", borderRadius: 8, cursor: "pointer",
+                    border: "1px solid rgba(148,163,184,0.25)", background: "rgba(15,23,42,0.7)",
+                    color: "rgba(248,250,252,0.6)", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
+                    minHeight: 44, display: "flex", alignItems: "center",
+                  }}>
+                    Add Image (optional)
+                    <input
+                      type="file" accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={e => { const f = e.target.files?.[0]; if (f) handleImageUpload(idx, f); }}
+                    />
+                  </label>
+                  {cfg.imageUrl && (
+                    <img
+                      src={cfg.imageUrl}
+                      alt="preview"
+                      style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(148,163,184,0.25)", flexShrink: 0 }}
+                    />
+                  )}
+                </div>
+              </div>
             ))}
           </div>
 
-          {/* Solo controls */}
-          {gameMode === "solo" && (<>
-            <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
-              SELECT SHAPE
-            </p>
-            <div style={{ display: "flex", gap: 10 }}>
-              {(["square", "circle", "triangle"] as ShapeType[]).map(s => (
-                <button key={s} onClick={() => { shapeRef.current = s; setShape(s); }} style={{
-                  minWidth: 90, minHeight: 44, padding: "0 16px", borderRadius: 8, cursor: "pointer",
-                  border: `2px solid ${shape === s ? COLORS[s] : "rgba(148,163,184,0.22)"}`,
-                  background: shape === s ? COLORS[s] + "28" : "rgba(15,23,42,0.7)",
-                  color: shape === s ? COLORS[s] : "rgba(248,250,252,0.5)",
-                  fontWeight: 800, fontSize: 13, letterSpacing: "0.05em", textTransform: "capitalize",
-                }}>
-                  {s}
-                </button>
-              ))}
-            </div>
+          {/* Sticky Start button — always visible at the bottom */}
+          <div style={{
+            padding: "12px 18px 16px",
+            borderTop: "1px solid rgba(148,163,184,0.1)",
+            background: "rgba(2,6,23,0.98)",
+            flexShrink: 0,
+          }}>
             <button onClick={handleSoloPlay} style={{
-              minWidth: 170, minHeight: 46, borderRadius: 8, cursor: "pointer",
+              width: "100%", minHeight: 48, borderRadius: 8, cursor: "pointer",
               border: "1.5px solid rgba(34,197,94,0.5)", background: "rgba(22,163,74,0.18)",
               color: "#bbf7d0", fontWeight: 900, fontSize: 14, letterSpacing: "0.08em",
             }}>
               ▶ Start Simulation
             </button>
-          </>)}
-
-          {/* Race controls */}
-          {gameMode === "race" && (<>
-            <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
-              SELECT RACE
-            </p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, width: "100%" }}>
-              {RACE_OPTIONS.map(opt => {
-                const sel = raceConfig.join(",") === opt.shapes.join(",");
-                return (
-                  <button key={opt.label} onClick={() => { setRaceConfig(opt.shapes); raceShapesRef.current = opt.shapes; }} style={{
-                    minHeight: 40, padding: "0 14px", borderRadius: 8, cursor: "pointer",
-                    border: `2px solid ${sel ? "rgba(99,179,237,0.7)" : "rgba(148,163,184,0.22)"}`,
-                    background: sel ? "rgba(99,179,237,0.12)" : "rgba(15,23,42,0.7)",
-                    color: sel ? "#93c5fd" : "rgba(248,250,252,0.5)",
-                    fontWeight: 700, fontSize: 12, letterSpacing: "0.04em", textAlign: "left",
-                  }}>
-                    {opt.shapes.map(s => SHAPE_EMOJI[s]).join(" vs ")}{"  "}{opt.label}
-                  </button>
-                );
-              })}
-            </div>
-            <button onClick={handleRacePlay} style={{
-              minWidth: 170, minHeight: 46, borderRadius: 8, cursor: "pointer",
-              border: "1.5px solid rgba(99,179,237,0.5)", background: "rgba(37,99,235,0.18)",
-              color: "#bfdbfe", fontWeight: 900, fontSize: 14, letterSpacing: "0.08em",
-            }}>
-              ▶ Start Race
-            </button>
-          </>)}
+          </div>
         </div>
       )}
 
