@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef } from "react";
+import React, {
+  type ChangeEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { drawCanvasWatermark } from "@/app/lib/watermark";
 import {
   BALL_RADIUS,
@@ -34,6 +40,8 @@ type Arena = {
   centerY: number;
   circleRadius: number;
 };
+
+const DEFAULT_MUSIC_VOLUME = 0.26;
 
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -176,10 +184,15 @@ const drawScene = (
 
 const PlasmaBounce = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const musicRef = useRef<HTMLAudioElement>(null);
+  const musicUrlRef = useRef<string | null>(null);
   const animationRef = useRef<number | null>(null);
   const arenaRef = useRef<Arena | null>(null);
   const ballsRef = useRef<Ball[]>([]);
   const runningRef = useRef(true);
+  const [musicName, setMusicName] = useState<string | null>(null);
+  const [musicVolume, setMusicVolume] = useState(DEFAULT_MUSIC_VOLUME);
+  const [isMusicPlaying, setIsMusicPlaying] = useState(false);
 
   const resetSimulation = useCallback(() => {
     const canvas = canvasRef.current;
@@ -209,6 +222,79 @@ const PlasmaBounce = () => {
       window.visualViewport?.removeEventListener("resize", handleResize);
     };
   }, [resetSimulation]);
+
+  useEffect(() => {
+    const music = musicRef.current;
+    if (music) {
+      music.volume = musicVolume;
+    }
+  }, [musicVolume]);
+
+  useEffect(() => {
+    return () => {
+      if (musicUrlRef.current) {
+        URL.revokeObjectURL(musicUrlRef.current);
+      }
+    };
+  }, []);
+
+  const handleMusicChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (!file || !file.type.startsWith("audio/")) return;
+
+      if (musicUrlRef.current) {
+        URL.revokeObjectURL(musicUrlRef.current);
+      }
+
+      const nextUrl = URL.createObjectURL(file);
+      const music = musicRef.current;
+      musicUrlRef.current = nextUrl;
+      setMusicName(file.name);
+      setIsMusicPlaying(false);
+
+      if (music) {
+        music.pause();
+        music.src = nextUrl;
+        music.loop = true;
+        music.volume = musicVolume;
+        music.currentTime = 0;
+
+        void music
+          .play()
+          .then(() => {
+            setIsMusicPlaying(true);
+          })
+          .catch(() => {
+            setIsMusicPlaying(false);
+          });
+      }
+
+      event.target.value = "";
+    },
+    [musicVolume],
+  );
+
+  const toggleMusic = useCallback(() => {
+    const music = musicRef.current;
+    if (!music || !musicUrlRef.current) return;
+
+    if (music.paused) {
+      music.volume = musicVolume;
+      void music
+        .play()
+        .then(() => {
+          setIsMusicPlaying(true);
+        })
+        .catch(() => {
+          setIsMusicPlaying(false);
+        });
+      return;
+    }
+
+    music.pause();
+    setIsMusicPlaying(false);
+  }, [musicVolume]);
 
   useEffect(() => {
     const tick = () => {
@@ -307,6 +393,41 @@ const PlasmaBounce = () => {
         className="plasma-bounce-canvas"
         aria-label="Plasma Bounce simulation"
       />
+      <audio
+        ref={musicRef}
+        loop
+        onEnded={() => setIsMusicPlaying(false)}
+        onPause={() => setIsMusicPlaying(false)}
+        onPlay={() => setIsMusicPlaying(true)}
+      />
+      <div className="music-panel" aria-label="Background music controls">
+        <label className="music-upload">
+          <span>{musicName ? "Change Music" : "Add Music"}</span>
+          <input type="file" accept="audio/*" onChange={handleMusicChange} />
+        </label>
+        <button
+          type="button"
+          className="music-button"
+          onClick={toggleMusic}
+          disabled={!musicName}
+          aria-label={isMusicPlaying ? "Pause background music" : "Play background music"}
+        >
+          {isMusicPlaying ? "Pause" : "Play"}
+        </button>
+        <label className="music-volume">
+          <span>Vol</span>
+          <input
+            type="range"
+            min="0"
+            max="0.75"
+            step="0.01"
+            value={musicVolume}
+            onChange={(event) => setMusicVolume(Number(event.target.value))}
+            aria-label="Background music volume"
+          />
+        </label>
+        {musicName && <span className="music-name">{musicName}</span>}
+      </div>
       <style jsx>{`
         .plasma-bounce-root {
           position: fixed;
@@ -323,6 +444,108 @@ const PlasmaBounce = () => {
           width: 100dvw !important;
           height: 100dvh !important;
           min-height: 100dvh !important;
+        }
+
+        .music-panel {
+          position: fixed;
+          right: 16px;
+          bottom: 16px;
+          z-index: 3;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          max-width: min(460px, calc(100vw - 32px));
+          padding: 10px;
+          border: 1px solid rgba(148, 163, 184, 0.32);
+          border-radius: 8px;
+          background: rgba(2, 6, 23, 0.78);
+          box-shadow: 0 18px 42px rgba(2, 6, 23, 0.34);
+          backdrop-filter: blur(14px);
+        }
+
+        .music-upload,
+        .music-button {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 82px;
+          height: 36px;
+          padding: 0 12px;
+          border: 1px solid rgba(125, 211, 252, 0.44);
+          border-radius: 6px;
+          background: rgba(14, 116, 144, 0.5);
+          color: #f8fafc;
+          font-size: 13px;
+          font-weight: 800;
+          line-height: 1;
+          cursor: pointer;
+          white-space: nowrap;
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
+        }
+
+        .music-button:disabled {
+          cursor: not-allowed;
+          opacity: 0.48;
+        }
+
+        .music-upload input {
+          display: none;
+        }
+
+        .music-volume {
+          display: grid;
+          grid-template-columns: auto 92px;
+          align-items: center;
+          gap: 8px;
+          color: rgba(248, 250, 252, 0.78);
+          font-size: 12px;
+          font-weight: 800;
+        }
+
+        .music-volume input {
+          width: 92px;
+          accent-color: #67e8f9;
+        }
+
+        .music-name {
+          max-width: 130px;
+          overflow: hidden;
+          color: rgba(248, 250, 252, 0.74);
+          font-size: 12px;
+          font-weight: 700;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        @media (max-width: 560px) {
+          .music-panel {
+            right: 10px;
+            bottom: 10px;
+            left: 10px;
+            max-width: none;
+            flex-wrap: wrap;
+          }
+
+          .music-upload,
+          .music-button {
+            flex: 1 1 96px;
+            min-width: 0;
+          }
+
+          .music-volume {
+            flex: 1 1 160px;
+            grid-template-columns: auto minmax(86px, 1fr);
+          }
+
+          .music-volume input {
+            width: 100%;
+          }
+
+          .music-name {
+            flex: 1 1 100%;
+            max-width: none;
+          }
         }
       `}</style>
     </div>

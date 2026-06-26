@@ -667,6 +667,70 @@ function playCompleteSound(ctx: AudioContext, shape: ShapeType) {
   }
 }
 
+// ─── Background / ambient music ───────────────────────────────────────────────
+
+function startAmbientMusic(ctx: AudioContext, buffer: AudioBuffer | null): () => void {
+  const master = ctx.createGain();
+  master.gain.setValueAtTime(0, ctx.currentTime);
+  master.gain.linearRampToValueAtTime(0.0455, ctx.currentTime + 2.0); // gentle fade-in
+  master.connect(ctx.destination);
+
+  const stops: (() => void)[] = [() => {
+    master.gain.setTargetAtTime(0, ctx.currentTime, 0.8); // fade-out on stop
+    setTimeout(() => { try { master.disconnect(); } catch {} }, 3000);
+  }];
+
+  if (buffer) {
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+    src.connect(master);
+    src.start();
+    stops.push(() => { try { src.stop(); } catch {} });
+  } else {
+    // Default generative calm: C2/G2/C3/G3 sine drones with slow LFO + pentatonic arpeggio
+    const droneFreqs = [65.41, 98.00, 130.81, 196.00]; // C2, G2, C3, G3
+    const droneOscs: OscillatorNode[] = [];
+    droneFreqs.forEach((freq, i) => {
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      const lfo = ctx.createOscillator(), lfoG = ctx.createGain();
+      osc.type = "sine"; osc.frequency.value = freq;
+      gain.gain.value = 0.22 / (i + 1);
+      lfo.type = "sine"; lfo.frequency.value = 0.07 + i * 0.02; // 0.07–0.13 Hz breathing
+      lfoG.gain.value = 0.07;
+      lfo.connect(lfoG); lfoG.connect(gain.gain);
+      osc.connect(gain); gain.connect(master);
+      osc.start(); lfo.start();
+      droneOscs.push(osc, lfo);
+    });
+    stops.push(() => droneOscs.forEach(o => { try { o.stop(); } catch {} }));
+
+    // Slow pentatonic melody — C3 octave, random spacing so it never sounds looped
+    const scale = [130.81, 146.83, 164.81, 196.00, 220.00, 261.63]; // C3 D3 E3 G3 A3 C4
+    let noteIdx = 0, nextNoteT = ctx.currentTime + 1.5, alive = true;
+    const scheduleMelody = () => {
+      if (!alive) return;
+      while (nextNoteT < ctx.currentTime + 1.2) {
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.type = "sine"; o.frequency.value = scale[noteIdx % scale.length];
+        g.gain.setValueAtTime(0, nextNoteT);
+        g.gain.linearRampToValueAtTime(0.055, nextNoteT + 0.10);
+        g.gain.exponentialRampToValueAtTime(0.0001, nextNoteT + 2.2);
+        o.connect(g); g.connect(master);
+        o.start(nextNoteT); o.stop(nextNoteT + 2.3);
+        nextNoteT += 1.6 + Math.random() * 1.4; // 1.6–3.0 s between notes
+        noteIdx++;
+        if (Math.random() < 0.3) noteIdx++; // occasionally skip a step for variety
+      }
+      if (alive) setTimeout(scheduleMelody, 250);
+    };
+    scheduleMelody();
+    stops.push(() => { alive = false; });
+  }
+
+  return () => stops.forEach(fn => fn());
+}
+
 // ─── Completion glow draw ─────────────────────────────────────────────────────
 
 function drawCompletionGlow(
@@ -738,6 +802,8 @@ export default function MergingPerfectShape() {
   const soloGlowRef         = useRef(0); // 1→0 highlight intensity during solo assembled phase
   const lastBounceSoundRef  = useRef<Record<number, number>>({});
   const assembledRatioRef   = useRef(ASSEMBLED_RATIO);
+  const bgMusicBufferRef    = useRef<AudioBuffer | null>(null);
+  const bgMusicStopRef      = useRef<(() => void) | null>(null);
 
   const [phase,   setPhase]   = useState<Phase>("editor");
   const [timerMs, setTimerMs] = useState(0);
@@ -748,6 +814,7 @@ export default function MergingPerfectShape() {
   const [customHeading,    setCustomHeading]    = useState("How Long Will It Take to Assemble a Plain Square?");
   const [customSubheading, setCustomSubheading] = useState("");
   const [soloConfigs,   setSoloConfigs]   = useState<ShapeConfig[]>([{ shape: "square", pieces: 6, imageUrl: null, imageEl: null, mergeAudioBuffer: null, mergeAudioName: null }]);
+  const [bgMusicName,  setBgMusicName]  = useState<string | null>(null);
 
   const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -1095,11 +1162,26 @@ export default function MergingPerfectShape() {
       .catch(() => { /* invalid audio — ignore */ });
   };
 
+  const handleBgMusicUpload = (file: File) => {
+    if (!audioCtxRef.current) {
+      try { audioCtxRef.current = new AudioContext(); } catch { return; }
+    }
+    file.arrayBuffer()
+      .then(buf => audioCtxRef.current!.decodeAudioData(buf))
+      .then(decoded => { bgMusicBufferRef.current = decoded; setBgMusicName(file.name); })
+      .catch(() => {});
+  };
+
   const handleSoloPlay = () => {
     if (!audioCtxRef.current) {
       try { audioCtxRef.current = new AudioContext(); } catch { /* ignore */ }
     }
     audioCtxRef.current?.resume();
+    // Stop any previous background music, then start fresh
+    bgMusicStopRef.current?.();
+    bgMusicStopRef.current = audioCtxRef.current
+      ? startAmbientMusic(audioCtxRef.current, bgMusicBufferRef.current)
+      : null;
     const configs = soloConfigsRef.current;
     const arena   = arenaRef.current;
     assembledRatioRef.current = getAssembledRatio(configs.length);
@@ -1154,6 +1236,8 @@ export default function MergingPerfectShape() {
 
 
   const handleReset = () => {
+    bgMusicStopRef.current?.();
+    bgMusicStopRef.current  = null;
     bodiesRef.current      = [];
     phaseRef.current       = "editor";
     raceEntriesRef.current = {};
@@ -1282,6 +1366,34 @@ export default function MergingPerfectShape() {
                   color: "#e8f0fc", fontSize: 13, fontFamily: "Arial, Helvetica, sans-serif", outline: "none",
                 }}
               />
+            </div>
+
+            {/* Background music */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
+                BACKGROUND MUSIC
+              </p>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label style={{
+                  flex: 1, padding: "7px 10px", borderRadius: 6, cursor: "pointer",
+                  border: "1.5px dashed rgba(122,180,240,0.28)", background: "rgba(122,180,240,0.06)",
+                  fontSize: 11, color: bgMusicName ? "#93c5fd" : "rgba(248,250,252,0.45)",
+                  display: "flex", alignItems: "center", gap: 6, minHeight: 38, overflow: "hidden",
+                }}>
+                  <span style={{ flexShrink: 0 }}>♫</span>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {bgMusicName ?? "Upload music (default: calm ambient)"}
+                  </span>
+                  <input type="file" accept="audio/*" style={{ display: "none" }}
+                    onChange={e => { const f = e.target.files?.[0]; if (f) handleBgMusicUpload(f); }} />
+                </label>
+                {bgMusicName && (
+                  <button onClick={() => { bgMusicBufferRef.current = null; setBgMusicName(null); }} style={{
+                    background: "none", border: "none", cursor: "pointer",
+                    color: "rgba(248,113,113,0.75)", fontSize: 18, padding: "2px 6px", flexShrink: 0,
+                  }}>×</button>
+                )}
+              </div>
             </div>
 
             {/* Number of shapes toggle */}
