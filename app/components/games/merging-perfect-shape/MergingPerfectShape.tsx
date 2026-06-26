@@ -811,7 +811,7 @@ export default function MergingPerfectShape() {
   const [remaining, setRemaining] = useState(0);
   const [merging,   setMerging]   = useState(false);
   const [raceDone, setRaceDone] = useState(false);
-  const [customHeading,    setCustomHeading]    = useState("How Long Will It Take to Assemble a Plain Square?");
+  const [customHeading,    setCustomHeading]    = useState("How long it will take to form a Perfect Shape?");
   const [customSubheading, setCustomSubheading] = useState("");
   const [soloConfigs,   setSoloConfigs]   = useState<ShapeConfig[]>([{ shape: "square", pieces: 6, imageUrl: null, imageEl: null, mergeAudioBuffer: null, mergeAudioName: null }]);
   const [bgMusicName,  setBgMusicName]  = useState<string | null>(null);
