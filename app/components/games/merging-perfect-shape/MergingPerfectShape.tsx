@@ -72,13 +72,18 @@ const ATTACH_THRESHOLD   = 0.80;
 const ARENA_PAD          = 14;
 const GRID_JITTER        = 0.42;
 const VERT_INSET         = 0.87;
-const ASSEMBLED_RATIO    = 0.29;
+const ASSEMBLED_RATIO    = 0.29; // base ratio (calibrated for 3 shapes)
 const ASSEMBLED_PAUSE    = 0.75; // seconds the cracked shape freezes after full merge
+
+function getAssembledRatio(numShapes: number): number {
+  const scale = numShapes === 1 ? 1.5 : numShapes === 2 ? 1.25 : numShapes === 4 ? 0.8 : 1.0;
+  return ASSEMBLED_RATIO * scale;
+}
 const TRANSITION_DUR     = 0.55; // seconds for cracked → solid dissolve
 
 const COLORS: Record<ShapeType, string> = {
-  square:   "#f97316",
-  circle:   "#06b6d4",
+  square:   "#ef4444",
+  circle:   "#3b82f6",
   triangle: "#22c55e",
 };
 
@@ -157,12 +162,9 @@ function polygonCentroid(pts: [number, number][]): [number, number] {
 
 // ─── Piece generation ─────────────────────────────────────────────────────────
 
-function generateBodies(shape: ShapeType, arena: Arena, targetPieces = 6, imageEl: HTMLImageElement | null = null, laneIdx = 0): Body[] {
-  // Use a fine grid so each "piece" is composed of multiple sub-cells.
-  // Pieces are formed by dividing ALL valid cells into equal-count groups (row-major order),
-  // guaranteeing approximately equal area per piece.
+function generateBodies(shape: ShapeType, arena: Arena, targetPieces = 6, imageEl: HTMLImageElement | null = null, laneIdx = 0, assembledRatio = ASSEMBLED_RATIO): Body[] {
   const N         = Math.max(4, Math.ceil(Math.sqrt(targetPieces * 2.5)));
-  const ASSEMBLED = arena.size * ASSEMBLED_RATIO;
+  const ASSEMBLED = arena.size * assembledRatio;
   const tileSize  = ASSEMBLED / N;
   const ox        = arena.cx - ASSEMBLED / 2;
   const oy        = arena.cy - ASSEMBLED / 2;
@@ -225,19 +227,80 @@ function generateBodies(shape: ShapeType, arena: Arena, targetPieces = 6, imageE
     }
   }
 
-  // Pass 2: divide cells into targetPieces equal groups → each group becomes one Body
-  const groupCount = Math.min(targetPieces, rawCells.length);
+  // Pass 2: equal-sized contiguous regions via round-robin BFS with per-group capacity caps.
+  // Simple FIFO BFS lets centre seeds grab far more cells than edge seeds (70/30 split).
+  // Round-robin gives every group exactly one expansion per round so they grow at the same
+  // rate, and hard capacity caps (⌊total/pieces⌋ or ⌈total/pieces⌉) guarantee equal sizes.
+  const groupCount  = Math.min(targetPieces, rawCells.length);
   const bodies: Body[] = [];
   const inner = arena.size - ARENA_PAD * 2 - tileSize;
-  let cellId  = 0;
+  let cellId = 0;
+
+  const totalCells = rawCells.length;
+  const baseSize   = Math.floor(totalCells / groupCount);
+  const extra      = totalCells % groupCount;
+  // First `extra` groups get one extra cell so every cell is covered exactly
+  const capacities = Array.from({ length: groupCount }, (_, g) => baseSize + (g < extra ? 1 : 0));
+  const counts     = new Array<number>(groupCount).fill(0);
+
+  // Fast lookup: "row,col" → index in rawCells
+  const idxMap = new Map<string, number>();
+  for (let i = 0; i < totalCells; i++) {
+    idxMap.set(`${rawCells[i].gridRow},${rawCells[i].gridCol}`, i);
+  }
+
+  // Seeds evenly spaced through row-major order so they start spread across the shape
+  const assignment = new Int32Array(totalCells).fill(-1);
+  const queues: number[][] = Array.from({ length: groupCount }, () => []);
+  for (let g = 0; g < groupCount; g++) {
+    const seedIdx = Math.floor((g + 0.5) * totalCells / groupCount);
+    assignment[seedIdx] = g;
+    counts[g] = 1;
+    queues[g].push(seedIdx);
+  }
+
+  // Round-robin: each group advances its own frontier by one cell per round.
+  // A group is skipped once its count hits its capacity.
+  const qHeads = new Array<number>(groupCount).fill(0);
+  let anyActive = true;
+  while (anyActive) {
+    anyActive = false;
+    for (let g = 0; g < groupCount; g++) {
+      if (qHeads[g] >= queues[g].length || counts[g] >= capacities[g]) continue;
+      anyActive = true;
+      const idx = queues[g][qHeads[g]++];
+      const { gridRow: r, gridCol: c } = rawCells[idx];
+      for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]] as [number,number][]) {
+        if (counts[g] >= capacities[g]) break;
+        const nIdx = idxMap.get(`${r+dr},${c+dc}`);
+        if (nIdx === undefined || assignment[nIdx] !== -1) continue;
+        assignment[nIdx] = g;
+        counts[g]++;
+        queues[g].push(nIdx);
+      }
+    }
+  }
+
+  // Fallback: any cell left unassigned (rare, concave boundary edge-case) borrows from a neighbour
+  for (let i = 0; i < totalCells; i++) {
+    if (assignment[i] !== -1) continue;
+    const { gridRow: r, gridCol: c } = rawCells[i];
+    for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]] as [number,number][]) {
+      const nIdx = idxMap.get(`${r+dr},${c+dc}`);
+      if (nIdx !== undefined && assignment[nIdx] !== -1) { assignment[i] = assignment[nIdx]; break; }
+    }
+  }
+
+  // Collect each group's cells
+  const groups: RawCell[][] = Array.from({ length: groupCount }, () => []);
+  for (let i = 0; i < totalCells; i++) {
+    if (assignment[i] >= 0) groups[assignment[i]].push(rawCells[i]);
+  }
 
   for (let g = 0; g < groupCount; g++) {
-    const startI = Math.floor(g * rawCells.length / groupCount);
-    const endI   = Math.floor((g + 1) * rawCells.length / groupCount);
-    const group  = rawCells.slice(startI, endI);
+    const group = groups[g];
     if (group.length === 0) continue;
 
-    // First cell in the group is the anchor; all others are stored relative to it
     const anchor = group[0];
     const cells: Cell[] = group.map((rc) => ({
       id: cellId++,
@@ -343,6 +406,16 @@ function checkCanMerge(b1: Body, b2: Body): MergeCandidate {
   if (b1.laneIdx !== b2.laneIdx) return { canMerge: false };
   const tileSize  = b1.cells[0]?.tileSize ?? 1;
   const threshold = tileSize * ATTACH_THRESHOLD;
+
+  // Broad-phase: bounding boxes must be physically touching (within one tile edge).
+  // This prevents pieces from snapping together across a visible gap.
+  const bb1 = getBodyBounds(b1), bb2 = getBodyBounds(b2);
+  const touchDist = tileSize * 0.25;
+  if (
+    bb2.minX > bb1.maxX + touchDist || bb1.minX > bb2.maxX + touchDist ||
+    bb2.minY > bb1.maxY + touchDist || bb1.minY > bb2.maxY + touchDist
+  ) return { canMerge: false };
+
   for (const c1 of b1.cells) {
     const w1x = b1.x + c1.localX, w1y = b1.y + c1.localY;
     for (const c2 of b2.cells) {
@@ -394,13 +467,17 @@ function scanMerges(
 
 function drawArena(ctx: CanvasRenderingContext2D, arena: Arena) {
   ctx.save();
-  ctx.fillStyle = "rgba(2,6,23,0.55)";
+  const arenaGrad = ctx.createLinearGradient(arena.x, arena.y, arena.x + arena.size, arena.y + arena.size);
+  arenaGrad.addColorStop(0,    "rgba(100,160,220,0.42)");
+  arenaGrad.addColorStop(0.5,  "rgba(110,185,150,0.36)");
+  arenaGrad.addColorStop(1,    "rgba(175,155,215,0.42)");
+  ctx.fillStyle = arenaGrad;
   ctx.fillRect(arena.x, arena.y, arena.size, arena.size);
-  ctx.shadowColor = "rgba(148,163,184,0.45)"; ctx.shadowBlur = 14;
-  ctx.strokeStyle = "rgba(148,163,184,0.75)"; ctx.lineWidth = 1.5;
+  ctx.shadowColor = "rgba(122,180,240,0.45)"; ctx.shadowBlur = 14;
+  ctx.strokeStyle = "rgba(122,180,240,0.65)"; ctx.lineWidth = 1.5;
   ctx.strokeRect(arena.x, arena.y, arena.size, arena.size);
   ctx.shadowBlur = 0;
-  ctx.strokeStyle = "rgba(226,232,240,0.07)"; ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(180,200,240,0.07)"; ctx.lineWidth = 1;
   ctx.strokeRect(arena.x + 5, arena.y + 5, arena.size - 10, arena.size - 10);
   ctx.restore();
 }
@@ -622,13 +699,13 @@ function drawCompletionGlow(
 
 // ─── Race clip helper ─────────────────────────────────────────────────────────
 
-function getRaceClip(arena: Arena, shape: ShapeType, shapeBodies: Body[]): ClipInfo | undefined {
+function getRaceClip(arena: Arena, shape: ShapeType, shapeBodies: Body[], assembledRatio: number): ClipInfo | undefined {
   if (shapeBodies.length !== 1 || shapeBodies[0].cells.length === 0) return undefined;
   const b   = shapeBodies[0];
   const ref = b.cells[0];
   const ox  = (b.x + ref.localX) - ref.targetX;
   const oy  = (b.y + ref.localY) - ref.targetY;
-  return { shape, cx: arena.cx + ox, cy: arena.cy + oy, S: arena.size * ASSEMBLED_RATIO };
+  return { shape, cx: arena.cx + ox, cy: arena.cy + oy, S: arena.size * assembledRatio };
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -660,6 +737,7 @@ export default function MergingPerfectShape() {
   const audioCtxRef         = useRef<AudioContext | null>(null);
   const soloGlowRef         = useRef(0); // 1→0 highlight intensity during solo assembled phase
   const lastBounceSoundRef  = useRef<Record<number, number>>({});
+  const assembledRatioRef   = useRef(ASSEMBLED_RATIO);
 
   const [phase,   setPhase]   = useState<Phase>("editor");
   const [timerMs, setTimerMs] = useState(0);
@@ -767,7 +845,7 @@ export default function MergingPerfectShape() {
             y:  arena.cy + (b.y + ref.localY - ref.targetY),
             vx: b.vx, vy: b.vy,
           };
-          solidSizeRef.current = arena.size * ASSEMBLED_RATIO;
+          solidSizeRef.current = arena.size * assembledRatioRef.current;
           transPRef.current    = 0;
           phaseRef.current     = "transition";
           setPhase("transition");
@@ -864,7 +942,7 @@ export default function MergingPerfectShape() {
                   y: arena.cy + (b0.y + ref.localY - ref.targetY),
                   vx: b0.vx, vy: b0.vy,
                 };
-                entry.solidSize = arena.size * ASSEMBLED_RATIO;
+                entry.solidSize = arena.size * assembledRatioRef.current;
                 entry.transP    = 0;
                 entry.subPhase  = "transition";
                 stateChanged    = true;
@@ -902,7 +980,11 @@ export default function MergingPerfectShape() {
       // ── Render ─────────────────────────────────────────────────────────────
 
       ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = "#020617";
+      const bgGrad = ctx.createLinearGradient(0, 0, W, H);
+      bgGrad.addColorStop(0,   "#0d1a2e");
+      bgGrad.addColorStop(0.5, "#0f1828");
+      bgGrad.addColorStop(1,   "#130f26");
+      ctx.fillStyle = bgGrad;
       ctx.fillRect(0, 0, W, H);
       drawCanvasWatermark(ctx, W, H);
       drawArena(ctx, arena);
@@ -917,10 +999,10 @@ export default function MergingPerfectShape() {
         const ref = b.cells[0];
         const ox  = (b.x + ref.localX) - ref.targetX;
         const oy  = (b.y + ref.localY) - ref.targetY;
-        return { shape: shapeRef.current, cx: arena.cx + ox, cy: arena.cy + oy, S: arena.size * ASSEMBLED_RATIO };
+        return { shape: shapeRef.current, cx: arena.cx + ox, cy: arena.cy + oy, S: arena.size * assembledRatioRef.current };
       };
 
-      const assembledArea: AssembledArea = { cx: arena.cx, cy: arena.cy, S: arena.size * ASSEMBLED_RATIO };
+      const assembledArea: AssembledArea = { cx: arena.cx, cy: arena.cy, S: arena.size * assembledRatioRef.current };
 
       if (curPhase === "simulation" || curPhase === "assembled") {
         const clip = getAssembledClip();
@@ -953,7 +1035,7 @@ export default function MergingPerfectShape() {
           const entry = entries[li];
           if (!entry || entry.subPhase === "racing") continue;
           const shapeBodies = allBodies.filter(b => b.laneIdx === li);
-          const clip = getRaceClip(arena, entry.shape, shapeBodies);
+          const clip = getRaceClip(arena, entry.shape, shapeBodies, assembledRatioRef.current);
           if (entry.subPhase === "assembled") {
             drawBodies(ctx, shapeBodies, 1, clip, assembledArea);
             if (clip && entry.completionGlow > 0)
@@ -1020,12 +1102,13 @@ export default function MergingPerfectShape() {
     audioCtxRef.current?.resume();
     const configs = soloConfigsRef.current;
     const arena   = arenaRef.current;
+    assembledRatioRef.current = getAssembledRatio(configs.length);
 
     if (configs.length === 1) {
       const cfg               = configs[0];
       shapeRef.current        = cfg.shape;
       soloImageElRef.current  = cfg.imageEl;
-      const bodies            = generateBodies(cfg.shape, arena, cfg.pieces, cfg.imageEl, 0);
+      const bodies            = generateBodies(cfg.shape, arena, cfg.pieces, cfg.imageEl, 0, assembledRatioRef.current);
       bodiesRef.current       = bodies;
       totalRef.current        = bodies.length;
       elapsedRef.current      = 0;
@@ -1042,14 +1125,14 @@ export default function MergingPerfectShape() {
       const entries: Record<number, RaceEntry> = {};
       for (let i = 0; i < configs.length; i++) {
         const cfg = configs[i];
-        const bs  = generateBodies(cfg.shape, arena, cfg.pieces, cfg.imageEl, i);
+        const bs  = generateBodies(cfg.shape, arena, cfg.pieces, cfg.imageEl, i, assembledRatioRef.current);
         allBodies.push(...bs);
         entries[i] = {
           shape: cfg.shape, laneIdx: i, total: bs.length, place: null, finishTime: 0,
           subPhase: "racing", assembledTimer: 0, transP: 0,
           completionGlow: 0,
           solid: { x: arena.cx, y: arena.cy, vx: PIECE_SPEED * 0.7, vy: PIECE_SPEED * 0.7 },
-          solidSize: arena.size * ASSEMBLED_RATIO,
+          solidSize: arena.size * assembledRatioRef.current,
           imageEl: cfg.imageEl,
           mergeAudioBuffer: cfg.mergeAudioBuffer,
         };
@@ -1084,7 +1167,7 @@ export default function MergingPerfectShape() {
   const fmtTime = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
   return (
-    <div style={{ position: "relative", width: "100%", height: "100dvh", overflow: "hidden", background: "#020617" }}>
+    <div style={{ position: "relative", width: "100%", height: "100dvh", overflow: "hidden", background: "linear-gradient(135deg, #0d1a2e 0%, #0f1828 50%, #130f26 100%)" }}>
       <canvas ref={canvasRef} style={{ display: "block" }} />
 
       {/* Heading */}
@@ -1151,9 +1234,9 @@ export default function MergingPerfectShape() {
           maxHeight: "calc(100dvh - 100px)",
           display: "flex", flexDirection: "column",
           borderRadius: 14, overflow: "hidden",
-          border: "1px solid rgba(148,163,184,0.18)",
-          background: "rgba(2,6,23,0.95)", backdropFilter: "blur(14px)",
-          boxShadow: "0 20px 60px rgba(0,0,0,0.6)", fontFamily: "Arial, Helvetica, sans-serif",
+          border: "1px solid rgba(122,180,240,0.22)",
+          background: "rgba(10,18,40,0.96)", backdropFilter: "blur(18px)",
+          boxShadow: "0 20px 60px rgba(5,10,30,0.7), 0 0 0 1px rgba(180,200,255,0.04)", fontFamily: "Arial, Helvetica, sans-serif",
         }}>
           {/* Scrollable content area */}
           <div style={{
@@ -1162,7 +1245,7 @@ export default function MergingPerfectShape() {
             display: "flex", flexDirection: "column", gap: 14,
             // Thin scrollbar on webkit
             scrollbarWidth: "thin",
-            scrollbarColor: "rgba(148,163,184,0.25) transparent",
+            scrollbarColor: "rgba(122,180,240,0.25) transparent",
           } as React.CSSProperties}>
 
             {/* Custom heading input */}
@@ -1177,8 +1260,8 @@ export default function MergingPerfectShape() {
                 placeholder="e.g. How fast can squares merge?"
                 style={{
                   width: "100%", padding: "9px 12px", borderRadius: 8, boxSizing: "border-box",
-                  border: "1px solid rgba(148,163,184,0.25)", background: "rgba(15,23,42,0.85)",
-                  color: "#f8fafc", fontSize: 13, fontFamily: "Arial, Helvetica, sans-serif", outline: "none",
+                  border: "1px solid rgba(122,180,240,0.22)", background: "rgba(8,16,38,0.9)",
+                  color: "#e8f0fc", fontSize: 13, fontFamily: "Arial, Helvetica, sans-serif", outline: "none",
                 }}
               />
             </div>
@@ -1195,8 +1278,8 @@ export default function MergingPerfectShape() {
                 placeholder="e.g. Watch the pieces come together!"
                 style={{
                   width: "100%", padding: "9px 12px", borderRadius: 8, boxSizing: "border-box",
-                  border: "1px solid rgba(148,163,184,0.25)", background: "rgba(15,23,42,0.85)",
-                  color: "#f8fafc", fontSize: 13, fontFamily: "Arial, Helvetica, sans-serif", outline: "none",
+                  border: "1px solid rgba(122,180,240,0.22)", background: "rgba(8,16,38,0.9)",
+                  color: "#e8f0fc", fontSize: 13, fontFamily: "Arial, Helvetica, sans-serif", outline: "none",
                 }}
               />
             </div>
@@ -1206,7 +1289,7 @@ export default function MergingPerfectShape() {
               <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
                 NUMBER OF SHAPES
               </p>
-              <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid rgba(148,163,184,0.22)" }}>
+              <div style={{ display: "flex", borderRadius: 8, overflow: "hidden", border: "1px solid rgba(122,180,240,0.22)" }}>
                 {[1, 2, 3, 4].map(n => (
                   <button key={n} onClick={() => {
                     setSoloConfigs(prev => {
@@ -1235,8 +1318,8 @@ export default function MergingPerfectShape() {
               <div key={idx} style={{
                 display: "flex", flexDirection: "column", gap: 12,
                 padding: "14px", borderRadius: 10,
-                border: "1px solid rgba(148,163,184,0.15)",
-                background: "rgba(15,23,42,0.5)",
+                border: "1px solid rgba(122,180,240,0.15)",
+                background: "rgba(10,20,48,0.5)",
               }}>
                 {/* Block label */}
                 <p style={{ margin: 0, color: "rgba(248,250,252,0.55)", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em" }}>
@@ -1274,8 +1357,8 @@ export default function MergingPerfectShape() {
                       });
                     }} style={{
                       flex: 1, minHeight: 44, padding: "0 8px", borderRadius: 8, cursor: "pointer",
-                      border: `2px solid ${cfg.shape === s ? COLORS[s] : "rgba(148,163,184,0.22)"}`,
-                      background: cfg.shape === s ? COLORS[s] + "28" : "rgba(15,23,42,0.7)",
+                      border: `2px solid ${cfg.shape === s ? COLORS[s] : "rgba(122,180,240,0.22)"}`,
+                      background: cfg.shape === s ? COLORS[s] + "28" : "rgba(10,20,48,0.7)",
                       color: cfg.shape === s ? COLORS[s] : "rgba(248,250,252,0.5)",
                       fontWeight: 800, fontSize: 12, letterSpacing: "0.04em", textTransform: "capitalize",
                     }}>
@@ -1288,8 +1371,8 @@ export default function MergingPerfectShape() {
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <label style={{
                     padding: "9px 14px", borderRadius: 8, cursor: "pointer",
-                    border: "1px solid rgba(148,163,184,0.25)", background: "rgba(15,23,42,0.7)",
-                    color: "rgba(248,250,252,0.6)", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
+                    border: "1px solid rgba(122,180,240,0.25)", background: "rgba(10,20,48,0.7)",
+                    color: "rgba(200,220,255,0.7)", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
                     minHeight: 44, display: "flex", alignItems: "center",
                   }}>
                     Add Image (optional)
@@ -1303,7 +1386,7 @@ export default function MergingPerfectShape() {
                     <img
                       src={cfg.imageUrl}
                       alt="preview"
-                      style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(148,163,184,0.25)", flexShrink: 0 }}
+                      style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: "1px solid rgba(122,180,240,0.25)", flexShrink: 0 }}
                     />
                   )}
                 </div>
@@ -1341,14 +1424,14 @@ export default function MergingPerfectShape() {
           {/* Sticky Start button — always visible at the bottom */}
           <div style={{
             padding: "12px 18px 16px",
-            borderTop: "1px solid rgba(148,163,184,0.1)",
-            background: "rgba(2,6,23,0.98)",
+            borderTop: "1px solid rgba(122,180,240,0.12)",
+            background: "rgba(10,18,40,0.99)",
             flexShrink: 0,
           }}>
             <button onClick={handleSoloPlay} style={{
               width: "100%", minHeight: 48, borderRadius: 8, cursor: "pointer",
-              border: "1.5px solid rgba(34,197,94,0.5)", background: "rgba(22,163,74,0.18)",
-              color: "#bbf7d0", fontWeight: 900, fontSize: 14, letterSpacing: "0.08em",
+              border: "1.5px solid rgba(100,190,140,0.55)", background: "rgba(80,160,115,0.2)",
+              color: "#b8f0cc", fontWeight: 900, fontSize: 14, letterSpacing: "0.08em",
             }}>
               ▶ Start Simulation
             </button>
