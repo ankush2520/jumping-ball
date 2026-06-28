@@ -23,13 +23,33 @@ const SPOKE_COLORS = Array.from(
   (_, i) => `hsl(${Math.round((i * 360) / N)}, 90%, 62%)`,
 );
 
-// 32 piano notes — two ascending octaves (N_BALLS = 32)
+// // 32 piano notes — two ascending octaves (N_BALLS = 32) gemini
+// const BALL_NOTES = [
+//   // Low foundation (Tonic chord)
+//   196.0, 293.7, 392.0, 587.3,
+//   // Rising tension
+//   329.6, 440.0, 659.3, 880.0,
+//   // Harmonic shift (Dominant)
+//   261.6, 349.2, 523.3, 698.5,
+//   // Resolution/Climax
+//   196.0, 392.0, 784.0, 1568.0,
+//   // Echo/Descending tail
+//   1318.5, 1174.7, 1046.5, 987.8, 880.0, 784.0, 698.5, 659.3, 587.3, 523.3,
+//   493.9, 440.0, 392.0, 293.7, 246.9, 196.0,
+// ];
+
+//chatgpt
 const BALL_NOTES = [
-  196.0, 220.0, 246.9, 261.6, 293.7, 329.6, 349.2, 392.0,
-  440.0, 493.9, 523.3, 587.3, 659.3, 698.5, 784.0, 880.0,
-  392.0, 440.0, 493.9, 523.3, 587.3, 659.3, 698.5, 784.0,
-  880.0, 987.8, 1046.5, 1174.7, 1318.5, 1396.9, 1568.0, 1760.0,
+  261.6, 329.6, 392.0, 523.3, 392.0, 329.6, 293.7, 261.6, 329.6, 440.0, 523.3,
+  659.3, 523.3, 440.0, 392.0, 329.6, 392.0, 523.3, 659.3, 880.0, 659.3, 523.3,
+  440.0, 392.0, 329.6, 293.7, 261.6, 392.0, 523.3, 392.0, 329.6, 261.6,
 ];
+
+// const BALL_NOTES = [
+//   261.6, 293.7, 329.6, 392.0, 440.0, 523.3, 587.3, 659.3, 784.0, 880.0, 1046.5,
+//   1174.7, 880.0, 784.0, 659.3, 587.3, 523.3, 440.0, 392.0, 329.6, 440.0, 523.3,
+//   659.3, 784.0, 587.3, 440.0, 329.6, 261.6, 392.0, 523.3, 784.0, 1046.5,
+// ];
 
 function playPianoNote(ac: AudioContext, freq: number) {
   if (!Number.isFinite(freq) || freq <= 0) return;
@@ -202,22 +222,24 @@ const BallInPendulumMotion = () => {
       }
       ctx.restore();
 
-      // Headings
+      // Headings — two lines each, fits any screen size
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
-      ctx.font = "900 28px Arial, Helvetica, sans-serif";
-      ctx.fillText(
-        "Ball in Pendulum Motion",
-        centerX,
-        centerY - circleRadius - 52,
-      );
+      ctx.font = "900 24px Arial, Helvetica, sans-serif";
+      ctx.fillText("Wait for balls", centerX, centerY - circleRadius - 88);
+      ctx.fillText("to form a Circle", centerX, centerY - circleRadius - 61);
       ctx.fillStyle = "rgba(248, 250, 252, 0.72)";
-      ctx.font = "700 15px Arial, Helvetica, sans-serif";
+      ctx.font = "700 12px Arial, Helvetica, sans-serif";
       ctx.fillText(
-        "Simple Harmonic Motion",
+        "Balls moving back and forth",
         centerX,
-        centerY - circleRadius - 26,
+        centerY - circleRadius - 38,
+      );
+      ctx.fillText(
+        "and play piano notes when they touch the edge",
+        centerX,
+        centerY - circleRadius - 24,
       );
 
       const numLines = Math.min(N, Math.floor(elapsed / LINE_INTERVAL) + 1);

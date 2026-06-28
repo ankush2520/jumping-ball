@@ -31,9 +31,9 @@ export type Simulation = {
 export const simulations: Simulation[] = [
   {
     id: "ball-in-pendulum-motion",
-    title: "Ball in Pendulum Motion",
+    title: "Illusion of Circle",
     subtitle: "PENDULUM PHYSICS",
-    description: "Watch a glowing ball swing on a pendulum. Switch to double-pendulum mode for beautiful chaotic motion.",
+    description: "Watch 16 balls oscillate in simple harmonic motion and form a mesmerizing rotating circle illusion.",
     component: BallInPendulumMotion,
     status: "experimental",
     accentColor: "#60a5fa",
