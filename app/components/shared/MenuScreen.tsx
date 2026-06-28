@@ -345,6 +345,80 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
+  if (icon === "ball-in-pendulum-motion") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter
+            id="pendulum-glow"
+            x="-45%"
+            y="-45%"
+            width="190%"
+            height="190%"
+          >
+            <feGaussianBlur stdDeviation="2.6" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <radialGradient id="pendulum-ball-grad" cx="35%" cy="28%" r="70%">
+            <stop stopColor="#e0f2fe" />
+            <stop offset="0.35" stopColor="#93c5fd" />
+            <stop offset="1" stopColor="#1e40af" />
+          </radialGradient>
+        </defs>
+        {/* background plate */}
+        <rect
+          x="12"
+          y="12"
+          width="48"
+          height="48"
+          rx="5"
+          fill="rgba(2,6,23,0.72)"
+          stroke="rgba(148,163,184,0.28)"
+        />
+        {/* swing arc */}
+        <path
+          d="M22 20 Q36 52 50 20"
+          stroke="rgba(96,165,250,0.3)"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeDasharray="3 3"
+        />
+        {/* ceiling bar */}
+        <rect x="28" y="17" width="16" height="3" rx="1.5" fill="rgba(148,163,184,0.5)" />
+        {/* pivot dot */}
+        <circle cx="36" cy="18" r="2.5" fill="#bfdbfe" filter="url(#pendulum-glow)" />
+        {/* rod */}
+        <line
+          x1="36"
+          y1="18"
+          x2="50"
+          y2="50"
+          stroke="#60a5fa"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          filter="url(#pendulum-glow)"
+        />
+        {/* ball */}
+        <circle
+          cx="50"
+          cy="50"
+          r="9"
+          fill="url(#pendulum-ball-grad)"
+          filter="url(#pendulum-glow)"
+        />
+      </svg>
+    );
+  }
+
   if (icon === "merging-perfect-shape") {
     return (
       <svg

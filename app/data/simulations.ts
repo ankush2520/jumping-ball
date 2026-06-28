@@ -1,4 +1,5 @@
 import type { ComponentType } from "react";
+import BallInPendulumMotion from "../components/games/ball-in-pendulum-motion/BallInPendulumMotion";
 import BrokenSquare from "../components/games/broken-square/BrokenSquare";
 import CountryEscapeChallenge from "../components/games/country-escape-challenge/CountryEscapeChallenge";
 import MergingPerfectShape from "../components/games/merging-perfect-shape/MergingPerfectShape";
@@ -22,11 +23,23 @@ export type Simulation = {
     | "broken-square"
     | "shrinking-escape"
     | "square-assembly"
-    | "merging-perfect-shape";
-  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose" | "card-orange";
+    | "merging-perfect-shape"
+    | "ball-in-pendulum-motion";
+  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose" | "card-orange" | "card-blue";
 };
 
 export const simulations: Simulation[] = [
+  {
+    id: "ball-in-pendulum-motion",
+    title: "Ball in Pendulum Motion",
+    subtitle: "PENDULUM PHYSICS",
+    description: "Watch a glowing ball swing on a pendulum. Switch to double-pendulum mode for beautiful chaotic motion.",
+    component: BallInPendulumMotion,
+    status: "experimental",
+    accentColor: "#60a5fa",
+    icon: "ball-in-pendulum-motion",
+    glow: "card-blue",
+  },
   {
     id: "merging-perfect-shape",
     title: "Merging Perfect Shape",
