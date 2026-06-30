@@ -830,7 +830,7 @@ export default function MergingPerfectShape() {
     dimRef.current   = { W, H };
     const arena = computeArena(W, H);
     arenaRef.current = arena;
-    setArenaY(arena.y);
+    queueMicrotask(() => setArenaY(arena.y));
   }, []);
 
   useEffect(() => {
@@ -1495,6 +1495,7 @@ export default function MergingPerfectShape() {
                     />
                   </label>
                   {cfg.imageUrl && (
+                    // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={cfg.imageUrl}
                       alt="preview"

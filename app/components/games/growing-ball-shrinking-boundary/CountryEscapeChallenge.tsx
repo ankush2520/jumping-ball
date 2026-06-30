@@ -351,11 +351,12 @@ const CountryEscapeChallenge = () => {
     window.addEventListener("resize",      onResize);
     window.addEventListener("pointerdown", onPtr, { passive: true });
 
+    const audio = audioRef.current;
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize",      onResize);
       window.removeEventListener("pointerdown", onPtr);
-      audioRef.current.dispose();
+      audio.dispose();
     };
   }, []);
 
