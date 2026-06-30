@@ -419,6 +419,71 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
+  if (icon === "colliding-shapes") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter
+            id="collide-glow"
+            x="-45%"
+            y="-45%"
+            width="190%"
+            height="190%"
+          >
+            <feGaussianBlur stdDeviation="2.6" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        {/* boundary */}
+        <rect
+          x="10"
+          y="10"
+          width="52"
+          height="52"
+          rx="5"
+          fill="rgba(2, 6, 23, 0.72)"
+          stroke="rgba(148, 163, 184, 0.34)"
+        />
+        {/* collision flash lines */}
+        <line x1="36" y1="36" x2="28" y2="26" stroke="rgba(255,255,255,0.28)" strokeWidth="1.5" strokeLinecap="round" />
+        <line x1="36" y1="36" x2="46" y2="27" stroke="rgba(255,255,255,0.28)" strokeWidth="1.5" strokeLinecap="round" />
+        {/* left circle */}
+        <circle
+          cx="26"
+          cy="40"
+          r="10"
+          fill="#818cf8"
+          filter="url(#collide-glow)"
+        />
+        {/* right circle */}
+        <circle
+          cx="47"
+          cy="42"
+          r="9"
+          fill="#f472b6"
+          filter="url(#collide-glow)"
+        />
+        {/* top small circle */}
+        <circle
+          cx="36"
+          cy="22"
+          r="7"
+          fill="#34d399"
+          filter="url(#collide-glow)"
+        />
+      </svg>
+    );
+  }
+
   if (icon === "merging-perfect-shape") {
     return (
       <svg
@@ -911,6 +976,11 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
         .card-orange {
           --card-rgb: 249, 115, 22;
           --card-rgb-soft: 251, 191, 36;
+        }
+
+        .card-indigo {
+          --card-rgb: 129, 140, 248;
+          --card-rgb-soft: 167, 139, 250;
         }
 
         .launch-button::before {

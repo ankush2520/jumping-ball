@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import BallInPendulumMotion from "../components/games/illusion-of-circle/BallInPendulumMotion";
 import BrokenSquare from "../components/games/merging-triangles/BrokenSquare";
+import CollidingShapes from "../components/games/colliding-shapes/CollidingShapes";
 import CountryEscapeChallenge from "../components/games/growing-ball-shrinking-boundary/CountryEscapeChallenge";
 import MergingPerfectShape from "../components/games/merging-perfect-shape/MergingPerfectShape";
 import PlasmaBounce from "../components/games/kessler-effect/PlasmaBounce";
@@ -24,8 +25,9 @@ export type Simulation = {
     | "shrinking-escape"
     | "square-assembly"
     | "merging-perfect-shape"
-    | "ball-in-pendulum-motion";
-  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose" | "card-orange" | "card-blue";
+    | "ball-in-pendulum-motion"
+    | "colliding-shapes";
+  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose" | "card-orange" | "card-blue" | "card-indigo";
 };
 
 export const simulations: Simulation[] = [
@@ -94,6 +96,17 @@ export const simulations: Simulation[] = [
     accentColor: "#f59e0b",
     icon: "shrinking-escape",
     glow: "card-amber",
+  },
+  {
+    id: "colliding-shapes",
+    title: "Colliding Shapes",
+    subtitle: "COLLISION ARENA",
+    description: "Watch colorful shapes bounce off the walls and collide with each other inside the arena.",
+    component: CollidingShapes,
+    status: "experimental",
+    accentColor: "#818cf8",
+    icon: "colliding-shapes",
+    glow: "card-indigo",
   },
   {
     id: "plasma-bounce",
