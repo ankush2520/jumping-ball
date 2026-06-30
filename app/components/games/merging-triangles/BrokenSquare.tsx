@@ -82,12 +82,12 @@ const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const PHYSICS_SUBSTEPS = 3;
 const RESTITUTION = 1;
-const SPEED_SCALE = 1;
+const SPEED_SCALE = 2;
 const BODY_SPEED_RATIO = 0.32 * SPEED_SCALE;
 const CONNECTOR_TOLERANCE_RADIANS = (15 * Math.PI) / 180;
 const SAFFRON = "#f97316";
 const TRIANGLE_COLORS = [SAFFRON, SAFFRON, SAFFRON, SAFFRON];
-const SQUARE_SIZE_SCALE = 0.75 * 0.8; // reduced by 0.8x (0.6)
+const SQUARE_SIZE_SCALE = 0.75 * 0.8 * 0.75; // reduced by 0.75x
 
 let sharedAudioContext: AudioContext | null = null;
 
@@ -335,7 +335,7 @@ const getSquareSize = (arena: Arena) => arena.width * 0.18 * SQUARE_SIZE_SCALE;
 const createInitialBodies = (arena: Arena): RigidBody[] => {
   const size = getSquareSize(arena);
   const half = size / 2;
-  const triangleCount = 60;
+  const triangleCount = 100;
   const margin = half * 1.25;
   const speed = getBodySpeed(arena);
   const triangles = [
@@ -872,14 +872,12 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.fillStyle = "rgba(241, 245, 249, 0.92)";
   ctx.shadowColor = "rgba(148, 163, 184, 0.32)";
   ctx.shadowBlur = isMobile ? 8 : 12;
-  ctx.font = `900 ${isMobile ? 25 : 38}px Arial, Helvetica, sans-serif`;
+  ctx.font = `900 ${isMobile ? 22 : 32}px Arial, Helvetica, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
-  ctx.fillText(
-    "MERGING TRIANGLES",
-    arena.x + arena.width / 2,
-    arena.y - (isMobile ? 42 : 52),
-  );
+  const cx = arena.x + arena.width / 2;
+  ctx.fillText("What weird shape", cx, arena.y - (isMobile ? 66 : 90));
+  ctx.fillText("will these triangles make?", cx, arena.y - (isMobile ? 42 : 54));
   ctx.font = `800 ${isMobile ? 10 : 15}px Arial, Helvetica, sans-serif`;
   const subtitle = isMobile
     ? ["Merge the triangles into", "a perfect square!"]

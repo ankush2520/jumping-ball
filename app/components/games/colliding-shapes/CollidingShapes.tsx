@@ -5,14 +5,19 @@ import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const HUD_DESKTOP  = 142;
-const HUD_MOBILE   = 158;
-const NUM_SHAPES   = 7;
-const MIN_RADIUS   = 20;
-const MAX_RADIUS   = 36;
-const BASE_SPEED   = 170;
-const MAX_DT       = 1 / 30;
-const SOUND_GAP_MS = 60;
+const HUD_DESKTOP     = 142;
+const HUD_MOBILE      = 158;
+const BALL_RADIUS     = 6;     // all balls start at the same size
+const BASE_SPEED      = 170;
+const MAX_DT          = 1 / 30;
+const SOUND_GAP_MS    = 60;
+
+const BALL_COLORS = [
+  { hue: 0   }, // red
+  { hue: 120 }, // green
+  { hue: 240 }, // blue
+];
+const BALLS_PER_COLOR = 4;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,25 +70,21 @@ function resizeCanvas(canvas: HTMLCanvasElement): { arena: Arena; dpr: number } 
 
 function spawnCircles(arena: Arena): Circle[] {
   const circles: Circle[] = [];
-  for (let i = 0; i < NUM_SHAPES; i++) {
-    const r   = MIN_RADIUS + Math.random() * (MAX_RADIUS - MIN_RADIUS);
-    const hue = (i / NUM_SHAPES) * 360;
-    const x   = arena.x + r + Math.random() * (arena.size - r * 2);
-    const y   = arena.y + r + Math.random() * (arena.size - r * 2);
-    const ang = Math.random() * Math.PI * 2;
-    circles.push({
-      id: i,
-      x, y,
-      vx: Math.cos(ang) * BASE_SPEED,
-      vy: Math.sin(ang) * BASE_SPEED,
-      r, hue,
-      glow: 0,
-    });
+  let id = 0;
+  for (const { hue } of BALL_COLORS) {
+    for (let i = 0; i < BALLS_PER_COLOR; i++) {
+      const r   = BALL_RADIUS;
+      const x   = arena.x + r + Math.random() * (arena.size - r * 2);
+      const y   = arena.y + r + Math.random() * (arena.size - r * 2);
+      const ang = Math.random() * Math.PI * 2;
+      circles.push({ id: id++, x, y, vx: Math.cos(ang) * BASE_SPEED, vy: Math.sin(ang) * BASE_SPEED, r, hue, glow: 0 });
+    }
   }
   return circles;
 }
 
-function resolveCirclePair(a: Circle, b: Circle): boolean {
+// Elastic bounce between two different-color circles
+function bounceCirclePair(a: Circle, b: Circle): boolean {
   const dx   = b.x - a.x;
   const dy   = b.y - a.y;
   const dist = Math.hypot(dx, dy);
@@ -103,13 +104,18 @@ function resolveCirclePair(a: Circle, b: Circle): boolean {
   const dot = dvx * nx + dvy * ny;
   if (dot > 0) return false;
 
-  a.vx += dot * nx;
-  a.vy += dot * ny;
-  b.vx -= dot * nx;
-  b.vy -= dot * ny;
+  // Mass proportional to r²
+  const ma = a.r * a.r;
+  const mb = b.r * b.r;
+  const mt = ma + mb;
+  const imp = (2 * dot) / (mt / ma + mt / mb);
+  a.vx += (imp * mb / mt) * nx;
+  a.vy += (imp * mb / mt) * ny;
+  b.vx -= (imp * ma / mt) * nx;
+  b.vy -= (imp * ma / mt) * ny;
 
-  a.glow = 0.45;
-  b.glow = 0.45;
+  a.glow = 0.35;
+  b.glow = 0.35;
   return true;
 }
 
@@ -155,7 +161,8 @@ function createAudio() {
   return {
     unlock: () => ensure(),
     wall:   (hue: number) => ping(180 + hue * 0.6, 0.07),
-    hit:    (hue: number) => ping(300 + hue * 0.5, 0.12),
+    bounce: (hue: number) => ping(300 + hue * 0.5, 0.10),
+    merge:  (hue: number) => ping(500 + hue * 0.4, 0.18),
     dispose: () => { void ac?.close(); ac = null; },
   };
 }
@@ -197,7 +204,7 @@ function drawArena(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean)
   ctx.fillStyle    = "rgba(248, 250, 252, 0.6)";
   ctx.shadowBlur   = 0;
   ctx.fillText(
-    "Shapes bounce and collide inside the arena",
+    "Same color balls merge — different colors bounce",
     x + size / 2,
     y - (mobile ? 10 : 12),
   );
@@ -212,8 +219,9 @@ function drawCircles(ctx: CanvasRenderingContext2D, circles: Circle[]) {
     ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
     ctx.fillStyle   = `hsl(${c.hue}, 88%, 58%)`;
     ctx.shadowColor = `hsl(${c.hue}, 100%, 68%)`;
-    ctx.shadowBlur  = glowing ? c.r * 2.6 : c.r * 1.1;
+    ctx.shadowBlur  = glowing ? c.r * 2.8 : c.r * 1.1;
     ctx.fill();
+    // specular highlight
     ctx.beginPath();
     ctx.arc(c.x - c.r * 0.28, c.y - c.r * 0.3, c.r * 0.36, 0, Math.PI * 2);
     ctx.fillStyle  = "rgba(255,255,255,0.22)";
@@ -224,20 +232,26 @@ function drawCircles(ctx: CanvasRenderingContext2D, circles: Circle[]) {
 }
 
 function drawMenuCircles(ctx: CanvasRenderingContext2D, arena: Arena, t: number) {
-  const seeds = [0.15, 0.38, 0.58, 0.72, 0.91];
-  for (let i = 0; i < seeds.length; i++) {
-    const s   = seeds[i];
-    const hue = s * 360;
-    const r   = 22 + s * 18;
-    const cx  = arena.x + r + s * (arena.size - r * 2);
-    const cy  = arena.y + (arena.size / 2) + Math.sin(t * 0.4 + i * 1.3) * (arena.size * 0.28);
+  const dots = [
+    { hue: 0,   ox: 0.2, oy: 0.45 },
+    { hue: 0,   ox: 0.35, oy: 0.62 },
+    { hue: 120, ox: 0.5, oy: 0.35 },
+    { hue: 120, ox: 0.65, oy: 0.58 },
+    { hue: 240, ox: 0.8, oy: 0.42 },
+    { hue: 240, ox: 0.5, oy: 0.7  },
+  ];
+  for (let i = 0; i < dots.length; i++) {
+    const d  = dots[i];
+    const r  = BALL_RADIUS * 1.5;
+    const cx = arena.x + d.ox * arena.size;
+    const cy = arena.y + d.oy * arena.size + Math.sin(t * 0.4 + i * 1.1) * 18;
     ctx.save();
-    ctx.globalAlpha = 0.55;
+    ctx.globalAlpha = 0.6;
     ctx.beginPath();
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle   = `hsl(${hue}, 80%, 55%)`;
-    ctx.shadowColor = `hsl(${hue}, 100%, 65%)`;
-    ctx.shadowBlur  = r * 1.4;
+    ctx.fillStyle   = `hsl(${d.hue}, 88%, 58%)`;
+    ctx.shadowColor = `hsl(${d.hue}, 100%, 68%)`;
+    ctx.shadowBlur  = r * 2;
     ctx.fill();
     ctx.restore();
   }
@@ -253,6 +267,7 @@ const CollidingShapes = () => {
   const lastTRef   = useRef<number>(0);
   const audioRef   = useRef(createAudio());
   const phaseRef   = useRef<Phase>("menu");
+  const nextIdRef  = useRef(BALLS_PER_COLOR * BALL_COLORS.length);
 
   const [phase, setPhase] = useState<Phase>("menu");
 
@@ -262,18 +277,20 @@ const CollidingShapes = () => {
     const { arena } = resizeCanvas(canvas);
     arenaRef.current = arena;
     if (phaseRef.current === "playing") {
+      nextIdRef.current  = BALLS_PER_COLOR * BALL_COLORS.length;
       circlesRef.current = spawnCircles(arena);
     }
   }, []);
 
   const startGame = useCallback(() => {
     audioRef.current.unlock();
-    phaseRef.current = "playing";
+    phaseRef.current   = "playing";
+    nextIdRef.current  = BALLS_PER_COLOR * BALL_COLORS.length;
     setPhase("playing");
     const canvas = canvasRef.current;
     if (canvas) {
       const { arena } = resizeCanvas(canvas);
-      arenaRef.current = arena;
+      arenaRef.current   = arena;
       circlesRef.current = spawnCircles(arena);
     }
   }, []);
@@ -290,7 +307,8 @@ const CollidingShapes = () => {
 
   useEffect(() => {
     const audio = audioRef.current;
-    const tick  = (now: number) => {
+
+    const tick = (now: number) => {
       const dt   = Math.min((now - lastTRef.current) / 1000, MAX_DT);
       lastTRef.current = now;
 
@@ -300,47 +318,94 @@ const CollidingShapes = () => {
       if (!ctx || !arena) { rafRef.current = requestAnimationFrame(tick); return; }
 
       const { W, H } = arena;
-      const mobile = W < 600;
-      const elapsed = now / 1000;
+      const mobile   = W < 600;
 
       drawBackground(ctx, W, H);
       drawCanvasWatermark(ctx, W, H);
       drawArena(ctx, arena, mobile);
 
       if (phaseRef.current === "menu") {
-        drawMenuCircles(ctx, arena, elapsed);
+        drawMenuCircles(ctx, arena, now / 1000);
       } else {
         const circles = circlesRef.current;
+        const right   = arena.x + arena.size;
+        const bottom  = arena.y + arena.size;
 
+        // ── Move + wall bounce ─────────────────────────────────────────────
         for (const c of circles) {
           c.x += c.vx * dt;
           c.y += c.vy * dt;
           if (c.glow > 0) c.glow -= dt;
 
-          const right  = arena.x + arena.size;
-          const bottom = arena.y + arena.size;
-          if (c.x - c.r < arena.x) { c.x = arena.x + c.r;  c.vx =  Math.abs(c.vx); audio.wall(c.hue); }
-          if (c.x + c.r > right)   { c.x = right - c.r;    c.vx = -Math.abs(c.vx); audio.wall(c.hue); }
-          if (c.y - c.r < arena.y) { c.y = arena.y + c.r;  c.vy =  Math.abs(c.vy); audio.wall(c.hue); }
-          if (c.y + c.r > bottom)  { c.y = bottom - c.r;   c.vy = -Math.abs(c.vy); audio.wall(c.hue); }
+          if (c.x - c.r < arena.x) { c.x = arena.x + c.r; c.vx =  Math.abs(c.vx); audio.wall(c.hue); }
+          if (c.x + c.r > right)   { c.x = right  - c.r;  c.vx = -Math.abs(c.vx); audio.wall(c.hue); }
+          if (c.y - c.r < arena.y) { c.y = arena.y + c.r; c.vy =  Math.abs(c.vy); audio.wall(c.hue); }
+          if (c.y + c.r > bottom)  { c.y = bottom  - c.r; c.vy = -Math.abs(c.vy); audio.wall(c.hue); }
         }
+
+        // ── Collision: merge same-color, bounce different-color ────────────
+        const toRemove = new Set<number>();
+        const toAdd: Circle[] = [];
 
         for (let i = 0; i < circles.length; i++) {
           for (let j = i + 1; j < circles.length; j++) {
-            if (resolveCirclePair(circles[i], circles[j])) {
-              audio.hit((circles[i].hue + circles[j].hue) / 2);
+            const a = circles[i];
+            const b = circles[j];
+            if (toRemove.has(a.id) || toRemove.has(b.id)) continue;
+
+            const dx   = b.x - a.x;
+            const dy   = b.y - a.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist >= a.r + b.r || dist === 0) continue;
+
+            if (a.hue === b.hue) {
+              // ── Merge ───────────────────────────────────────────────────
+              const ma = a.r * a.r;
+              const mb = b.r * b.r;
+              const mt = ma + mb;
+              // Position at mass-weighted centre
+              const mx = (a.x * ma + b.x * mb) / mt;
+              const my = (a.y * ma + b.y * mb) / mt;
+              // Momentum-conserving velocity
+              const mvx = (a.vx * ma + b.vx * mb) / mt;
+              const mvy = (a.vy * ma + b.vy * mb) / mt;
+              // New radius = sum of radii (doubles when equal)
+              const nr  = a.r + b.r;
+
+              toRemove.add(a.id);
+              toRemove.add(b.id);
+              toAdd.push({
+                id:   nextIdRef.current++,
+                x:    mx,
+                y:    my,
+                vx:   mvx,
+                vy:   mvy,
+                r:    nr,
+                hue:  a.hue,
+                glow: 0.8,
+              });
+              audio.merge(a.hue);
+            } else {
+              // ── Elastic bounce ──────────────────────────────────────────
+              if (bounceCirclePair(a, b)) {
+                audio.bounce((a.hue + b.hue) / 2);
+              }
             }
           }
         }
 
-        drawCircles(ctx, circles);
+        if (toRemove.size > 0) {
+          circlesRef.current = circles.filter(c => !toRemove.has(c.id)).concat(toAdd);
+        }
+
+        drawCircles(ctx, circlesRef.current);
       }
 
       rafRef.current = requestAnimationFrame(tick);
     };
 
     lastTRef.current = performance.now();
-    rafRef.current = requestAnimationFrame(tick);
+    rafRef.current   = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       audio.dispose();
@@ -353,7 +418,7 @@ const CollidingShapes = () => {
 
       {phase === "menu" && (
         <div className="cs-menu">
-          <p className="cs-menu-sub">Shapes bounce and collide inside the arena</p>
+          <p className="cs-menu-sub">Same color balls merge · Different colors bounce</p>
           <button type="button" className="cs-play-btn" onClick={startGame}>
             PLAY
           </button>
