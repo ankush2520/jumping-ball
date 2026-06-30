@@ -1,11 +1,11 @@
 import type { ComponentType } from "react";
-import BallInPendulumMotion from "../components/games/ball-in-pendulum-motion/BallInPendulumMotion";
-import BrokenSquare from "../components/games/broken-square/BrokenSquare";
-import CountryEscapeChallenge from "../components/games/country-escape-challenge/CountryEscapeChallenge";
+import BallInPendulumMotion from "../components/games/illusion-of-circle/BallInPendulumMotion";
+import BrokenSquare from "../components/games/merging-triangles/BrokenSquare";
+import CountryEscapeChallenge from "../components/games/growing-ball-shrinking-boundary/CountryEscapeChallenge";
 import MergingPerfectShape from "../components/games/merging-perfect-shape/MergingPerfectShape";
-import PlasmaBounce from "../components/games/plasma-bounce/PlasmaBounce";
-import ShrinkingEscape from "../components/games/shrinking-escape/ShrinkingEscape";
-import SquareAssembly from "../components/games/square-assembly/SquareAssembly";
+import PlasmaBounce from "../components/games/kessler-effect/PlasmaBounce";
+import ShrinkingEscape from "../components/games/merging-squares/ShrinkingEscape";
+import SquareAssembly from "../components/games/interactive-square-shapes/SquareAssembly";
 
 export type SimulationStatus = "stable" | "experimental" | "coming-soon";
 
