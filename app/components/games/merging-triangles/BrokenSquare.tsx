@@ -1009,12 +1009,14 @@ const BrokenSquare = () => {
   const [squareCount, setSquareCount] = useState(25);
   const squareCountRef = useRef(25);
   squareCountRef.current = squareCount;
+  const [started, setStarted] = useState(false);
 
   if (audioRef.current === null) {
     audioRef.current = createAudio();
   }
 
   useEffect(() => {
+    if (!started) return;
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
@@ -1140,7 +1142,7 @@ const BrokenSquare = () => {
       window.removeEventListener("keydown", handleKeyDown);
       audioRef.current?.dispose();
     };
-  }, []);
+  }, [started]);
 
   useEffect(() => {
     if (!arenaRef.current) return;
@@ -1155,25 +1157,65 @@ const BrokenSquare = () => {
   return (
     <div className="broken-square-root">
       <canvas ref={canvasRef} className="broken-square-canvas" />
-      <div className="scc-panel">
-        <span className="scc-label">Squares</span>
-        <div className="scc-row">
-          <span className="scc-num">1</span>
-          <input
-            type="range"
-            min={1}
-            max={25}
-            value={squareCount}
-            onChange={(e) => {
-              void audioRef.current?.unlock();
-              setSquareCount(Number(e.target.value));
-            }}
-            className="scc-slider"
-          />
-          <span className="scc-num">25</span>
+
+      {!started && (
+        <div className="setup-overlay">
+          <div className="setup-card">
+            <div className="setup-badge">MERGING TRIANGLES</div>
+            <h2 className="setup-heading">How many squares?</h2>
+            <p className="setup-sub">Each square splits into 4 triangles · merge them back</p>
+            <div className="setup-count-display">
+              <span className="setup-count-num">{squareCount}</span>
+              <span className="setup-count-unit">{squareCount === 1 ? "square" : "squares"}</span>
+            </div>
+            <div className="setup-triangles-hint">{squareCount * 4} triangles</div>
+            <div className="setup-slider-row">
+              <span className="setup-range-num">1</span>
+              <input
+                type="range"
+                min={1}
+                max={25}
+                value={squareCount}
+                onChange={(e) => setSquareCount(Number(e.target.value))}
+                className="setup-slider"
+              />
+              <span className="setup-range-num">25</span>
+            </div>
+            <button
+              className="setup-play-btn"
+              onClick={() => {
+                void audioRef.current?.unlock();
+                setStarted(true);
+              }}
+            >
+              ▶&nbsp;&nbsp;PLAY
+            </button>
+          </div>
         </div>
-        <span className="scc-value">{squareCount} {squareCount === 1 ? "square" : "squares"} · {squareCount * 4} triangles</span>
-      </div>
+      )}
+
+      {started && (
+        <div className="scc-panel">
+          <span className="scc-label">Squares</span>
+          <div className="scc-row">
+            <span className="scc-num">1</span>
+            <input
+              type="range"
+              min={1}
+              max={25}
+              value={squareCount}
+              onChange={(e) => {
+                void audioRef.current?.unlock();
+                setSquareCount(Number(e.target.value));
+              }}
+              className="scc-slider"
+            />
+            <span className="scc-num">25</span>
+          </div>
+          <span className="scc-value">{squareCount} {squareCount === 1 ? "square" : "squares"} · {squareCount * 4} triangles</span>
+        </div>
+      )}
+
       {mergeRemaining !== null && (
         <div className="merge-overlay">
           <div className="merge-box">
@@ -1201,6 +1243,149 @@ const BrokenSquare = () => {
           max-height: 100dvh;
         }
 
+        /* ── Setup overlay ── */
+        .setup-overlay {
+          position: absolute;
+          inset: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(2, 6, 23, 0.82);
+          backdrop-filter: blur(6px);
+          z-index: 20;
+          padding: 24px;
+        }
+
+        .setup-card {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 14px;
+          width: min(420px, 100%);
+          padding: 36px 32px 32px;
+          background: linear-gradient(
+            135deg,
+            rgba(255, 255, 255, 0.07) 0%,
+            rgba(15, 10, 30, 0.72) 100%
+          );
+          border: 1px solid rgba(168, 85, 247, 0.32);
+          border-radius: 24px;
+          box-shadow:
+            0 0 60px rgba(168, 85, 247, 0.1),
+            0 24px 60px rgba(2, 6, 23, 0.5),
+            inset 0 1px 0 rgba(255, 255, 255, 0.12);
+          text-align: center;
+        }
+
+        .setup-badge {
+          font-size: 0.65rem;
+          font-weight: 900;
+          letter-spacing: 0.18em;
+          text-transform: uppercase;
+          color: rgba(168, 85, 247, 0.9);
+          border: 1px solid rgba(168, 85, 247, 0.32);
+          border-radius: 999px;
+          padding: 3px 12px;
+          background: rgba(168, 85, 247, 0.1);
+        }
+
+        .setup-heading {
+          margin: 0;
+          font-size: clamp(1.4rem, 5vw, 1.9rem);
+          font-weight: 900;
+          color: #f8fafc;
+          letter-spacing: -0.01em;
+        }
+
+        .setup-sub {
+          margin: 0;
+          font-size: 0.78rem;
+          color: rgba(248, 250, 252, 0.5);
+          line-height: 1.4;
+        }
+
+        .setup-count-display {
+          display: flex;
+          align-items: baseline;
+          gap: 8px;
+          margin: 4px 0 0;
+        }
+
+        .setup-count-num {
+          font-size: clamp(3rem, 12vw, 5rem);
+          font-weight: 900;
+          line-height: 1;
+          background: linear-gradient(135deg, #c084fc, #a855f7, #818cf8);
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          background-clip: text;
+        }
+
+        .setup-count-unit {
+          font-size: 1rem;
+          font-weight: 700;
+          color: rgba(248, 250, 252, 0.6);
+        }
+
+        .setup-triangles-hint {
+          font-size: 0.8rem;
+          font-weight: 600;
+          color: rgba(168, 85, 247, 0.7);
+          margin-top: -8px;
+        }
+
+        .setup-slider-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          width: 100%;
+        }
+
+        .setup-range-num {
+          font-size: 0.72rem;
+          font-weight: 700;
+          color: rgba(248, 250, 252, 0.4);
+          min-width: 16px;
+          text-align: center;
+        }
+
+        .setup-slider {
+          flex: 1;
+          height: 4px;
+          accent-color: #a855f7;
+          cursor: pointer;
+        }
+
+        .setup-play-btn {
+          margin-top: 8px;
+          width: 100%;
+          min-height: 52px;
+          border: none;
+          border-radius: 16px;
+          background: linear-gradient(135deg, #a855f7, #7c3aed);
+          color: #fff;
+          font-size: 1rem;
+          font-weight: 900;
+          letter-spacing: 0.1em;
+          cursor: pointer;
+          box-shadow:
+            0 8px 24px rgba(168, 85, 247, 0.38),
+            inset 0 1px 0 rgba(255, 255, 255, 0.22);
+          transition: transform 0.18s ease, box-shadow 0.18s ease;
+        }
+
+        .setup-play-btn:hover {
+          transform: translateY(-2px);
+          box-shadow:
+            0 12px 32px rgba(168, 85, 247, 0.5),
+            inset 0 1px 0 rgba(255, 255, 255, 0.28);
+        }
+
+        .setup-play-btn:active {
+          transform: translateY(0);
+        }
+
+        /* ── Compact in-game panel ── */
         .scc-panel {
           position: absolute;
           top: 148px;
@@ -1264,6 +1449,7 @@ const BrokenSquare = () => {
           }
         }
 
+        /* ── Merge countdown ── */
         .merge-overlay {
           position: absolute;
           top: 0;
