@@ -908,10 +908,10 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
     cx,
     arena.y - (isMobile ? 42 : 54),
   );
-  ctx.font = `800 ${isMobile ? 10 : 15}px Arial, Helvetica, sans-serif`;
+  ctx.font = `800 ${isMobile ? 13 : 15}px Arial, Helvetica, sans-serif`;
   const subtitle = isMobile
-    ? ["Merge the triangles into", "a perfect square!"]
-    : ["Merge the bouncing triangles into a perfect square!"];
+    ? ["Can we see a perfect square!"]
+    : ["Can we see a perfect square!"];
   subtitle.forEach((line, index) => {
     ctx.fillText(
       line,
@@ -1008,7 +1008,8 @@ const drawDebugOverlay = (
 };
 
 const SHUFFLE_LABEL = "Shuffling !";
-const SHUFFLE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*<>[]{}?/\\|~^";
+const SHUFFLE_CHARS =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*<>[]{}?/\\|~^";
 
 const BrokenSquare = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1210,13 +1211,17 @@ const BrokenSquare = () => {
     }
     const tick = () => {
       setShuffledText(
-        SHUFFLE_LABEL.split("").map((c: string) =>
-          c === " "
-            ? " "
-            : Math.random() < 0.28
-              ? SHUFFLE_CHARS[Math.floor(Math.random() * SHUFFLE_CHARS.length)]
-              : c,
-        ).join(""),
+        SHUFFLE_LABEL.split("")
+          .map((c: string) =>
+            c === " "
+              ? " "
+              : Math.random() < 0.28
+                ? SHUFFLE_CHARS[
+                    Math.floor(Math.random() * SHUFFLE_CHARS.length)
+                  ]
+                : c,
+          )
+          .join(""),
       );
     };
     tick();
