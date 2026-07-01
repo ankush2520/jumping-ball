@@ -1020,6 +1020,8 @@ const BrokenSquare = () => {
   const debugEnabledRef = useRef(false);
   const lastAttachmentCheckRef = useRef<AttachmentCheck | null>(null);
   const mergeStartRef = useRef<number | null>(null);
+  const mergeGraceEndRef = useRef<number | null>(null);
+  const allowCollisionRef = useRef(false);
   const allowMergeRef = useRef(false);
   const [mergeRemaining, setMergeRemaining] = useState<number | null>(null);
   const lastMergeDisplayedRef = useRef<number | null>(null);
@@ -1050,15 +1052,16 @@ const BrokenSquare = () => {
       const now = performance.now();
       lastTimeRef.current = now;
       lastAttachmentCheckRef.current = null;
-      // start 5s countdown before merging
       mergeStartRef.current = now + 5000;
+      mergeGraceEndRef.current = now + 8000;
+      allowCollisionRef.current = false;
       allowMergeRef.current = false;
     };
 
     const stepPhysics = (dt: number, arena: Arena) => {
       const subDt = dt / PHYSICS_SUBSTEPS;
       const sc = squareCountRef.current;
-      const isCountdown = !allowMergeRef.current;
+      const isCountdown = !allowCollisionRef.current;
       const countdownSpeed = getBodySpeed(arena, 1) * 5;
 
       for (let step = 0; step < PHYSICS_SUBSTEPS; step += 1) {
@@ -1095,7 +1098,7 @@ const BrokenSquare = () => {
             bodiesRef.current,
             audioRef.current,
             lastAttachmentCheckRef,
-            true,
+            allowMergeRef.current,
             sc,
           );
         }
@@ -1109,17 +1112,26 @@ const BrokenSquare = () => {
       const dt = Math.min((time - lastTimeRef.current) / 1000, 0.033);
       lastTimeRef.current = time;
 
-      // compute merging countdown and update overlay state
+      // Phase 1 (0–5s): label visible, no collisions
       let remaining: number | null = null;
-      if (mergeStartRef.current !== null && !allowMergeRef.current) {
+      if (mergeStartRef.current !== null && !allowCollisionRef.current) {
         remaining = Math.max(
           0,
           Math.ceil((mergeStartRef.current - time) / 1000),
         );
         if (remaining === 0) {
-          allowMergeRef.current = true;
+          allowCollisionRef.current = true;
           remaining = null;
         }
+      }
+      // Phase 2 (5–8s): collisions on, merge still off, no label
+      if (
+        allowCollisionRef.current &&
+        !allowMergeRef.current &&
+        mergeGraceEndRef.current !== null &&
+        time >= mergeGraceEndRef.current
+      ) {
+        allowMergeRef.current = true;
       }
 
       if (lastMergeDisplayedRef.current !== remaining) {
@@ -1184,6 +1196,8 @@ const BrokenSquare = () => {
     bodiesRef.current = createInitialBodies(arenaRef.current, squareCount);
     const now = performance.now();
     mergeStartRef.current = now + 5000;
+    mergeGraceEndRef.current = now + 8000;
+    allowCollisionRef.current = false;
     allowMergeRef.current = false;
     lastMergeDisplayedRef.current = null;
     setMergeRemaining(null);
