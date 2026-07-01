@@ -82,10 +82,10 @@ const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const PHYSICS_SUBSTEPS = 3;
 const RESTITUTION = 1;
-const SPEED_SCALE = 1;
+const SPEED_SCALE = 1.5;
 const BODY_SPEED_RATIO = 0.32 * SPEED_SCALE;
 const CONNECTOR_TOLERANCE_RADIANS = (15 * Math.PI) / 180;
-const SAFFRON = "#f97316";
+const SAFFRON = "#28d0ea";
 const TRIANGLE_COLORS = [SAFFRON, SAFFRON, SAFFRON, SAFFRON];
 const SQUARE_SIZE_SCALE = 0.75 * 0.8 * 0.75; // reduced by 0.75x
 
@@ -130,11 +130,15 @@ const dot = (a: Point, b: Point) => a.x * b.x + a.y * b.y;
 
 const getBodySpeed = (arena: Arena, squareCount: number) => {
   const baseSpeed = arena.width * BODY_SPEED_RATIO;
-  const speedMultiplier = 0.2 + 0.8 * (squareCount - 1) / 24;
+  const speedMultiplier = 0.7 + (0.3 * (squareCount - 1)) / 24;
   return baseSpeed * speedMultiplier;
 };
 
-const preserveBodySpeed = (body: RigidBody, arena: Arena, squareCount: number) => {
+const preserveBodySpeed = (
+  body: RigidBody,
+  arena: Arena,
+  squareCount: number,
+) => {
   const targetSpeed = getBodySpeed(arena, squareCount);
   const currentSpeed = Math.hypot(body.vx, body.vy);
 
@@ -339,7 +343,10 @@ const getSquareSize = (arena: Arena, squareCount: number) => {
   return baseSize * Math.sqrt(25 / squareCount);
 };
 
-const createInitialBodies = (arena: Arena, squareCount: number): RigidBody[] => {
+const createInitialBodies = (
+  arena: Arena,
+  squareCount: number,
+): RigidBody[] => {
   const size = getSquareSize(arena, squareCount);
   const half = size / 2;
   const triangleCount = squareCount * 4;
@@ -740,7 +747,14 @@ const resolveBodyCollisions = (
         second.glowTime = 0.5;
         if (allowMerge) {
           audio?.playSuccess();
-          snapAndAttachBodies(arena, bodies, first, second, attachment, squareCount);
+          snapAndAttachBodies(
+            arena,
+            bodies,
+            first,
+            second,
+            attachment,
+            squareCount,
+          );
           return;
         }
       }
@@ -993,6 +1007,9 @@ const drawDebugOverlay = (
   ctx.restore();
 };
 
+const SHUFFLE_LABEL = "Shuffling !";
+const SHUFFLE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*<>[]{}?/\\|~^";
+
 const BrokenSquare = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<BrokenSquareAudio | null>(null);
@@ -1010,6 +1027,7 @@ const BrokenSquare = () => {
   const squareCountRef = useRef(25);
   squareCountRef.current = squareCount;
   const [started, setStarted] = useState(false);
+  const [shuffledText, setShuffledText] = useState(SHUFFLE_LABEL);
 
   if (audioRef.current === null) {
     audioRef.current = createAudio();
@@ -1039,8 +1057,21 @@ const BrokenSquare = () => {
 
     const stepPhysics = (dt: number, arena: Arena) => {
       const subDt = dt / PHYSICS_SUBSTEPS;
+      const sc = squareCountRef.current;
+      const isCountdown = !allowMergeRef.current;
+      const countdownSpeed = getBodySpeed(arena, 1) * 5;
 
       for (let step = 0; step < PHYSICS_SUBSTEPS; step += 1) {
+        if (isCountdown) {
+          bodiesRef.current.forEach((body) => {
+            const spd = Math.hypot(body.vx, body.vy);
+            if (spd > 0.001) {
+              body.vx = (body.vx / spd) * countdownSpeed;
+              body.vy = (body.vy / spd) * countdownSpeed;
+            }
+          });
+        }
+
         bodiesRef.current.forEach((body) => {
           body.x += body.vx * subDt;
           body.y += body.vy * subDt;
@@ -1052,18 +1083,22 @@ const BrokenSquare = () => {
           }
         });
 
-        resolveWallCollisions(arena, bodiesRef.current, () =>
-          audioRef.current?.playCollision(),
-          squareCountRef.current,
-        );
-        resolveBodyCollisions(
+        resolveWallCollisions(
           arena,
           bodiesRef.current,
-          audioRef.current,
-          lastAttachmentCheckRef,
-          allowMergeRef.current,
-          squareCountRef.current,
+          () => audioRef.current?.playCollision(),
+          sc,
         );
+        if (!isCountdown) {
+          resolveBodyCollisions(
+            arena,
+            bodiesRef.current,
+            audioRef.current,
+            lastAttachmentCheckRef,
+            true,
+            sc,
+          );
+        }
       }
     };
 
@@ -1154,6 +1189,27 @@ const BrokenSquare = () => {
     setMergeRemaining(null);
   }, [squareCount]);
 
+  useEffect(() => {
+    if (mergeRemaining === null) {
+      setShuffledText(SHUFFLE_LABEL);
+      return;
+    }
+    const tick = () => {
+      setShuffledText(
+        SHUFFLE_LABEL.split("").map((c: string) =>
+          c === " "
+            ? " "
+            : Math.random() < 0.28
+              ? SHUFFLE_CHARS[Math.floor(Math.random() * SHUFFLE_CHARS.length)]
+              : c,
+        ).join(""),
+      );
+    };
+    tick();
+    const id = setInterval(tick, 60);
+    return () => clearInterval(id);
+  }, [mergeRemaining]);
+
   return (
     <div className="broken-square-root">
       <canvas ref={canvasRef} className="broken-square-canvas" />
@@ -1163,12 +1219,18 @@ const BrokenSquare = () => {
           <div className="setup-card">
             <div className="setup-badge">MERGING TRIANGLES</div>
             <h2 className="setup-heading">How many squares?</h2>
-            <p className="setup-sub">Each square splits into 4 triangles · merge them back</p>
+            <p className="setup-sub">
+              Each square splits into 4 triangles · merge them back
+            </p>
             <div className="setup-count-display">
               <span className="setup-count-num">{squareCount}</span>
-              <span className="setup-count-unit">{squareCount === 1 ? "square" : "squares"}</span>
+              <span className="setup-count-unit">
+                {squareCount === 1 ? "square" : "squares"}
+              </span>
             </div>
-            <div className="setup-triangles-hint">{squareCount * 4} triangles</div>
+            <div className="setup-triangles-hint">
+              {squareCount * 4} triangles
+            </div>
             <div className="setup-slider-row">
               <span className="setup-range-num">1</span>
               <input
@@ -1194,31 +1256,19 @@ const BrokenSquare = () => {
         </div>
       )}
 
-      {started && (
-        <div className="scc-panel">
-          <span className="scc-label">Squares</span>
-          <div className="scc-row">
-            <span className="scc-num">1</span>
-            <input
-              type="range"
-              min={1}
-              max={25}
-              value={squareCount}
-              onChange={(e) => {
-                void audioRef.current?.unlock();
-                setSquareCount(Number(e.target.value));
-              }}
-              className="scc-slider"
-            />
-            <span className="scc-num">25</span>
-          </div>
-          <span className="scc-value">{squareCount} {squareCount === 1 ? "square" : "squares"} · {squareCount * 4} triangles</span>
-        </div>
-      )}
-
       {mergeRemaining !== null && (
         <div className="merge-overlay">
           <div className="merge-box">
+            <div className="shuffle-label">
+              {shuffledText.split("").map((char: string, i: number) => (
+                <span
+                  key={i}
+                  className={char !== SHUFFLE_LABEL[i] ? "shuffle-char" : ""}
+                >
+                  {char}
+                </span>
+              ))}
+            </div>
             <div className="merge-msg">Merging will begin in</div>
             <div className="merge-counter">{mergeRemaining}</div>
           </div>
@@ -1371,7 +1421,9 @@ const BrokenSquare = () => {
           box-shadow:
             0 8px 24px rgba(168, 85, 247, 0.38),
             inset 0 1px 0 rgba(255, 255, 255, 0.22);
-          transition: transform 0.18s ease, box-shadow 0.18s ease;
+          transition:
+            transform 0.18s ease,
+            box-shadow 0.18s ease;
         }
 
         .setup-play-btn:hover {
@@ -1469,6 +1521,20 @@ const BrokenSquare = () => {
           border-radius: 10px;
           backdrop-filter: blur(4px);
         }
+        .shuffle-label {
+          font-family: "Courier New", Courier, monospace;
+          font-weight: 900;
+          font-size: 13px;
+          letter-spacing: 0.1em;
+          color: rgba(248, 250, 252, 0.9);
+          margin-bottom: 4px;
+        }
+
+        .shuffle-char {
+          color: #a855f7;
+          font-weight: 900;
+        }
+
         .merge-msg {
           font-weight: 700;
           font-size: 16px;
