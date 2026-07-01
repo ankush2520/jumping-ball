@@ -76,13 +76,13 @@ type BrokenSquareAudio = {
   dispose: () => void;
 };
 
-const HUD_RESERVED_HEIGHT_DESKTOP = 142;
-const HUD_RESERVED_HEIGHT_MOBILE = 158;
+const HUD_RESERVED_HEIGHT_DESKTOP = 194;
+const HUD_RESERVED_HEIGHT_MOBILE = 210;
 const ARENA_SAFE_SPACING = 24;
 const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const PHYSICS_SUBSTEPS = 3;
 const RESTITUTION = 1;
-const SPEED_SCALE = 2;
+const SPEED_SCALE = 1;
 const BODY_SPEED_RATIO = 0.32 * SPEED_SCALE;
 const CONNECTOR_TOLERANCE_RADIANS = (15 * Math.PI) / 180;
 const SAFFRON = "#f97316";
@@ -128,10 +128,14 @@ const normalize = (point: Point): Point => {
 
 const dot = (a: Point, b: Point) => a.x * b.x + a.y * b.y;
 
-const getBodySpeed = (arena: Arena) => arena.width * BODY_SPEED_RATIO;
+const getBodySpeed = (arena: Arena, squareCount: number) => {
+  const baseSpeed = arena.width * BODY_SPEED_RATIO;
+  const speedMultiplier = 0.2 + 0.8 * (squareCount - 1) / 24;
+  return baseSpeed * speedMultiplier;
+};
 
-const preserveBodySpeed = (body: RigidBody, arena: Arena) => {
-  const targetSpeed = getBodySpeed(arena);
+const preserveBodySpeed = (body: RigidBody, arena: Arena, squareCount: number) => {
+  const targetSpeed = getBodySpeed(arena, squareCount);
   const currentSpeed = Math.hypot(body.vx, body.vy);
 
   if (currentSpeed < 0.001) {
@@ -330,14 +334,17 @@ const createTriangleConnectors = (triangleIndex: number): ConnectorSide[] => {
   }));
 };
 
-const getSquareSize = (arena: Arena) => arena.width * 0.18 * SQUARE_SIZE_SCALE;
+const getSquareSize = (arena: Arena, squareCount: number) => {
+  const baseSize = arena.width * 0.18 * SQUARE_SIZE_SCALE;
+  return baseSize * Math.sqrt(25 / squareCount);
+};
 
-const createInitialBodies = (arena: Arena): RigidBody[] => {
-  const size = getSquareSize(arena);
+const createInitialBodies = (arena: Arena, squareCount: number): RigidBody[] => {
+  const size = getSquareSize(arena, squareCount);
   const half = size / 2;
-  const triangleCount = 100;
+  const triangleCount = squareCount * 4;
   const margin = half * 1.25;
-  const speed = getBodySpeed(arena);
+  const speed = getBodySpeed(arena, squareCount);
   const triangles = [
     [
       { x: -half, y: -half },
@@ -582,9 +589,11 @@ const checkAttachment = (
   first: RigidBody,
   second: RigidBody,
   arena: Arena,
+  squareCount: number,
 ): AttachmentCheck => {
-  const maxEndpointDistance = arena.width * 0.14;
-  const maxMidpointDistance = arena.width * 0.11;
+  const squareSize = getSquareSize(arena, squareCount);
+  const maxEndpointDistance = squareSize * 1.73;
+  const maxMidpointDistance = squareSize * 1.36;
   let best: AttachmentCheck = {
     first: null,
     second: null,
@@ -631,6 +640,7 @@ const snapAndAttachBodies = (
   first: RigidBody,
   second: RigidBody,
   check: AttachmentCheck,
+  squareCount: number,
 ) => {
   if (!check.first || !check.second) return;
 
@@ -691,7 +701,7 @@ const snapAndAttachBodies = (
 
   first.vx = mergedVx;
   first.vy = mergedVy;
-  preserveBodySpeed(first, arena);
+  preserveBodySpeed(first, arena, squareCount);
   first.angularVelocity = mergedAngularVelocity;
   first.glowColor = "green";
   first.glowTime = 0.5;
@@ -709,6 +719,7 @@ const resolveBodyCollisions = (
   audio: BrokenSquareAudio | null,
   debugRef: React.MutableRefObject<AttachmentCheck | null>,
   allowMerge: boolean,
+  squareCount: number,
 ) => {
   for (let i = 0; i < bodies.length; i += 1) {
     for (let j = i + 1; j < bodies.length; j += 1) {
@@ -718,7 +729,7 @@ const resolveBodyCollisions = (
 
       if (!collision) continue;
 
-      const attachment = checkAttachment(first, second, arena);
+      const attachment = checkAttachment(first, second, arena, squareCount);
       debugRef.current = attachment;
 
       if (attachment.valid) {
@@ -729,7 +740,7 @@ const resolveBodyCollisions = (
         second.glowTime = 0.5;
         if (allowMerge) {
           audio?.playSuccess();
-          snapAndAttachBodies(arena, bodies, first, second, attachment);
+          snapAndAttachBodies(arena, bodies, first, second, attachment, squareCount);
           return;
         }
       }
@@ -757,8 +768,8 @@ const resolveBodyCollisions = (
         first.vy -= (impulse * normal.y) / firstMass;
         second.vx += (impulse * normal.x) / secondMass;
         second.vy += (impulse * normal.y) / secondMass;
-        preserveBodySpeed(first, arena);
-        preserveBodySpeed(second, arena);
+        preserveBodySpeed(first, arena, squareCount);
+        preserveBodySpeed(second, arena, squareCount);
       }
 
       first.glowColor = "red";
@@ -774,6 +785,7 @@ const resolveWallCollisions = (
   arena: Arena,
   bodies: RigidBody[],
   playCollision: () => void,
+  squareCount: number,
 ) => {
   const left = arena.x;
   const right = arena.x + arena.width;
@@ -810,7 +822,7 @@ const resolveWallCollisions = (
     }
 
     if (collided) {
-      preserveBodySpeed(body, arena);
+      preserveBodySpeed(body, arena, squareCount);
       body.glowColor = "red";
       body.glowTime = Math.max(body.glowTime, 0.16);
       playCollision();
@@ -877,7 +889,11 @@ const drawArenaFrame = (ctx: CanvasRenderingContext2D, arena: Arena) => {
   ctx.textBaseline = "bottom";
   const cx = arena.x + arena.width / 2;
   ctx.fillText("What weird shape", cx, arena.y - (isMobile ? 66 : 90));
-  ctx.fillText("will these triangles make?", cx, arena.y - (isMobile ? 42 : 54));
+  ctx.fillText(
+    "will these triangles make?",
+    cx,
+    arena.y - (isMobile ? 42 : 54),
+  );
   ctx.font = `800 ${isMobile ? 10 : 15}px Arial, Helvetica, sans-serif`;
   const subtitle = isMobile
     ? ["Merge the triangles into", "a perfect square!"]
@@ -990,6 +1006,9 @@ const BrokenSquare = () => {
   const allowMergeRef = useRef(false);
   const [mergeRemaining, setMergeRemaining] = useState<number | null>(null);
   const lastMergeDisplayedRef = useRef<number | null>(null);
+  const [squareCount, setSquareCount] = useState(25);
+  const squareCountRef = useRef(25);
+  squareCountRef.current = squareCount;
 
   if (audioRef.current === null) {
     audioRef.current = createAudio();
@@ -1001,7 +1020,7 @@ const BrokenSquare = () => {
     if (!canvas || !ctx) return;
 
     const syncBodiesToArena = (arena: Arena) => {
-      bodiesRef.current = createInitialBodies(arena);
+      bodiesRef.current = createInitialBodies(arena, squareCountRef.current);
     };
 
     const initialize = () => {
@@ -1033,6 +1052,7 @@ const BrokenSquare = () => {
 
         resolveWallCollisions(arena, bodiesRef.current, () =>
           audioRef.current?.playCollision(),
+          squareCountRef.current,
         );
         resolveBodyCollisions(
           arena,
@@ -1040,6 +1060,7 @@ const BrokenSquare = () => {
           audioRef.current,
           lastAttachmentCheckRef,
           allowMergeRef.current,
+          squareCountRef.current,
         );
       }
     };
@@ -1121,9 +1142,38 @@ const BrokenSquare = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!arenaRef.current) return;
+    bodiesRef.current = createInitialBodies(arenaRef.current, squareCount);
+    const now = performance.now();
+    mergeStartRef.current = now + 5000;
+    allowMergeRef.current = false;
+    lastMergeDisplayedRef.current = null;
+    setMergeRemaining(null);
+  }, [squareCount]);
+
   return (
     <div className="broken-square-root">
       <canvas ref={canvasRef} className="broken-square-canvas" />
+      <div className="scc-panel">
+        <span className="scc-label">Squares</span>
+        <div className="scc-row">
+          <span className="scc-num">1</span>
+          <input
+            type="range"
+            min={1}
+            max={25}
+            value={squareCount}
+            onChange={(e) => {
+              void audioRef.current?.unlock();
+              setSquareCount(Number(e.target.value));
+            }}
+            className="scc-slider"
+          />
+          <span className="scc-num">25</span>
+        </div>
+        <span className="scc-value">{squareCount} {squareCount === 1 ? "square" : "squares"} · {squareCount * 4} triangles</span>
+      </div>
       {mergeRemaining !== null && (
         <div className="merge-overlay">
           <div className="merge-box">
@@ -1150,6 +1200,70 @@ const BrokenSquare = () => {
           min-height: 100dvh;
           max-height: 100dvh;
         }
+
+        .scc-panel {
+          position: absolute;
+          top: 148px;
+          left: 50%;
+          transform: translateX(-50%);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 4px;
+          background: rgba(2, 6, 23, 0.55);
+          border: 1px solid rgba(168, 85, 247, 0.28);
+          border-radius: 12px;
+          padding: 8px 16px 6px;
+          backdrop-filter: blur(8px);
+          pointer-events: all;
+          z-index: 10;
+          min-width: 220px;
+        }
+
+        .scc-label {
+          font-size: 9px;
+          font-weight: 800;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: rgba(168, 85, 247, 0.9);
+        }
+
+        .scc-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          width: 100%;
+        }
+
+        .scc-num {
+          font-size: 10px;
+          font-weight: 700;
+          color: rgba(248, 250, 252, 0.5);
+          min-width: 12px;
+          text-align: center;
+        }
+
+        .scc-slider {
+          flex: 1;
+          height: 3px;
+          accent-color: #a855f7;
+          cursor: pointer;
+          background: transparent;
+        }
+
+        .scc-value {
+          font-size: 10px;
+          font-weight: 600;
+          color: rgba(248, 250, 252, 0.7);
+          letter-spacing: 0.04em;
+        }
+
+        @media (max-width: 599px) {
+          .scc-panel {
+            top: 162px;
+          }
+        }
+
         .merge-overlay {
           position: absolute;
           top: 0;

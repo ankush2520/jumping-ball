@@ -32,6 +32,17 @@ export type Simulation = {
 
 export const simulations: Simulation[] = [
   {
+    id: "broken-square",
+    title: "Merging Triangles",
+    subtitle: "TRIANGLE MERGE",
+    description: "Merge bouncing triangles back into a perfect square.",
+    component: BrokenSquare,
+    status: "experimental",
+    accentColor: "#a855f7",
+    icon: "broken-square",
+    glow: "card-violet",
+  },
+  {
     id: "ball-in-pendulum-motion",
     title: "Illusion of Circle",
     subtitle: "PENDULUM PHYSICS",
@@ -74,17 +85,6 @@ export const simulations: Simulation[] = [
     accentColor: "#22c55e",
     icon: "country-escape-challenge",
     glow: "card-emerald",
-  },
-  {
-    id: "broken-square",
-    title: "Merging Triangles",
-    subtitle: "TRIANGLE MERGE",
-    description: "Merge bouncing triangles back into a perfect square.",
-    component: BrokenSquare,
-    status: "experimental",
-    accentColor: "#a855f7",
-    icon: "broken-square",
-    glow: "card-violet",
   },
   {
     id: "shrinking-escape",
