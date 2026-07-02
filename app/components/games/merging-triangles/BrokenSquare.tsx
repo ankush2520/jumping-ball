@@ -1031,6 +1031,7 @@ const BrokenSquare = () => {
   squareCountRef.current = squareCount;
   const [started, setStarted] = useState(false);
   const [shuffledText, setShuffledText] = useState(SHUFFLE_LABEL);
+  const [showCountPanel, setShowCountPanel] = useState(false);
 
   if (audioRef.current === null) {
     audioRef.current = createAudio();
@@ -1232,6 +1233,51 @@ const BrokenSquare = () => {
   return (
     <div className="broken-square-root">
       <canvas ref={canvasRef} className="broken-square-canvas" />
+
+      {started && (
+        <button
+          type="button"
+          aria-label="Change square count"
+          title="Change square count"
+          className="square-count-button"
+          onClick={() => setShowCountPanel((prev) => !prev)}
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="currentColor"
+          >
+            <rect x="3" y="3" width="7" height="7" rx="1.3" />
+            <rect x="14" y="3" width="7" height="7" rx="1.3" />
+            <rect x="3" y="14" width="7" height="7" rx="1.3" />
+            <rect x="14" y="14" width="7" height="7" rx="1.3" />
+          </svg>
+        </button>
+      )}
+
+      {started && showCountPanel && (
+        <div className="scc-panel">
+          <span className="scc-label">SQUARE COUNT</span>
+          <div className="scc-row">
+            <span className="scc-num">1</span>
+            <input
+              type="range"
+              min={1}
+              max={25}
+              value={squareCount}
+              onChange={(e) => setSquareCount(Number(e.target.value))}
+              className="scc-slider"
+            />
+            <span className="scc-num">25</span>
+          </div>
+          <span className="scc-value">
+            {squareCount} {squareCount === 1 ? "square" : "squares"} ·{" "}
+            {squareCount * 4} triangles
+          </span>
+        </div>
+      )}
 
       {!started && (
         <div className="setup-overlay">
@@ -1456,20 +1502,56 @@ const BrokenSquare = () => {
           transform: translateY(0);
         }
 
+        /* ── Square count button (mirrors the home button, top-right) ── */
+        .square-count-button {
+          position: fixed;
+          right: 10px;
+          top: 10px;
+          z-index: 20;
+          width: 34px;
+          height: 34px;
+          display: grid;
+          place-items: center;
+          padding: 0;
+          border-radius: 999px;
+          border: 1px solid rgba(248, 250, 252, 0.16);
+          background: rgba(15, 23, 42, 0.58);
+          color: #f8fafc;
+          cursor: pointer;
+          box-shadow: 0 8px 22px rgba(15, 23, 42, 0.28);
+          backdrop-filter: blur(8px);
+        }
+
+        @media (max-width: 599px) {
+          .square-count-button {
+            right: 14px;
+            top: calc(14px + env(safe-area-inset-top, 0px));
+            width: 42px;
+            height: 42px;
+            z-index: 40;
+          }
+
+          .square-count-button svg {
+            width: 20px;
+            height: 20px;
+          }
+        }
+
         /* ── Compact in-game panel ── */
         .scc-panel {
-          position: absolute;
-          top: 148px;
-          left: 50%;
-          transform: translateX(-50%);
+          position: fixed;
+          top: 52px;
+          right: 10px;
+          z-index: 20;
           display: flex;
           flex-direction: column;
           align-items: center;
           gap: 4px;
-          background: rgba(2, 6, 23, 0.55);
-          border: 1px solid rgba(168, 85, 247, 0.28);
+          background: rgba(2, 6, 23, 0.94);
+          border: 1px solid rgba(168, 85, 247, 0.4);
           border-radius: 12px;
           padding: 8px 16px 6px;
+          box-shadow: 0 8px 22px rgba(2, 6, 23, 0.5);
           backdrop-filter: blur(8px);
           pointer-events: all;
           z-index: 10;
@@ -1516,7 +1598,8 @@ const BrokenSquare = () => {
 
         @media (max-width: 599px) {
           .scc-panel {
-            top: 162px;
+            top: calc(78px + env(safe-area-inset-top, 0px));
+            right: 14px;
           }
         }
 
