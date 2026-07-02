@@ -1008,8 +1008,6 @@ const drawDebugOverlay = (
 };
 
 const SHUFFLE_LABEL = "Shuffling !";
-const SHUFFLE_CHARS =
-  "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%&*<>[]{}?/\\|~^";
 
 const BrokenSquare = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1030,7 +1028,6 @@ const BrokenSquare = () => {
   const squareCountRef = useRef(25);
   squareCountRef.current = squareCount;
   const [started, setStarted] = useState(false);
-  const [shuffledText, setShuffledText] = useState(SHUFFLE_LABEL);
   const [showCountPanel, setShowCountPanel] = useState(false);
 
   if (audioRef.current === null) {
@@ -1205,31 +1202,6 @@ const BrokenSquare = () => {
     setMergeRemaining(null);
   }, [squareCount]);
 
-  useEffect(() => {
-    if (mergeRemaining === null) {
-      setShuffledText(SHUFFLE_LABEL);
-      return;
-    }
-    const tick = () => {
-      setShuffledText(
-        SHUFFLE_LABEL.split("")
-          .map((c: string) =>
-            c === " "
-              ? " "
-              : Math.random() < 0.28
-                ? SHUFFLE_CHARS[
-                    Math.floor(Math.random() * SHUFFLE_CHARS.length)
-                  ]
-                : c,
-          )
-          .join(""),
-      );
-    };
-    tick();
-    const id = setInterval(tick, 60);
-    return () => clearInterval(id);
-  }, [mergeRemaining]);
-
   return (
     <div className="broken-square-root">
       <canvas ref={canvasRef} className="broken-square-canvas" />
@@ -1324,16 +1296,7 @@ const BrokenSquare = () => {
       {mergeRemaining !== null && (
         <div className="merge-overlay">
           <div className="merge-box">
-            <div className="shuffle-label">
-              {shuffledText.split("").map((char: string, i: number) => (
-                <span
-                  key={i}
-                  className={char !== SHUFFLE_LABEL[i] ? "shuffle-char" : ""}
-                >
-                  {char}
-                </span>
-              ))}
-            </div>
+            <div className="shuffle-label">{SHUFFLE_LABEL}</div>
             <div className="merge-msg">Merging will begin in</div>
             <div className="merge-counter">{mergeRemaining}</div>
           </div>
@@ -1630,11 +1593,6 @@ const BrokenSquare = () => {
           letter-spacing: 0.1em;
           color: rgba(248, 250, 252, 0.9);
           margin-bottom: 4px;
-        }
-
-        .shuffle-char {
-          color: #a855f7;
-          font-weight: 900;
         }
 
         .merge-msg {
