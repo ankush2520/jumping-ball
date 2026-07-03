@@ -8,11 +8,12 @@ import { drawCanvasWatermark } from "@/app/lib/watermark";
 const HUD_DESKTOP = 148;
 const HUD_MOBILE = 168;
 const BASE_SPEED = 150;
+const BOMB_SPEED = BASE_SPEED * 0.5;
 const MAX_DT = 1 / 30;
 const SOUND_GAP_MS = 60;
 const RESET_DELAY_MS = 5000;
 const BLAST_DELAY_MS = 2200;
-const BALL_RADIUS_RATIO = 0.0221;
+const BALL_RADIUS_RATIO = 0.014 * 1.5;
 const INK = "#0f172a";
 const PAPER = "#f8fafc";
 const PLAIN = "#94a3b8";
@@ -124,7 +125,7 @@ function spawnBomb(arena: Arena): Bomb {
     ? arena.y + margin + Math.random() * half
     : arena.y + arena.size * 0.5 + margin + Math.random() * half;
 
-  const v = randomVelocity(BASE_SPEED);
+  const v = randomVelocity(BOMB_SPEED);
   return { x: bx, y: by, vx: v.vx, vy: v.vy, r, pulse: Math.random() * Math.PI * 2 };
 }
 
@@ -138,18 +139,24 @@ function getWallSegments(arena: Arena): WallSeg[] {
   const hy = up(0.5);
 
   return [
-    // central cross, with a small open gap on each of its four arms
-    { x1: vx, y1: y, x2: vx, y2: up(0.13) },
-    { x1: vx, y1: up(0.28), x2: vx, y2: up(0.72) },
-    { x1: vx, y1: up(0.84), x2: vx, y2: y + size },
-    { x1: x, y1: hy, x2: at(0.25), y2: hy },
-    { x1: at(0.4), y1: hy, x2: at(0.74), y2: hy },
-    { x1: at(0.9), y1: hy, x2: x + size, y2: hy },
-    // one isolated decoy wall stub per quadrant
-    { x1: at(0.11), y1: up(0.23), x2: at(0.29), y2: up(0.23) },
-    { x1: at(0.72), y1: up(0.17), x2: at(0.72), y2: up(0.34) },
-    { x1: at(0.22), y1: up(0.72), x2: at(0.22), y2: up(0.94) },
-    { x1: at(0.68), y1: up(0.72), x2: at(0.89), y2: up(0.72) },
+    // central cross — gaps are narrower and pushed toward the corners, so
+    // reaching them takes a longer detour than a straight shot through the middle
+    { x1: vx, y1: y, x2: vx, y2: up(0.14) },
+    { x1: vx, y1: up(0.24), x2: vx, y2: up(0.78) },
+    { x1: vx, y1: up(0.88), x2: vx, y2: y + size },
+    { x1: x, y1: hy, x2: at(0.14), y2: hy },
+    { x1: at(0.24), y1: hy, x2: at(0.78), y2: hy },
+    { x1: at(0.88), y1: hy, x2: x + size, y2: hy },
+    // two staggered decoy stubs per quadrant, forcing an S-turn instead of a
+    // straight run toward the nearest gap
+    { x1: at(0.08), y1: up(0.2), x2: at(0.24), y2: up(0.2) },
+    { x1: at(0.3), y1: up(0.06), x2: at(0.3), y2: up(0.2) },
+    { x1: at(0.62), y1: up(0.14), x2: at(0.62), y2: up(0.3) },
+    { x1: at(0.7), y1: up(0.38), x2: at(0.9), y2: up(0.38) },
+    { x1: at(0.6), y1: up(0.68), x2: at(0.78), y2: up(0.68) },
+    { x1: at(0.86), y1: up(0.74), x2: at(0.86), y2: up(0.92) },
+    { x1: at(0.16), y1: up(0.62), x2: at(0.16), y2: up(0.8) },
+    { x1: at(0.24), y1: up(0.88), x2: at(0.44), y2: up(0.88) },
   ];
 }
 
