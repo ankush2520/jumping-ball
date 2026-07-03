@@ -11,6 +11,8 @@ const BASE_SPEED = 150;
 const MAX_DT = 1 / 30;
 const SOUND_GAP_MS = 60;
 const RESET_DELAY_MS = 5000;
+const BLAST_DELAY_MS = 2200;
+const BALL_RADIUS_RATIO = 0.0221;
 const INK = "#0f172a";
 const PAPER = "#f8fafc";
 const PLAIN = "#94a3b8";
@@ -22,14 +24,21 @@ const WALL_THICKNESS_RATIO = 0.016;
 type Phase = "menu" | "playing";
 type BallKind = "yin" | "yang" | "full";
 
-type Ball = {
+type Mover = {
   x: number;
   y: number;
   vx: number;
   vy: number;
   r: number;
+};
+
+type Ball = Mover & {
   kind: BallKind;
   glow: number;
+};
+
+type Bomb = Mover & {
+  pulse: number;
 };
 
 type Arena = {
@@ -76,8 +85,12 @@ function randomVelocity(speed: number) {
   return { vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed };
 }
 
+function getBallRadius(arena: Arena) {
+  return arena.size * BALL_RADIUS_RATIO;
+}
+
 function spawnBalls(arena: Arena): Ball[] {
-  const r = arena.size * 0.0325;
+  const r = getBallRadius(arena);
   const margin = r * 1.6;
   const half = arena.size * 0.5 - margin * 2;
 
@@ -95,6 +108,24 @@ function spawnBalls(arena: Arena): Ball[] {
     { x: tlX, y: tlY, vx: v1.vx, vy: v1.vy, r, kind: "yin", glow: 0 },
     { x: brX, y: brY, vx: v2.vx, vy: v2.vy, r, kind: "yang", glow: 0 },
   ];
+}
+
+function spawnBomb(arena: Arena): Bomb {
+  const r = getBallRadius(arena);
+  const margin = r * 1.6;
+  const half = arena.size * 0.5 - margin * 2;
+
+  // the bomb spawns in one of the two rooms the balls DON'T start in
+  const inTopRightRoom = Math.random() < 0.5;
+  const bx = inTopRightRoom
+    ? arena.x + arena.size * 0.5 + margin + Math.random() * half
+    : arena.x + margin + Math.random() * half;
+  const by = inTopRightRoom
+    ? arena.y + margin + Math.random() * half
+    : arena.y + arena.size * 0.5 + margin + Math.random() * half;
+
+  const v = randomVelocity(BASE_SPEED);
+  return { x: bx, y: by, vx: v.vx, vy: v.vy, r, pulse: Math.random() * Math.PI * 2 };
 }
 
 // ─── Maze walls ───────────────────────────────────────────────────────────────
@@ -123,7 +154,7 @@ function getWallSegments(arena: Arena): WallSeg[] {
 }
 
 function resolveWallSegCollisions(
-  ball: Ball,
+  body: Mover,
   segs: WallSeg[],
   halfThickness: number,
   onHit: () => void,
@@ -134,12 +165,12 @@ function resolveWallSegCollisions(
     const rw = Math.abs(seg.x2 - seg.x1) + halfThickness * 2;
     const rh = Math.abs(seg.y2 - seg.y1) + halfThickness * 2;
 
-    const closestX = Math.min(Math.max(ball.x, rx), rx + rw);
-    const closestY = Math.min(Math.max(ball.y, ry), ry + rh);
-    const dx = ball.x - closestX;
-    const dy = ball.y - closestY;
+    const closestX = Math.min(Math.max(body.x, rx), rx + rw);
+    const closestY = Math.min(Math.max(body.y, ry), ry + rh);
+    const dx = body.x - closestX;
+    const dy = body.y - closestY;
     const distSq = dx * dx + dy * dy;
-    if (distSq >= ball.r * ball.r) continue;
+    if (distSq >= body.r * body.r) continue;
 
     const dist = Math.sqrt(distSq);
     let nx: number;
@@ -148,28 +179,61 @@ function resolveWallSegCollisions(
       nx = dx / dist;
       ny = dy / dist;
     } else {
-      const overlapX = rw / 2 - Math.abs(ball.x - (rx + rw / 2));
-      const overlapY = rh / 2 - Math.abs(ball.y - (ry + rh / 2));
+      const overlapX = rw / 2 - Math.abs(body.x - (rx + rw / 2));
+      const overlapY = rh / 2 - Math.abs(body.y - (ry + rh / 2));
       if (overlapX < overlapY) {
-        nx = ball.x < rx + rw / 2 ? -1 : 1;
+        nx = body.x < rx + rw / 2 ? -1 : 1;
         ny = 0;
       } else {
         nx = 0;
-        ny = ball.y < ry + rh / 2 ? -1 : 1;
+        ny = body.y < ry + rh / 2 ? -1 : 1;
       }
     }
 
-    const overlap = ball.r - dist;
-    ball.x += nx * overlap;
-    ball.y += ny * overlap;
+    const overlap = body.r - dist;
+    body.x += nx * overlap;
+    body.y += ny * overlap;
 
-    const vDotN = ball.vx * nx + ball.vy * ny;
+    const vDotN = body.vx * nx + body.vy * ny;
     if (vDotN < 0) {
-      ball.vx -= 2 * vDotN * nx;
-      ball.vy -= 2 * vDotN * ny;
+      body.vx -= 2 * vDotN * nx;
+      body.vy -= 2 * vDotN * ny;
     }
     onHit();
   }
+}
+
+function resolveBoundaryCollision(
+  body: Mover,
+  arena: Arena,
+  onHit: () => void,
+) {
+  const right = arena.x + arena.size;
+  const bottom = arena.y + arena.size;
+  let hit = false;
+
+  if (body.x - body.r < arena.x) {
+    body.x = arena.x + body.r;
+    body.vx = Math.abs(body.vx);
+    hit = true;
+  }
+  if (body.x + body.r > right) {
+    body.x = right - body.r;
+    body.vx = -Math.abs(body.vx);
+    hit = true;
+  }
+  if (body.y - body.r < arena.y) {
+    body.y = arena.y + body.r;
+    body.vy = Math.abs(body.vy);
+    hit = true;
+  }
+  if (body.y + body.r > bottom) {
+    body.y = bottom - body.r;
+    body.vy = -Math.abs(body.vy);
+    hit = true;
+  }
+
+  if (hit) onHit();
 }
 
 function drawWalls(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean) {
@@ -193,7 +257,9 @@ function drawWalls(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean)
 
 function createAudio() {
   let ac: AudioContext | null = null;
-  let lastAt = 0;
+  const lastAtByChannel: Record<string, number> = {};
+  let musicMaster: GainNode | null = null;
+  let musicNodes: AudioScheduledSourceNode[] = [];
 
   const ensure = () => {
     if (!ac) {
@@ -208,10 +274,20 @@ function createAudio() {
     return ac;
   };
 
-  const ping = (freq: number, duration: number, vol: number) => {
+  const throttled = (channel: string) => {
     const now = Date.now();
-    if (now - lastAt < SOUND_GAP_MS) return;
-    lastAt = now;
+    if (now - (lastAtByChannel[channel] ?? 0) < SOUND_GAP_MS) return false;
+    lastAtByChannel[channel] = now;
+    return true;
+  };
+
+  const ping = (
+    channel: string,
+    freq: number,
+    duration: number,
+    vol: number,
+  ) => {
+    if (!throttled(channel)) return;
     const ctx = ensure();
     if (!ctx || ctx.state !== "running") return;
     const t = ctx.currentTime;
@@ -233,19 +309,164 @@ function createAudio() {
     };
   };
 
+  // a soft plucked-piano tone (harmonics through a lowpass), used for the balls hitting walls
+  const pianoNote = (channel: string, freq: number) => {
+    if (!throttled(channel)) return;
+    const ctx = ensure();
+    if (!ctx || ctx.state !== "running") return;
+    const t = ctx.currentTime;
+    const outputGain = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+    const harmonics = [
+      { ratio: 1, gain: 0.16 },
+      { ratio: 2, gain: 0.06 },
+      { ratio: 3, gain: 0.025 },
+    ];
+
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(3200, t);
+    filter.frequency.exponentialRampToValueAtTime(1100, t + 0.4);
+    outputGain.gain.setValueAtTime(0.0001, t);
+    outputGain.gain.linearRampToValueAtTime(0.34, t + 0.006);
+    outputGain.gain.exponentialRampToValueAtTime(0.1, t + 0.07);
+    outputGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+    outputGain.connect(filter);
+    filter.connect(ctx.destination);
+
+    harmonics.forEach((h, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = i === 0 ? "triangle" : "sine";
+      osc.frequency.setValueAtTime(freq * h.ratio, t);
+      gain.gain.setValueAtTime(h.gain, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4 + i * 0.03);
+      osc.connect(gain);
+      gain.connect(outputGain);
+      osc.start(t);
+      osc.stop(t + 0.55);
+      osc.onended = () => {
+        osc.disconnect();
+        gain.disconnect();
+      };
+    });
+
+    window.setTimeout(() => {
+      outputGain.disconnect();
+      filter.disconnect();
+    }, 620);
+  };
+
   const meet = () => {
     const ctx = ensure();
     if (!ctx || ctx.state !== "running") return;
     [440, 660, 880].forEach((freq, i) => {
-      window.setTimeout(() => ping(freq, 0.3, 0.14), i * 70);
+      window.setTimeout(() => ping(`meet${i}`, freq, 0.3, 0.14), i * 70);
     });
   };
 
+  const blast = () => {
+    const ctx = ensure();
+    if (!ctx || ctx.state !== "running") return;
+    const t = ctx.currentTime;
+
+    // filtered noise burst
+    const bufferSize = ctx.sampleRate * 0.4;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = "lowpass";
+    noiseFilter.frequency.setValueAtTime(1800, t);
+    noiseFilter.frequency.exponentialRampToValueAtTime(120, t + 0.4);
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.32, t);
+    noiseGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+    noise.connect(noiseFilter);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(ctx.destination);
+    noise.start(t);
+    noise.stop(t + 0.4);
+
+    // low thump
+    const osc = ctx.createOscillator();
+    const oscGain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(160, t);
+    osc.frequency.exponentialRampToValueAtTime(40, t + 0.35);
+    oscGain.gain.setValueAtTime(0.4, t);
+    oscGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+    osc.connect(oscGain);
+    oscGain.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.4);
+  };
+
+  // very quiet, slow ambient pad — starts once and loops for as long as the audio context lives
+  const startMusic = () => {
+    if (musicMaster) return;
+    const ctx = ensure();
+    if (!ctx) return;
+
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0, ctx.currentTime);
+    master.gain.linearRampToValueAtTime(0.02, ctx.currentTime + 3);
+    master.connect(ctx.destination);
+    musicMaster = master;
+
+    const chord = [130.81, 164.81, 196.0, 261.63]; // C3, E3, G3, C4 — calm major triad
+    chord.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+
+      const voiceGain = ctx.createGain();
+      voiceGain.gain.value = 0.45 / (i + 1);
+
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 0.05 + i * 0.015;
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.value = 0.12 / (i + 1);
+      lfo.connect(lfoGain);
+      lfoGain.connect(voiceGain.gain);
+
+      osc.connect(voiceGain);
+      voiceGain.connect(master);
+      osc.start();
+      lfo.start();
+      musicNodes.push(osc, lfo);
+    });
+  };
+
+  const stopMusic = () => {
+    musicNodes.forEach((node) => {
+      try {
+        node.stop();
+      } catch {
+        // already stopped
+      }
+      node.disconnect();
+    });
+    musicNodes = [];
+    musicMaster?.disconnect();
+    musicMaster = null;
+  };
+
   return {
-    unlock: () => ensure(),
-    wall: () => ping(220, 0.18, 0.08),
+    unlock: () => {
+      ensure();
+      startMusic();
+    },
+    wallYin: () => pianoNote("wallYin", 261.63), // C4
+    wallYang: () => pianoNote("wallYang", 392.0), // G4
+    wallBomb: () => ping("wallBomb", 220, 0.18, 0.08),
     meet,
+    blast,
     dispose: () => {
+      stopMusic();
       void ac?.close();
       ac = null;
     },
@@ -337,6 +558,63 @@ function drawBall(ctx: CanvasRenderingContext2D, ball: Ball) {
   ctx.restore();
 }
 
+// ─── Drawing: Bomb ────────────────────────────────────────────────────────────
+
+function drawBomb(ctx: CanvasRenderingContext2D, bomb: Bomb) {
+  const { r } = bomb;
+  const danger = 0.5 + Math.sin(bomb.pulse) * 0.5;
+
+  ctx.save();
+  ctx.translate(bomb.x, bomb.y);
+
+  ctx.save();
+  ctx.shadowColor = `rgba(239, 68, 68, ${0.35 + danger * 0.4})`;
+  ctx.shadowBlur = r * 1.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  const grad = ctx.createRadialGradient(
+    -r * 0.3,
+    -r * 0.3,
+    r * 0.1,
+    0,
+    0,
+    r,
+  );
+  grad.addColorStop(0, "#3f3f46");
+  grad.addColorStop(1, "#0a0a0a");
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(239, 68, 68, ${0.4 + danger * 0.3})`;
+  ctx.lineWidth = Math.max(1, r * 0.08);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(-r * 0.32, -r * 0.32, r * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.16)";
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(r * 0.32, -r * 0.85);
+  ctx.quadraticCurveTo(r * 0.95, -r * 1.3, r * 0.62, -r * 1.75);
+  ctx.strokeStyle = "#78350f";
+  ctx.lineWidth = Math.max(1.5, r * 0.12);
+  ctx.lineCap = "round";
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(r * 0.62, -r * 1.75, r * (0.16 + danger * 0.08), 0, Math.PI * 2);
+  ctx.fillStyle = danger > 0.5 ? "#fde047" : "#f97316";
+  ctx.shadowColor = "#fbbf24";
+  ctx.shadowBlur = r * 0.8;
+  ctx.fill();
+
+  ctx.restore();
+}
+
 // ─── Drawing: Arena / Title ───────────────────────────────────────────────────
 
 function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
@@ -345,12 +623,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
   ctx.fillRect(0, 0, W, H);
 }
 
-function drawArena(
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  mobile: boolean,
-  meetings: number,
-) {
+function drawArena(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean) {
   const { x, y, size } = arena;
 
   ctx.save();
@@ -383,20 +656,6 @@ function drawArena(
   ctx.shadowBlur = 0;
   ctx.fillText("When yin meets yang, they become whole", cx, y - 14);
   ctx.restore();
-
-  if (meetings > 0) {
-    ctx.save();
-    ctx.textAlign = "left";
-    ctx.textBaseline = "top";
-    ctx.font = `800 ${mobile ? 11 : 12}px Arial, Helvetica, sans-serif`;
-    ctx.fillStyle = "rgba(248, 250, 252, 0.55)";
-    ctx.fillText(
-      `MEETINGS: ${meetings}`,
-      x + 4,
-      y + size + (mobile ? 10 : 14),
-    );
-    ctx.restore();
-  }
 }
 
 function drawMeetFlash(
@@ -423,18 +682,59 @@ function drawMeetFlash(
   ctx.restore();
 }
 
+function drawBlastFlash(
+  ctx: CanvasRenderingContext2D,
+  arena: Arena,
+  mobile: boolean,
+  progress: number,
+  point: { x: number; y: number },
+) {
+  const t = Math.min(progress, 1);
+
+  ctx.save();
+  const ringR = arena.size * 0.04 + t * arena.size * 0.34;
+  const ringAlpha = Math.max(0, 1 - t) * 0.85;
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, ringR, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(248, 113, 113, ${ringAlpha})`;
+  ctx.lineWidth = Math.max(2, arena.size * 0.01);
+  ctx.shadowColor = "rgba(248, 113, 113, 0.8)";
+  ctx.shadowBlur = 16;
+  ctx.stroke();
+  ctx.restore();
+
+  const alpha = Math.sin(t * Math.PI);
+  if (alpha <= 0.01) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#fca5a5";
+  ctx.shadowColor = "rgba(248, 113, 113, 0.85)";
+  ctx.shadowBlur = 18;
+  ctx.font = `900 ${mobile ? 18 : 26}px Arial, Helvetica, sans-serif`;
+  ctx.fillText(
+    "BOOM! GAME OVER",
+    arena.x + arena.size / 2,
+    arena.y + arena.size + (mobile ? 34 : 44),
+  );
+  ctx.restore();
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const YinYangBalls = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const arenaRef = useRef<Arena | null>(null);
   const ballsRef = useRef<Ball[]>([]);
+  const bombRef = useRef<Bomb | null>(null);
   const rafRef = useRef<number | null>(null);
   const lastTRef = useRef<number>(0);
   const audioRef = useRef(createAudio());
   const phaseRef = useRef<Phase>("menu");
-  const meetingsRef = useRef(0);
   const metAtRef = useRef<number | null>(null);
+  const blastAtRef = useRef<number | null>(null);
+  const blastPointRef = useRef<{ x: number; y: number } | null>(null);
 
   const [phase, setPhase] = useState<Phase>("menu");
 
@@ -445,20 +745,22 @@ const YinYangBalls = () => {
     arenaRef.current = arena;
     if (phaseRef.current === "playing" && ballsRef.current.length === 0) {
       ballsRef.current = spawnBalls(arena);
+      bombRef.current = spawnBomb(arena);
     }
   }, []);
 
   const startGame = useCallback(() => {
     audioRef.current.unlock();
     phaseRef.current = "playing";
-    meetingsRef.current = 0;
     metAtRef.current = null;
+    blastAtRef.current = null;
     setPhase("playing");
     const canvas = canvasRef.current;
     if (canvas) {
       const { arena } = resizeCanvas(canvas);
       arenaRef.current = arena;
       ballsRef.current = spawnBalls(arena);
+      bombRef.current = spawnBomb(arena);
     }
   }, []);
 
@@ -492,13 +794,12 @@ const YinYangBalls = () => {
 
       drawBackground(ctx, W, H);
       drawCanvasWatermark(ctx, W, H);
-      drawArena(ctx, arena, mobile, meetingsRef.current);
+      drawArena(ctx, arena, mobile);
       drawWalls(ctx, arena, mobile);
 
       if (phaseRef.current === "playing") {
         const balls = ballsRef.current;
-        const right = arena.x + arena.size;
-        const bottom = arena.y + arena.size;
+        const bomb = bombRef.current;
         const wallSegs = getWallSegments(arena);
         const wallHalfThickness = arena.size * WALL_THICKNESS_RATIO;
 
@@ -507,33 +808,49 @@ const YinYangBalls = () => {
           b.y += b.vy * dt;
           if (b.glow > 0) b.glow = Math.max(0, b.glow - dt * 1.4);
 
-          if (b.x - b.r < arena.x) {
-            b.x = arena.x + b.r;
-            b.vx = Math.abs(b.vx);
-            audio.wall();
-          }
-          if (b.x + b.r > right) {
-            b.x = right - b.r;
-            b.vx = -Math.abs(b.vx);
-            audio.wall();
-          }
-          if (b.y - b.r < arena.y) {
-            b.y = arena.y + b.r;
-            b.vy = Math.abs(b.vy);
-            audio.wall();
-          }
-          if (b.y + b.r > bottom) {
-            b.y = bottom - b.r;
-            b.vy = -Math.abs(b.vy);
-            audio.wall();
-          }
+          const playWallSound = () => {
+            if (b.kind === "yin") audio.wallYin();
+            else if (b.kind === "yang") audio.wallYang();
+            else {
+              audio.wallYin();
+              audio.wallYang();
+            }
+          };
 
-          resolveWallSegCollisions(b, wallSegs, wallHalfThickness, () =>
-            audio.wall(),
+          resolveBoundaryCollision(b, arena, playWallSound);
+          resolveWallSegCollisions(b, wallSegs, wallHalfThickness, playWallSound);
+        }
+
+        if (bomb) {
+          bomb.x += bomb.vx * dt;
+          bomb.y += bomb.vy * dt;
+          bomb.pulse += dt * 4;
+
+          resolveBoundaryCollision(bomb, arena, () => audio.wallBomb());
+          resolveWallSegCollisions(bomb, wallSegs, wallHalfThickness, () =>
+            audio.wallBomb(),
           );
         }
 
-        if (balls.length === 2) {
+        let blasted = false;
+        if (bomb && balls.length === 2) {
+          for (const b of balls) {
+            const dx = b.x - bomb.x;
+            const dy = b.y - bomb.y;
+            if (Math.hypot(dx, dy) < b.r + bomb.r) {
+              blasted = true;
+              break;
+            }
+          }
+        }
+
+        if (blasted && bomb) {
+          blastPointRef.current = { x: bomb.x, y: bomb.y };
+          blastAtRef.current = now;
+          ballsRef.current = [];
+          bombRef.current = null;
+          audio.blast();
+        } else if (balls.length === 2) {
           const [a, b] = balls;
           const dx = b.x - a.x;
           const dy = b.y - a.y;
@@ -558,23 +875,42 @@ const YinYangBalls = () => {
             ballsRef.current = [
               { x: mx, y: my, vx: nx, vy: ny, r: mr, kind: "full", glow: 1 },
             ];
-            meetingsRef.current += 1;
             metAtRef.current = now;
             audio.meet();
           }
         } else if (balls.length === 1 && metAtRef.current !== null) {
           if (now - metAtRef.current > RESET_DELAY_MS) {
             ballsRef.current = [];
+            bombRef.current = null;
             metAtRef.current = null;
             phaseRef.current = "menu";
             setPhase("menu");
           }
         }
 
+        if (blastAtRef.current !== null) {
+          if (now - blastAtRef.current > BLAST_DELAY_MS) {
+            blastAtRef.current = null;
+            blastPointRef.current = null;
+            phaseRef.current = "menu";
+            setPhase("menu");
+          }
+        }
+
         for (const b of ballsRef.current) drawBall(ctx, b);
+        if (bombRef.current) drawBomb(ctx, bombRef.current);
 
         if (metAtRef.current !== null) {
           drawMeetFlash(ctx, arena, mobile, (now - metAtRef.current) / 900);
+        }
+        if (blastAtRef.current !== null && blastPointRef.current) {
+          drawBlastFlash(
+            ctx,
+            arena,
+            mobile,
+            (now - blastAtRef.current) / BLAST_DELAY_MS,
+            blastPointRef.current,
+          );
         }
       }
 
