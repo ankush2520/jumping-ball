@@ -10,7 +10,7 @@ const HUD_MOBILE = 168;
 const BASE_SPEED = 150;
 const MAX_DT = 1 / 30;
 const SOUND_GAP_MS = 60;
-const RESET_DELAY_MS = 2600;
+const RESET_DELAY_MS = 5000;
 const INK = "#0f172a";
 const PAPER = "#f8fafc";
 const PLAIN = "#94a3b8";
@@ -101,16 +101,24 @@ function spawnBalls(arena: Arena): Ball[] {
 
 function getWallSegments(arena: Arena): WallSeg[] {
   const { x, y, size } = arena;
-  const vx = x + size * 0.5;
-  const hy = y + size * 0.5;
+  const at = (f: number) => x + size * f;
+  const up = (f: number) => y + size * f;
+  const vx = at(0.5);
+  const hy = up(0.5);
 
   return [
-    // vertical divider, small open gap through the middle
-    { x1: vx, y1: y, x2: vx, y2: y + size * 0.46 },
-    { x1: vx, y1: y + size * 0.54, x2: vx, y2: y + size },
-    // horizontal divider, small open gap on the left
-    { x1: x, y1: hy, x2: x + size * 0.16, y2: hy },
-    { x1: x + size * 0.24, y1: hy, x2: x + size, y2: hy },
+    // central cross, with a small open gap on each of its four arms
+    { x1: vx, y1: y, x2: vx, y2: up(0.13) },
+    { x1: vx, y1: up(0.28), x2: vx, y2: up(0.72) },
+    { x1: vx, y1: up(0.84), x2: vx, y2: y + size },
+    { x1: x, y1: hy, x2: at(0.25), y2: hy },
+    { x1: at(0.4), y1: hy, x2: at(0.74), y2: hy },
+    { x1: at(0.9), y1: hy, x2: x + size, y2: hy },
+    // one isolated decoy wall stub per quadrant
+    { x1: at(0.11), y1: up(0.23), x2: at(0.29), y2: up(0.23) },
+    { x1: at(0.72), y1: up(0.17), x2: at(0.72), y2: up(0.34) },
+    { x1: at(0.22), y1: up(0.72), x2: at(0.22), y2: up(0.94) },
+    { x1: at(0.68), y1: up(0.72), x2: at(0.89), y2: up(0.72) },
   ];
 }
 
@@ -391,33 +399,6 @@ function drawArena(
   }
 }
 
-function drawMenuPreview(ctx: CanvasRenderingContext2D, arena: Arena, t: number) {
-  const r = arena.size * 0.075;
-  const wobble = Math.sin(t * 0.9) * arena.size * 0.07;
-  const cx = arena.x + arena.size / 2;
-  const cy = arena.y + arena.size / 2;
-  const gap = r * 1.5;
-
-  drawBall(ctx, {
-    x: cx - gap - wobble * 0.3,
-    y: cy,
-    vx: 0,
-    vy: 0,
-    r,
-    kind: "yin",
-    glow: 0,
-  });
-  drawBall(ctx, {
-    x: cx + gap + wobble * 0.3,
-    y: cy,
-    vx: 0,
-    vy: 0,
-    r,
-    kind: "yang",
-    glow: 0,
-  });
-}
-
 function drawMeetFlash(
   ctx: CanvasRenderingContext2D,
   arena: Arena,
@@ -514,9 +495,7 @@ const YinYangBalls = () => {
       drawArena(ctx, arena, mobile, meetingsRef.current);
       drawWalls(ctx, arena, mobile);
 
-      if (phaseRef.current === "menu") {
-        drawMenuPreview(ctx, arena, now / 1000);
-      } else {
+      if (phaseRef.current === "playing") {
         const balls = ballsRef.current;
         const right = arena.x + arena.size;
         const bottom = arena.y + arena.size;
@@ -585,8 +564,10 @@ const YinYangBalls = () => {
           }
         } else if (balls.length === 1 && metAtRef.current !== null) {
           if (now - metAtRef.current > RESET_DELAY_MS) {
-            ballsRef.current = spawnBalls(arena);
+            ballsRef.current = [];
             metAtRef.current = null;
+            phaseRef.current = "menu";
+            setPhase("menu");
           }
         }
 
@@ -614,9 +595,6 @@ const YinYangBalls = () => {
 
       {phase === "menu" && (
         <div className="yy-menu">
-          <p className="yy-menu-sub">
-            Two halves bounce and search for each other
-          </p>
           <button type="button" className="yy-play-btn" onClick={startGame}>
             PLAY
           </button>
@@ -652,16 +630,6 @@ const YinYangBalls = () => {
           gap: 20px;
           pointer-events: none;
           padding: 0 24px;
-        }
-
-        .yy-menu-sub {
-          margin: 0;
-          font-family: Arial, Helvetica, sans-serif;
-          font-size: clamp(0.7rem, 2.2vw, 0.9rem);
-          font-weight: 600;
-          color: rgba(248, 250, 252, 0.55);
-          letter-spacing: 0.05em;
-          text-align: center;
         }
 
         .yy-play-btn {
