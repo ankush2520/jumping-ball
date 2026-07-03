@@ -555,6 +555,48 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
+  if (icon === "yin-yang-balls") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter id="yinyang-glow" x="-45%" y="-45%" width="190%" height="190%">
+            <feGaussianBlur stdDeviation="2.2" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <circle
+          cx="36"
+          cy="36"
+          r="20"
+          fill="#f8fafc"
+          filter="url(#yinyang-glow)"
+        />
+        <path
+          d="M36 16a20 20 0 0 1 0 40 10 10 0 0 1 0-20 10 10 0 0 0 0-20z"
+          fill="#0f172a"
+        />
+        <circle cx="36" cy="26" r="3.2" fill="#f8fafc" />
+        <circle cx="36" cy="46" r="3.2" fill="#0f172a" />
+        <circle
+          cx="36"
+          cy="36"
+          r="20"
+          stroke="rgba(148,163,184,0.5)"
+          strokeWidth="1.5"
+        />
+      </svg>
+    );
+  }
+
   return null;
 };
 
@@ -981,6 +1023,11 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
         .card-indigo {
           --card-rgb: 129, 140, 248;
           --card-rgb-soft: 167, 139, 250;
+        }
+
+        .card-slate {
+          --card-rgb: 203, 213, 225;
+          --card-rgb-soft: 100, 116, 139;
         }
 
         .launch-button::before {

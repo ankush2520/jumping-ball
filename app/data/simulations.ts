@@ -7,6 +7,7 @@ import MergingPerfectShape from "../components/games/merging-perfect-shape/Mergi
 import PlasmaBounce from "../components/games/kessler-effect/PlasmaBounce";
 import ShrinkingEscape from "../components/games/merging-squares/ShrinkingEscape";
 import SquareAssembly from "../components/games/interactive-square-shapes/SquareAssembly";
+import YinYangBalls from "../components/games/will-they-meet/YinYangBalls";
 
 export type SimulationStatus = "stable" | "experimental" | "coming-soon";
 
@@ -26,8 +27,9 @@ export type Simulation = {
     | "square-assembly"
     | "merging-perfect-shape"
     | "ball-in-pendulum-motion"
-    | "colliding-shapes";
-  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose" | "card-orange" | "card-blue" | "card-indigo";
+    | "colliding-shapes"
+    | "yin-yang-balls";
+  glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose" | "card-orange" | "card-blue" | "card-indigo" | "card-slate";
 };
 
 export const simulations: Simulation[] = [
@@ -107,6 +109,17 @@ export const simulations: Simulation[] = [
     accentColor: "#818cf8",
     icon: "colliding-shapes",
     glow: "card-indigo",
+  },
+  {
+    id: "yin-yang-balls",
+    title: "Will These Two Balls Ever Meet?",
+    subtitle: "YIN MEETS YANG",
+    description: "Two half-balls bounce around the arena and unite into a full yin-yang the moment they collide.",
+    component: YinYangBalls,
+    status: "experimental",
+    accentColor: "#cbd5e1",
+    icon: "yin-yang-balls",
+    glow: "card-slate",
   },
   {
     id: "plasma-bounce",
