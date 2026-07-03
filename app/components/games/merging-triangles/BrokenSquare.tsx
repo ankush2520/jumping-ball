@@ -1509,20 +1509,19 @@ const BrokenSquare = () => {
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 4px;
+          gap: 8px;
           background: rgba(2, 6, 23, 0.94);
           border: 1px solid rgba(168, 85, 247, 0.4);
-          border-radius: 12px;
-          padding: 8px 16px 6px;
+          border-radius: 14px;
+          padding: 12px 18px 14px;
           box-shadow: 0 8px 22px rgba(2, 6, 23, 0.5);
           backdrop-filter: blur(8px);
           pointer-events: all;
-          z-index: 10;
-          min-width: 220px;
+          min-width: 260px;
         }
 
         .scc-label {
-          font-size: 9px;
+          font-size: 10px;
           font-weight: 800;
           letter-spacing: 0.14em;
           text-transform: uppercase;
@@ -1532,28 +1531,59 @@ const BrokenSquare = () => {
         .scc-row {
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 10px;
           width: 100%;
         }
 
         .scc-num {
-          font-size: 10px;
+          font-size: 12px;
           font-weight: 700;
           color: rgba(248, 250, 252, 0.5);
-          min-width: 12px;
+          min-width: 14px;
           text-align: center;
         }
 
         .scc-slider {
           flex: 1;
-          height: 3px;
+          appearance: none;
+          -webkit-appearance: none;
+          height: 10px;
+          border-radius: 999px;
+          background: rgba(248, 250, 252, 0.15);
           accent-color: #a855f7;
           cursor: pointer;
-          background: transparent;
+        }
+
+        .scc-slider::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 26px;
+          height: 26px;
+          border-radius: 50%;
+          background: #a855f7;
+          border: 3px solid #f8fafc;
+          box-shadow: 0 2px 8px rgba(2, 6, 23, 0.55);
+          cursor: pointer;
+        }
+
+        .scc-slider::-moz-range-thumb {
+          width: 26px;
+          height: 26px;
+          border-radius: 50%;
+          background: #a855f7;
+          border: 3px solid #f8fafc;
+          box-shadow: 0 2px 8px rgba(2, 6, 23, 0.55);
+          cursor: pointer;
+        }
+
+        .scc-slider::-moz-range-track {
+          height: 10px;
+          border-radius: 999px;
+          background: rgba(248, 250, 252, 0.15);
         }
 
         .scc-value {
-          font-size: 10px;
+          font-size: 11px;
           font-weight: 600;
           color: rgba(248, 250, 252, 0.7);
           letter-spacing: 0.04em;
@@ -1561,8 +1591,10 @@ const BrokenSquare = () => {
 
         @media (max-width: 599px) {
           .scc-panel {
-            top: calc(78px + env(safe-area-inset-top, 0px));
+            top: calc(200px + env(safe-area-inset-top, 0px));
             right: 14px;
+            min-width: 220px;
+            padding: 10px 14px 12px;
           }
         }
 
