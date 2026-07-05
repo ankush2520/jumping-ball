@@ -87,7 +87,7 @@ const BODY_SPEED_RATIO = 0.32 * SPEED_SCALE;
 const CONNECTOR_TOLERANCE_RADIANS = (15 * Math.PI) / 180;
 const SAFFRON = "#28d0ea";
 const TRIANGLE_COLORS = [SAFFRON, SAFFRON, SAFFRON, SAFFRON];
-const SQUARE_SIZE_SCALE = 0.75 * 0.8 * 0.75; // reduced by 0.75x
+const SQUARE_SIZE_SCALE = 0.5;
 
 let sharedAudioContext: AudioContext | null = null;
 
@@ -1061,8 +1061,7 @@ const BrokenSquare = () => {
       const subDt = dt / PHYSICS_SUBSTEPS;
       const sc = squareCountRef.current;
       const isCountdown = !allowCollisionRef.current;
-      const countdownSpeed =
-        (getBodySpeed(arena, 1) * 4) / Math.pow(sc, 0.25);
+      const countdownSpeed = (getBodySpeed(arena, 1) * 4) / Math.pow(sc, 0.25);
 
       for (let step = 0; step < PHYSICS_SUBSTEPS; step += 1) {
         if (isCountdown) {
@@ -1234,10 +1233,10 @@ const BrokenSquare = () => {
         <div className="scc-panel">
           <span className="scc-label">SQUARE COUNT</span>
           <div className="scc-row">
-            <span className="scc-num">1</span>
+            <span className="scc-num">10</span>
             <input
               type="range"
-              min={1}
+              min={10}
               max={25}
               value={squareCount}
               onChange={(e) => setSquareCount(Number(e.target.value))}
@@ -1270,10 +1269,10 @@ const BrokenSquare = () => {
               {squareCount * 4} triangles
             </div>
             <div className="setup-slider-row">
-              <span className="setup-range-num">1</span>
+              <span className="setup-range-num">10</span>
               <input
                 type="range"
-                min={1}
+                min={10}
                 max={25}
                 value={squareCount}
                 onChange={(e) => setSquareCount(Number(e.target.value))}
