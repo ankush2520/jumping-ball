@@ -23,6 +23,7 @@ const FINISH_CLEAR_ROWS = 3;
 const START_CLEAR_ROWS = 2.4;
 const RACE_END_GRACE_MS = 6000;
 const COUNTDOWN_MS = 3000;
+const CAMERA_ZOOM_OUT = 2; // >1 shows more of the course around the arena center
 
 const BALL_DEFS = [
   { name: "Red", hue: 0 },
@@ -112,10 +113,10 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
   const H = Math.round(window.visualViewport?.height ?? window.innerHeight);
   const mobile = W < 600;
   const hudH = mobile ? HUD_MOBILE : HUD_DESKTOP;
-  const pad = mobile ? 16 : 24;
+  const pad = mobile ? 0 : 24;
   const maxWidth = mobile ? Infinity : 520;
   const width = Math.min(W - pad * 2, maxWidth);
-  const height = Math.max(240, H - hudH - pad);
+  const height = Math.max(240, H - hudH - (mobile ? 0 : pad));
   const x = Math.round((W - width) / 2);
   const y = hudH;
 
@@ -569,21 +570,8 @@ function drawCorridor(
   ctx: CanvasRenderingContext2D,
   arena: Arena,
   camY: number,
-  mobile: boolean,
 ) {
   const { x, y, width, height } = arena;
-  ctx.save();
-  ctx.shadowColor = "rgba(100, 160, 255, 0.28)";
-  ctx.shadowBlur = 18;
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.7)";
-  ctx.lineWidth = mobile ? 1.5 : 2;
-  ctx.beginPath();
-  ctx.moveTo(x, y);
-  ctx.lineTo(x, y + height);
-  ctx.moveTo(x + width, y);
-  ctx.lineTo(x + width, y + height);
-  ctx.stroke();
-  ctx.restore();
 
   ctx.save();
   ctx.strokeStyle = "rgba(226, 232, 240, 0.05)";
@@ -815,7 +803,7 @@ const CollidingShapes = () => {
   const [standings, setStandings] = useState<Ball[]>([]);
 
   const buildRace = useCallback((arena: Arena) => {
-    const ballR = arena.width * 0.048;
+    const ballR = arena.width * 0.048 * 0.7;
     courseRef.current = generateCourse(arena, ballR);
     ballsRef.current = spawnBalls(arena, ballR);
     particlesRef.current = [];
@@ -982,7 +970,16 @@ const CollidingShapes = () => {
       }
 
       const camY = cameraRef.current;
-      drawCorridor(ctx, arena, camY, mobile);
+      const zoomScale = 1 / CAMERA_ZOOM_OUT;
+      const pivotX = arena.x + arena.width / 2;
+      const pivotY = arena.y + arena.height / 2;
+
+      ctx.save();
+      ctx.translate(pivotX, pivotY);
+      ctx.scale(zoomScale, zoomScale);
+      ctx.translate(-pivotX, -pivotY);
+
+      drawCorridor(ctx, arena, camY);
 
       if (phaseNow !== "menu") {
         drawObstacles(ctx, course, camY, arena.y, arena.height);
@@ -1004,6 +1001,8 @@ const CollidingShapes = () => {
       if (phaseNow === "racing" || phaseNow === "finished") {
         drawParticles(ctx, particlesRef.current, camY, arena.y);
       }
+
+      ctx.restore();
 
       drawHud(
         ctx,
