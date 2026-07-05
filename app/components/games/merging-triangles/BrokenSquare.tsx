@@ -1061,7 +1061,8 @@ const BrokenSquare = () => {
       const subDt = dt / PHYSICS_SUBSTEPS;
       const sc = squareCountRef.current;
       const isCountdown = !allowCollisionRef.current;
-      const countdownSpeed = getBodySpeed(arena, 1) * 5;
+      const countdownSpeed =
+        (getBodySpeed(arena, 1) * 4) / Math.pow(sc, 0.25);
 
       for (let step = 0; step < PHYSICS_SUBSTEPS; step += 1) {
         if (isCountdown) {
