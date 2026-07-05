@@ -34,6 +34,17 @@ export type Simulation = {
 
 export const simulations: Simulation[] = [
   {
+    id: "colliding-shapes",
+    title: "Ball Race",
+    subtitle: "ARENA SPEED RACE",
+    description: "Colorful balls race around the arena, bouncing off walls and crashing into each other.",
+    component: CollidingShapes,
+    status: "experimental",
+    accentColor: "#818cf8",
+    icon: "colliding-shapes",
+    glow: "card-indigo",
+  },
+  {
     id: "broken-square",
     title: "Merging Triangles",
     subtitle: "TRIANGLE MERGE",
@@ -98,17 +109,6 @@ export const simulations: Simulation[] = [
     accentColor: "#f59e0b",
     icon: "shrinking-escape",
     glow: "card-amber",
-  },
-  {
-    id: "colliding-shapes",
-    title: "Colliding Shapes",
-    subtitle: "COLLISION ARENA",
-    description: "Watch colorful shapes bounce off the walls and collide with each other inside the arena.",
-    component: CollidingShapes,
-    status: "experimental",
-    accentColor: "#818cf8",
-    icon: "colliding-shapes",
-    glow: "card-indigo",
   },
   {
     id: "yin-yang-balls",
