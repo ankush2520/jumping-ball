@@ -11,8 +11,8 @@ const MAX_DT = 1 / 30;
 const SUBSTEPS = 5;
 const SOUND_GAP_MS = 55;
 
-const GRAVITY_K = 3.1; // px/s² per px of corridor width
-const MAX_FALL_K = 2.85; // px/s cap per px of corridor width
+const GRAVITY_K = 0.75; // px/s² per px of corridor width
+const MAX_FALL_K = 1.85; // px/s cap per px of corridor width
 const WALL_RESTITUTION = 0.92;
 const OBSTACLE_RESTITUTION = 0.7;
 const BALL_RESTITUTION = 0.82;
@@ -103,7 +103,10 @@ type RaceAudio = {
 
 // ─── Canvas / Arena ───────────────────────────────────────────────────────────
 
-function resizeCanvas(canvas: HTMLCanvasElement): { arena: Arena; dpr: number } {
+function resizeCanvas(canvas: HTMLCanvasElement): {
+  arena: Arena;
+  dpr: number;
+} {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const W = Math.round(window.visualViewport?.width ?? window.innerWidth);
   const H = Math.round(window.visualViewport?.height ?? window.innerHeight);
@@ -157,10 +160,7 @@ function generateCourse(arena: Arena, ballR: number): Course {
       continue;
     }
 
-    const gap = Math.max(
-      ballR * 5.2,
-      ballR * (6.6 - (row / TOTAL_ROWS) * 1.2),
-    );
+    const gap = Math.max(ballR * 5.2, ballR * (6.6 - (row / TOTAL_ROWS) * 1.2));
     const template = TEMPLATES[Math.floor(Math.random() * TEMPLATES.length)];
 
     if (template === "funnel") {
@@ -781,7 +781,8 @@ function drawCountdown(
 ) {
   const cx = arena.x + arena.width / 2;
   const cy = arena.y + arena.height * 0.35;
-  const label = remainingMs > 700 ? String(Math.ceil(remainingMs / 1000)) : "GO!";
+  const label =
+    remainingMs > 700 ? String(Math.ceil(remainingMs / 1000)) : "GO!";
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -954,7 +955,8 @@ const CollidingShapes = () => {
         const anchor = arena.height * 0.34;
         const target = leaderY - anchor;
         const desired = Math.max(cameraRef.current, target);
-        cameraRef.current += (desired - cameraRef.current) * Math.min(1, dt * 6);
+        cameraRef.current +=
+          (desired - cameraRef.current) * Math.min(1, dt * 6);
 
         const allDone = finishOrderRef.current.length === balls.length;
         if (
@@ -1057,7 +1059,13 @@ const CollidingShapes = () => {
               {standings.map((b, i) => (
                 <div className="cr-standing-row" key={b.id}>
                   <span className="cr-standing-medal">
-                    {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`}
+                    {i === 0
+                      ? "🥇"
+                      : i === 1
+                        ? "🥈"
+                        : i === 2
+                          ? "🥉"
+                          : `${i + 1}.`}
                   </span>
                   <span
                     className="cr-standing-dot"
