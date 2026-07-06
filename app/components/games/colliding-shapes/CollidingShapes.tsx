@@ -16,14 +16,17 @@ const MAX_FALL_K = 1.85; // px/s cap per px of corridor width
 const WALL_RESTITUTION = 0.92;
 const OBSTACLE_RESTITUTION = 0.7;
 const BALL_RESTITUTION = 0.82;
-const ANTI_STALL_SECS = 0.55;
+const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait out a closed gate
 
-const TOTAL_ROWS = 22;
-const FINISH_CLEAR_ROWS = 3;
-const START_CLEAR_ROWS = 2.4;
 const RACE_END_GRACE_MS = 6000;
 const COUNTDOWN_MS = 3000;
 const CAMERA_ZOOM_OUT = 2; // >1 shows more of the course around the arena center
+
+const GATE_PERIOD_SEC = 1; // closed 1s / open 1s, repeating
+const PADDLE_KICK_K = 1.05; // × arena.width upward kick on paddle contact
+const ROTATOR_SPEED = 1.9; // rad/s
+const ROTATOR_FLING_K = 0.55; // fraction of the spinning bar's tip speed added to the ball
+const PLATFORM_OPEN_MS = 450;
 
 const BALL_DEFS = [
   { name: "Red", hue: 0 },
@@ -52,7 +55,6 @@ type Ball = {
   rank: number | null;
   stuckTimer: number;
   maxY: number;
-  visitedBoosts: Set<number>;
 };
 
 type Slat = {
@@ -64,14 +66,50 @@ type Slat = {
   thickness: number;
 };
 
-type Peg = { id: number; x: number; y: number; r: number };
+type Paddle = {
+  id: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  thickness: number;
+};
 
-type Boost = { id: number; x: number; y: number; w: number; h: number };
+type Rotator = {
+  id: number;
+  cx: number;
+  cy: number;
+  length: number;
+  thickness: number;
+  speed: number;
+  angle0: number;
+};
+
+type Gate = {
+  id: number;
+  shape: "bowl" | "flat";
+  segments: Slat[];
+};
+
+type TrapCup = {
+  id: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  sendToY: number;
+};
+
+type PlatformHalf = { x: number; y: number; w: number; h: number };
+type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
 
 type Course = {
   slats: Slat[];
-  pegs: Peg[];
-  boosts: Boost[];
+  paddles: Paddle[];
+  rotators: Rotator[];
+  gates: Gate[];
+  traps: TrapCup[];
+  platform: StartPlatform;
   finishY: number;
 };
 
@@ -97,7 +135,7 @@ type Arena = {
 type RaceAudio = {
   unlock: () => void;
   hit: (hue: number) => void;
-  boost: () => void;
+  penalty: () => void;
   win: () => void;
   dispose: () => void;
 };
@@ -135,152 +173,245 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
 }
 
 // ─── Course generation ────────────────────────────────────────────────────────
+//
+// Fixed 3-level layout (each level is one screen-height tall):
+//   start platform (opens at GO)
+//   level 1 — funnel walls
+//   level 2 — timed bowl gate, funnels, ping-pong paddles, a rotator pair
+//   level 3 — send-back trap, maze walls, a rotator, a timed flat gate, maze, finish
+//
 
-type Template = "funnel" | "gap" | "zigzag" | "pegs" | "gate";
-const TEMPLATES: Template[] = ["funnel", "gap", "zigzag", "pegs", "gate"];
+function buildStartPlatform(arena: Arena, ballR: number): StartPlatform {
+  const width = arena.width;
+  const left = arena.x;
+  const y = ballR * 7.4;
+  const h = ballR * 1.6;
+  const gap = width * 0.14;
+  const halfW = (width - gap) / 2;
+  return {
+    left: { x: left, y, w: halfW, h },
+    right: { x: left + halfW + gap, y, w: halfW, h },
+  };
+}
 
 function generateCourse(arena: Arena, ballR: number): Course {
   const width = arena.width;
   const left = arena.x;
-  const rowH = ballR * 10.2;
+  const right = arena.x + width;
+  const thickness = ballR * 0.62;
+  const levelH = arena.height;
+
+  const platform = buildStartPlatform(arena, ballR);
+  const level1Y0 = platform.left.y + platform.left.h + ballR * 3;
+  const level2Y0 = level1Y0 + levelH;
+  const level3Y0 = level2Y0 + levelH;
+  const level3End = level3Y0 + levelH;
+  const finishY = level3End + ballR * 12;
+
   const slats: Slat[] = [];
-  const pegs: Peg[] = [];
-  const boosts: Boost[] = [];
+  const paddles: Paddle[] = [];
+  const rotators: Rotator[] = [];
+  const gates: Gate[] = [];
+  const traps: TrapCup[] = [];
   let sid = 0;
+  let rid = 0;
+  let gid = 0;
+  let tid = 0;
   let pid = 0;
-  let bid = 0;
-  const thickness = ballR * 0.58;
-  const startY = ballR * 10 * START_CLEAR_ROWS;
 
-  for (let row = 0; row < TOTAL_ROWS; row++) {
-    const topY = startY + row * rowH;
+  const addFunnel = (topY: number, rowH: number) => {
+    const gap = ballR * (5.6 + Math.random() * 1.2);
+    const centerX = left + width * (0.38 + Math.random() * 0.24);
+    const midY = topY + rowH * 0.6;
+    slats.push({
+      id: sid++,
+      x1: left + width * 0.05,
+      y1: topY,
+      x2: centerX - gap / 2,
+      y2: midY,
+      thickness,
+    });
+    slats.push({
+      id: sid++,
+      x1: right - width * 0.05,
+      y1: topY,
+      x2: centerX + gap / 2,
+      y2: midY,
+      thickness,
+    });
+  };
+
+  const addZigzag = (topY: number, rowH: number) => {
+    const len = width * (0.42 + Math.random() * 0.18);
+    const startX = left + Math.random() * (width - len);
+    const tilt = (Math.random() - 0.5) * rowH * 0.7;
     const midY = topY + rowH * 0.55;
+    slats.push({
+      id: sid++,
+      x1: startX,
+      y1: midY - tilt,
+      x2: startX + len,
+      y2: midY + tilt,
+      thickness,
+    });
+  };
 
-    if (row < 2) {
-      pegs.push({ id: pid++, x: left + width * 0.5, y: midY, r: ballR * 0.5 });
-      continue;
+  const addBowlGate = (cy: number) => {
+    const cx = left + width / 2;
+    const radius = width / 2 - ballR * 0.3;
+    const segCount = 8;
+    const points: { x: number; y: number }[] = [];
+    for (let i = 0; i <= segCount; i++) {
+      const t = (i / segCount) * Math.PI;
+      points.push({
+        x: cx - Math.cos(t) * radius,
+        y: cy + Math.sin(t) * radius * 0.28,
+      });
     }
-
-    const gap = Math.max(ballR * 5.2, ballR * (6.6 - (row / TOTAL_ROWS) * 1.2));
-    const template = TEMPLATES[Math.floor(Math.random() * TEMPLATES.length)];
-
-    if (template === "funnel") {
-      const centerX = left + width * (0.35 + Math.random() * 0.3);
-      slats.push({
-        id: sid++,
-        x1: left + width * 0.05,
-        y1: topY,
-        x2: centerX - gap / 2,
-        y2: midY,
-        thickness,
-      });
-      slats.push({
-        id: sid++,
-        x1: left + width * 0.95,
-        y1: topY,
-        x2: centerX + gap / 2,
-        y2: midY,
-        thickness,
-      });
-    } else if (template === "gap") {
-      const openLeft = Math.random() < 0.5;
-      const wobble = (Math.random() - 0.5) * rowH * 0.3;
-      if (openLeft) {
-        slats.push({
-          id: sid++,
-          x1: left + width - 6,
-          y1: midY - wobble,
-          x2: left + gap,
-          y2: midY + wobble,
-          thickness,
-        });
-      } else {
-        slats.push({
-          id: sid++,
-          x1: left + 6,
-          y1: midY - wobble,
-          x2: left + width - gap,
-          y2: midY + wobble,
-          thickness,
-        });
-      }
-    } else if (template === "zigzag") {
-      const len = width * (0.4 + Math.random() * 0.2);
-      const startX = left + Math.random() * (width - len);
-      const tilt = (Math.random() - 0.5) * rowH * 0.7;
-      slats.push({
-        id: sid++,
-        x1: startX,
-        y1: midY - tilt,
-        x2: startX + len,
-        y2: midY + tilt,
-        thickness,
-      });
-    } else if (template === "pegs") {
-      const count = 3 + Math.floor(Math.random() * 3);
-      for (let i = 0; i < count; i++) {
-        pegs.push({
-          id: pid++,
-          x: left + width * (0.12 + Math.random() * 0.76),
-          y: topY + rowH * (0.2 + Math.random() * 0.6),
-          r: ballR * 0.52,
-        });
-      }
-    } else {
-      slats.push({
-        id: sid++,
-        x1: left + 6,
-        y1: midY,
-        x2: left + width * 0.28,
-        y2: midY,
-        thickness,
-      });
-      slats.push({
-        id: sid++,
-        x1: left + width - 6,
-        y1: midY,
-        x2: left + width * 0.72,
-        y2: midY,
+    const segments: Slat[] = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      segments.push({
+        id: i,
+        x1: points[i].x,
+        y1: points[i].y,
+        x2: points[i + 1].x,
+        y2: points[i + 1].y,
         thickness,
       });
     }
+    gates.push({ id: gid++, shape: "bowl", segments });
+  };
 
-    if (row % 9 === 4) {
-      boosts.push({
-        id: bid++,
-        x: left + width * 0.5 - width * 0.09,
-        y: topY + rowH * 0.6,
-        w: width * 0.18,
-        h: ballR * 1.5,
-      });
-    }
+  const addFlatGate = (cy: number) => {
+    gates.push({
+      id: gid++,
+      shape: "flat",
+      segments: [
+        { id: 0, x1: left + 4, y1: cy, x2: right - 4, y2: cy, thickness },
+      ],
+    });
+  };
+
+  const addPaddlePair = (cy: number) => {
+    const span = width * 0.34;
+    const paddleThickness = thickness * 1.3;
+    paddles.push({
+      id: pid++,
+      x1: left + width * 0.08,
+      y1: cy + span * 0.16,
+      x2: left + width * 0.08 + span,
+      y2: cy - span * 0.16,
+      thickness: paddleThickness,
+    });
+    paddles.push({
+      id: pid++,
+      x1: right - width * 0.08,
+      y1: cy + span * 0.16,
+      x2: right - width * 0.08 - span,
+      y2: cy - span * 0.16,
+      thickness: paddleThickness,
+    });
+  };
+
+  const addRotatorPair = (cy: number) => {
+    const length = width * 0.24;
+    rotators.push({
+      id: rid++,
+      cx: left + width * 0.3,
+      cy,
+      length,
+      thickness,
+      speed: ROTATOR_SPEED,
+      angle0: 0,
+    });
+    rotators.push({
+      id: rid++,
+      cx: left + width * 0.7,
+      cy,
+      length,
+      thickness,
+      speed: -ROTATOR_SPEED,
+      angle0: Math.PI / 2,
+    });
+  };
+
+  const addRotatorSingle = (cy: number) => {
+    rotators.push({
+      id: rid++,
+      cx: left + width * 0.5,
+      cy,
+      length: width * 0.3,
+      thickness,
+      speed: ROTATOR_SPEED * 0.9,
+      angle0: 0,
+    });
+  };
+
+  const addTrap = (cy: number) => {
+    traps.push({
+      id: tid++,
+      x: left + width * 0.08,
+      y: cy,
+      w: width * 0.22,
+      h: ballR * 3,
+      sendToY: level2Y0 + ballR * 6,
+    });
+  };
+
+  // Level 1 — funnels
+  const level1RowH = levelH / 5;
+  for (let i = 0; i < 5; i++) {
+    addFunnel(level1Y0 + i * level1RowH, level1RowH * 0.7);
   }
 
-  const finishY = startY + TOTAL_ROWS * rowH + rowH * FINISH_CLEAR_ROWS;
-  return { slats, pegs, boosts, finishY };
+  // Level 2 — timed bowl gate, funnels, paddles, rotators
+  addBowlGate(level2Y0 + levelH * 0.07);
+  addFunnel(level2Y0 + levelH * 0.22, levelH * 0.12);
+  addFunnel(level2Y0 + levelH * 0.36, levelH * 0.12);
+  addPaddlePair(level2Y0 + levelH * 0.55);
+  addRotatorPair(level2Y0 + levelH * 0.76);
+
+  // Level 3 — send-back trap, maze, rotator, timed flat gate, maze, finish
+  addTrap(level3Y0 + levelH * 0.06);
+  addZigzag(level3Y0 + levelH * 0.18, levelH * 0.12);
+  addZigzag(level3Y0 + levelH * 0.3, levelH * 0.12);
+  addRotatorSingle(level3Y0 + levelH * 0.44);
+  addFlatGate(level3Y0 + levelH * 0.56);
+  addZigzag(level3Y0 + levelH * 0.7, levelH * 0.12);
+  addFunnel(level3Y0 + levelH * 0.84, levelH * 0.12);
+
+  return { slats, paddles, rotators, gates, traps, platform, finishY };
 }
 
-function spawnBalls(arena: Arena, ballR: number): Ball[] {
-  const fractions = [0.1, 0.26, 0.42, 0.58, 0.74, 0.9];
-  return BALL_DEFS.map((def, i) => {
-    const y = ballR * 6 + Math.random() * ballR * 2;
-    return {
-      id: i,
-      name: def.name,
-      hue: def.hue,
-      x: arena.x + arena.width * fractions[i],
-      y,
-      vx: 0,
-      vy: 0,
-      r: ballR,
-      glow: 0,
-      finished: false,
-      rank: null,
-      stuckTimer: 0,
-      maxY: y,
-      visitedBoosts: new Set<number>(),
-    };
-  });
+function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
+  const leftXs = [0.22, 0.5, 0.78].map(
+    (f) => platform.left.x + platform.left.w * f,
+  );
+  const rightXs = [0.22, 0.5, 0.78].map(
+    (f) => platform.right.x + platform.right.w * f,
+  );
+  const xs = [...leftXs, ...rightXs];
+  const y = platform.left.y - ballR * 1.3;
+  return BALL_DEFS.map((def, i) => ({
+    id: i,
+    name: def.name,
+    hue: def.hue,
+    x: xs[i],
+    y,
+    vx: 0,
+    vy: 0,
+    r: ballR,
+    glow: 0,
+    finished: false,
+    rank: null,
+    stuckTimer: 0,
+    maxY: y,
+  }));
+}
+
+function gateIsClosed(elapsed: number): boolean {
+  const cycle = elapsed % (GATE_PERIOD_SEC * 2);
+  return cycle < GATE_PERIOD_SEC;
 }
 
 // ─── Collision helpers ────────────────────────────────────────────────────────
@@ -301,25 +432,6 @@ function resolveWalls(
     ball.vx = -Math.abs(ball.vx) * WALL_RESTITUTION;
     audio.hit(ball.hue);
   }
-}
-
-function resolvePeg(ball: Ball, peg: Peg, audio: RaceAudio) {
-  const dx = ball.x - peg.x;
-  const dy = ball.y - peg.y;
-  const dist = Math.hypot(dx, dy);
-  const min = ball.r + peg.r;
-  if (dist >= min || dist === 0) return;
-  const nx = dx / dist;
-  const ny = dy / dist;
-  ball.x += nx * (min - dist);
-  ball.y += ny * (min - dist);
-  const vn = ball.vx * nx + ball.vy * ny;
-  if (vn < 0) {
-    ball.vx -= (1 + OBSTACLE_RESTITUTION) * vn * nx;
-    ball.vy -= (1 + OBSTACLE_RESTITUTION) * vn * ny;
-  }
-  ball.glow = 0.3;
-  audio.hit(ball.hue);
 }
 
 function resolveSlat(ball: Ball, slat: Slat, audio: RaceAudio) {
@@ -348,6 +460,82 @@ function resolveSlat(ball: Ball, slat: Slat, audio: RaceAudio) {
     ball.vy *= 0.99;
   }
   ball.glow = 0.3;
+  audio.hit(ball.hue);
+}
+
+function resolvePaddle(
+  ball: Ball,
+  paddle: Paddle,
+  kick: number,
+  audio: RaceAudio,
+) {
+  const { x1, y1, x2, y2, thickness } = paddle;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy || 1;
+  let t = ((ball.x - x1) * dx + (ball.y - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const px = x1 + t * dx;
+  const py = y1 + t * dy;
+  const ddx = ball.x - px;
+  const ddy = ball.y - py;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + thickness / 2;
+  if (dist >= min || dist === 0) return;
+  const nx = ddx / dist;
+  const ny = ddy / dist;
+  ball.x += nx * (min - dist);
+  ball.y += ny * (min - dist);
+  const vn = ball.vx * nx + ball.vy * ny;
+  if (vn < 0) {
+    ball.vx -= (1 + OBSTACLE_RESTITUTION) * vn * nx;
+    ball.vy -= (1 + OBSTACLE_RESTITUTION) * vn * ny;
+  }
+  ball.vy -= kick;
+  ball.glow = 0.4;
+  audio.hit(ball.hue);
+}
+
+function resolveRotator(
+  ball: Ball,
+  rotator: Rotator,
+  elapsed: number,
+  audio: RaceAudio,
+) {
+  const angle = rotator.angle0 + rotator.speed * elapsed;
+  const hx = Math.cos(angle) * (rotator.length / 2);
+  const hy = Math.sin(angle) * (rotator.length / 2);
+  const x1 = rotator.cx - hx;
+  const y1 = rotator.cy - hy;
+  const x2 = rotator.cx + hx;
+  const y2 = rotator.cy + hy;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy || 1;
+  let t = ((ball.x - x1) * dx + (ball.y - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const px = x1 + t * dx;
+  const py = y1 + t * dy;
+  const ddx = ball.x - px;
+  const ddy = ball.y - py;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + rotator.thickness / 2;
+  if (dist >= min || dist === 0) return;
+  const nx = ddx / dist;
+  const ny = ddy / dist;
+  ball.x += nx * (min - dist);
+  ball.y += ny * (min - dist);
+  const vn = ball.vx * nx + ball.vy * ny;
+  if (vn < 0) {
+    ball.vx -= (1 + OBSTACLE_RESTITUTION) * vn * nx;
+    ball.vy -= (1 + OBSTACLE_RESTITUTION) * vn * ny;
+  }
+  const s = (t - 0.5) * rotator.length;
+  const pointVx = -Math.sin(angle) * rotator.speed * s;
+  const pointVy = Math.cos(angle) * rotator.speed * s;
+  ball.vx += pointVx * ROTATOR_FLING_K;
+  ball.vy += pointVy * ROTATOR_FLING_K;
+  ball.glow = 0.4;
   audio.hit(ball.hue);
 }
 
@@ -522,7 +710,7 @@ function createAudio(): RaceAudio {
       ensure();
     },
     hit: (hue: number) => ping(220 + hue * 0.5, 0.075),
-    boost: () => sweep(260, 900, 0.28, 0.16),
+    penalty: () => sweep(520, 160, 0.24, 0.18),
     win: () => {
       sweep(440, 880, 0.18, 0.18);
       timeouts.push(window.setTimeout(() => ping(660, 0.16, false), 120));
@@ -538,24 +726,6 @@ function createAudio(): RaceAudio {
 }
 
 // ─── Drawing ──────────────────────────────────────────────────────────────────
-
-function roundedRectPath(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  r: number,
-) {
-  const rr = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
-}
 
 function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
   ctx.clearRect(0, 0, W, H);
@@ -595,9 +765,10 @@ function drawObstacles(
   camY: number,
   arenaY: number,
   viewH: number,
+  elapsed: number,
 ) {
-  const top = camY - 60;
-  const bottom = camY + viewH + 60;
+  const top = camY - 80;
+  const bottom = camY + viewH + 80;
 
   ctx.save();
   ctx.strokeStyle = "rgba(148, 163, 184, 0.85)";
@@ -616,29 +787,108 @@ function drawObstacles(
   ctx.restore();
 
   ctx.save();
-  for (const p of course.pegs) {
-    if (p.y < top || p.y > bottom) continue;
+  ctx.strokeStyle = "#34d399";
+  ctx.shadowColor = "rgba(52, 211, 153, 0.75)";
+  ctx.shadowBlur = 14;
+  ctx.lineCap = "round";
+  for (const p of course.paddles) {
+    if (p.y1 < top && p.y2 < top) continue;
+    if (p.y1 > bottom && p.y2 > bottom) continue;
+    ctx.lineWidth = p.thickness;
     ctx.beginPath();
-    ctx.arc(p.x, p.y - camY + arenaY, p.r, 0, Math.PI * 2);
-    ctx.fillStyle = "#fbbf24";
-    ctx.shadowColor = "rgba(251, 191, 36, 0.6)";
-    ctx.shadowBlur = 10;
-    ctx.fill();
+    ctx.moveTo(p.x1, p.y1 - camY + arenaY);
+    ctx.lineTo(p.x2, p.y2 - camY + arenaY);
+    ctx.stroke();
   }
   ctx.restore();
 
   ctx.save();
-  const t = performance.now() / 300;
-  for (const b of course.boosts) {
-    if (b.y < top || b.y > bottom) continue;
-    const alpha = 0.35 + Math.sin(t + b.id) * 0.15;
-    ctx.globalAlpha = Math.max(0.2, alpha);
-    ctx.fillStyle = "#22d3ee";
-    ctx.shadowColor = "rgba(34, 211, 238, 0.7)";
-    ctx.shadowBlur = 16;
-    const sy = b.y - camY + arenaY;
-    roundedRectPath(ctx, b.x, sy, b.w, b.h, Math.min(b.h, b.w) * 0.4);
+  ctx.strokeStyle = "#fb7185";
+  ctx.shadowColor = "rgba(251, 113, 133, 0.8)";
+  ctx.shadowBlur = 14;
+  ctx.lineCap = "round";
+  for (const r of course.rotators) {
+    if (r.cy < top || r.cy > bottom) continue;
+    const angle = r.angle0 + r.speed * elapsed;
+    const hx = Math.cos(angle) * (r.length / 2);
+    const hy = Math.sin(angle) * (r.length / 2);
+    const scy = r.cy - camY + arenaY;
+    ctx.lineWidth = r.thickness;
+    ctx.beginPath();
+    ctx.moveTo(r.cx - hx, scy - hy);
+    ctx.lineTo(r.cx + hx, scy + hy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(r.cx, scy, r.thickness * 0.55, 0, Math.PI * 2);
+    ctx.fillStyle = "#fb7185";
     ctx.fill();
+  }
+  ctx.restore();
+
+  const closed = gateIsClosed(elapsed);
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const g of course.gates) {
+    const segTop = Math.min(...g.segments.map((s) => Math.min(s.y1, s.y2)));
+    const segBottom = Math.max(...g.segments.map((s) => Math.max(s.y1, s.y2)));
+    if (segBottom < top || segTop > bottom) continue;
+    ctx.strokeStyle = closed ? "#facc15" : "rgba(250, 204, 21, 0.25)";
+    ctx.shadowColor = closed
+      ? "rgba(250, 204, 21, 0.7)"
+      : "rgba(250, 204, 21, 0.15)";
+    ctx.shadowBlur = closed ? 12 : 4;
+    for (const seg of g.segments) {
+      ctx.lineWidth = seg.thickness;
+      ctx.beginPath();
+      ctx.moveTo(seg.x1, seg.y1 - camY + arenaY);
+      ctx.lineTo(seg.x2, seg.y2 - camY + arenaY);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = "#f87171";
+  ctx.shadowColor = "rgba(248, 113, 113, 0.6)";
+  ctx.shadowBlur = 10;
+  ctx.lineWidth = 2;
+  for (const tr of course.traps) {
+    if (tr.y < top || tr.y > bottom) continue;
+    const sy = tr.y - camY + arenaY;
+    ctx.beginPath();
+    ctx.moveTo(tr.x, sy);
+    ctx.quadraticCurveTo(tr.x + tr.w / 2, sy + tr.h * 1.3, tr.x + tr.w, sy);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawStartPlatform(
+  ctx: CanvasRenderingContext2D,
+  platform: StartPlatform,
+  camY: number,
+  arenaY: number,
+  t: number,
+) {
+  const halves: { half: PlatformHalf; dir: -1 | 1 }[] = [
+    { half: platform.left, dir: -1 },
+    { half: platform.right, dir: 1 },
+  ];
+  ctx.save();
+  ctx.fillStyle = "#334155";
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.8)";
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "rgba(100, 160, 255, 0.3)";
+  ctx.shadowBlur = 10;
+  for (const { half, dir } of halves) {
+    const slideX = dir * t * half.w * 0.9;
+    const dropY = t * half.h * 6;
+    const sy = half.y - camY + arenaY + dropY;
+    ctx.globalAlpha = Math.max(0, 1 - t * 1.2);
+    ctx.beginPath();
+    ctx.rect(half.x + slideX, sy, half.w, half.h);
+    ctx.fill();
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -796,20 +1046,25 @@ const CollidingShapes = () => {
   const phaseRef = useRef<Phase>("menu");
   const cameraRef = useRef(0);
   const countdownEndAtRef = useRef<number | null>(null);
+  const raceStartAtRef = useRef<number | null>(null);
   const raceEndAtRef = useRef<number | null>(null);
   const finishOrderRef = useRef<Ball[]>([]);
+  const gateWasClosedRef = useRef(true);
 
   const [phase, setPhase] = useState<Phase>("menu");
   const [standings, setStandings] = useState<Ball[]>([]);
 
   const buildRace = useCallback((arena: Arena) => {
     const ballR = arena.width * 0.048 * 0.7;
-    courseRef.current = generateCourse(arena, ballR);
-    ballsRef.current = spawnBalls(arena, ballR);
+    const course = generateCourse(arena, ballR);
+    courseRef.current = course;
+    ballsRef.current = spawnBalls(course.platform, ballR);
     particlesRef.current = [];
     cameraRef.current = 0;
     finishOrderRef.current = [];
     raceEndAtRef.current = null;
+    raceStartAtRef.current = null;
+    gateWasClosedRef.current = true;
   }, []);
 
   const resizeOnly = useCallback(() => {
@@ -869,6 +1124,9 @@ const CollidingShapes = () => {
       const phaseNow = phaseRef.current;
       const course = courseRef.current;
       const balls = ballsRef.current;
+      const raceStartAt = raceStartAtRef.current;
+      const elapsedRaceSec =
+        raceStartAt !== null ? (now - raceStartAt) / 1000 : 0;
 
       drawBackground(ctx, W, H);
       drawCanvasWatermark(ctx, W, H);
@@ -883,9 +1141,13 @@ const CollidingShapes = () => {
         const right = arena.x + arena.width;
         const gravity = arena.width * GRAVITY_K;
         const maxFall = arena.width * MAX_FALL_K;
+        const paddleKick = arena.width * PADDLE_KICK_K;
         const subDt = dt / SUBSTEPS;
 
         for (let s = 0; s < SUBSTEPS; s++) {
+          const subElapsed = elapsedRaceSec + s * subDt;
+          const closed = gateIsClosed(subElapsed);
+
           for (const ball of balls) {
             if (ball.finished) continue;
             ball.vy = Math.min(ball.vy + gravity * subDt, maxFall);
@@ -893,8 +1155,20 @@ const CollidingShapes = () => {
             ball.y += ball.vy * subDt;
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
-            for (const peg of course.pegs) resolvePeg(ball, peg, audio);
             for (const slat of course.slats) resolveSlat(ball, slat, audio);
+            for (const paddle of course.paddles) {
+              resolvePaddle(ball, paddle, paddleKick, audio);
+            }
+            for (const rotator of course.rotators) {
+              resolveRotator(ball, rotator, subElapsed, audio);
+            }
+            if (closed) {
+              for (const gate of course.gates) {
+                for (const seg of gate.segments) {
+                  resolveSlat(ball, seg, audio);
+                }
+              }
+            }
           }
           for (let i = 0; i < balls.length; i++) {
             for (let j = i + 1; j < balls.length; j++) {
@@ -904,21 +1178,45 @@ const CollidingShapes = () => {
           }
         }
 
+        const gateClosedNow = gateIsClosed(elapsedRaceSec);
+        if (gateWasClosedRef.current && !gateClosedNow) {
+          // Gate just opened — give anything resting near it a shove so a
+          // pile-up of balls can never get permanently wedged in a bowl.
+          for (const ball of balls) {
+            if (ball.finished) continue;
+            for (const gate of course.gates) {
+              const gateTop = Math.min(
+                ...gate.segments.map((s) => Math.min(s.y1, s.y2)),
+              );
+              const gateBottom = Math.max(
+                ...gate.segments.map((s) => Math.max(s.y1, s.y2)),
+              );
+              if (
+                ball.y > gateTop - ball.r * 3 &&
+                ball.y < gateBottom + ball.r * 3
+              ) {
+                ball.vy += arena.width * 0.9;
+              }
+            }
+          }
+        }
+        gateWasClosedRef.current = gateClosedNow;
+
         for (const ball of balls) {
           if (ball.finished) continue;
-          for (const boost of course.boosts) {
-            if (ball.visitedBoosts.has(boost.id)) continue;
+          for (const trap of course.traps) {
             if (
-              ball.x > boost.x &&
-              ball.x < boost.x + boost.w &&
-              ball.y > boost.y &&
-              ball.y < boost.y + boost.h
+              ball.x > trap.x &&
+              ball.x < trap.x + trap.w &&
+              ball.y > trap.y &&
+              ball.y < trap.y + trap.h
             ) {
-              ball.vy += arena.width * 1.1;
-              ball.vx += (Math.random() - 0.5) * arena.width * 0.3;
-              ball.visitedBoosts.add(boost.id);
-              spawnBurst(particlesRef.current, ball.x, ball.y, ball.hue, 14);
-              audio.boost();
+              ball.y = trap.sendToY;
+              ball.vy = 0;
+              ball.vx = (Math.random() - 0.5) * arena.width * 0.15;
+              ball.maxY = ball.y;
+              spawnBurst(particlesRef.current, ball.x, trap.y + trap.h / 2, 0, 16);
+              audio.penalty();
             }
           }
           applyAntiStall(ball, dt);
@@ -982,8 +1280,24 @@ const CollidingShapes = () => {
       drawCorridor(ctx, arena, camY);
 
       if (phaseNow !== "menu") {
-        drawObstacles(ctx, course, camY, arena.y, arena.height);
+        drawObstacles(
+          ctx,
+          course,
+          camY,
+          arena.y,
+          arena.height,
+          elapsedRaceSec,
+        );
         drawFinishLine(ctx, course, arena, camY);
+      }
+
+      if (phaseNow === "countdown") {
+        drawStartPlatform(ctx, course.platform, camY, arena.y, 0);
+      } else if (phaseNow === "racing" && raceStartAt !== null) {
+        const openT = Math.min(1, (now - raceStartAt) / PLATFORM_OPEN_MS);
+        if (openT < 1) {
+          drawStartPlatform(ctx, course.platform, camY, arena.y, openT);
+        }
       }
 
       const leader =
@@ -1019,6 +1333,7 @@ const CollidingShapes = () => {
         if (remaining <= 0) {
           phaseRef.current = "racing";
           setPhase("racing");
+          raceStartAtRef.current = now;
           for (const ball of balls) {
             ball.vx = (Math.random() - 0.5) * arena.width * 0.22;
           }
