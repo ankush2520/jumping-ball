@@ -15,6 +15,7 @@ const GRAVITY_K = 0.45; // px/s² per px of corridor width
 const MAX_FALL_K = 1.85; // px/s cap per px of corridor width
 const WALL_RESTITUTION = 0.92;
 const BALL_RESTITUTION = 0.82;
+const PEG_RESTITUTION = 0.78;
 const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
 
 const RACE_END_GRACE_MS = 6000;
@@ -51,11 +52,19 @@ type Ball = {
   maxY: number;
 };
 
+type Peg = {
+  id: number;
+  x: number;
+  y: number;
+  r: number;
+};
+
 type PlatformHalf = { x: number; y: number; w: number; h: number };
 type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
 
 type Course = {
   platform: StartPlatform;
+  pegs: Peg[];
   finishY: number;
 };
 
@@ -137,6 +146,8 @@ function buildStartPlatform(arena: Arena, ballR: number): StartPlatform {
 }
 
 function generateCourse(arena: Arena, ballR: number): Course {
+  const width = arena.width;
+  const left = arena.x;
   const levelH = arena.height;
 
   const platform = buildStartPlatform(arena, ballR);
@@ -145,7 +156,42 @@ function generateCourse(arena: Arena, ballR: number): Course {
   // to be redesigned from scratch.
   const finishY = level1Y0 + levelH * 3 + ballR * 12;
 
-  return { platform, finishY };
+  const pegs: Peg[] = [];
+  let pgid = 0;
+
+  // A hex/brick peg pattern — full rows of pegs alternating with rows
+  // offset by half a spacing (one peg shorter), nested in the gaps above
+  // and below. Spacing between neighbors, row-to-row or peg-to-peg within
+  // a row, is 2x a ball's diameter.
+  //   *  *  *  *  *  *
+  //     *  *  *  *  *
+  //   *  *  *  *  *  *
+  //     *  *  *  *  *
+  const addPegField = (topY: number, span: number) => {
+    const ballSize = ballR * 2;
+    const spacing = ballSize * 2;
+    const pegR = ballR * 0.55 * 0.85;
+    const usable = width - ballR * 2;
+    const cols = Math.max(2, Math.floor(usable / spacing) + 1);
+    const gridW = (cols - 1) * spacing;
+    const baseX = left + (width - gridW) / 2;
+    const rows = Math.max(2, Math.round(span / spacing) + 1);
+    for (let row = 0; row < rows; row++) {
+      const y = topY + row * spacing;
+      const offsetRow = row % 2 === 1;
+      const rowCols = offsetRow ? cols - 1 : cols;
+      const startX = offsetRow ? baseX + spacing / 2 : baseX;
+      for (let c = 0; c < rowCols; c++) {
+        const x = startX + c * spacing;
+        pegs.push({ id: pgid++, x, y, r: pegR });
+      }
+    }
+  };
+
+  // Level 1 — pure Plinko pegs, edge-to-edge.
+  addPegField(level1Y0, levelH * 0.96);
+
+  return { platform, pegs, finishY };
 }
 
 function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
@@ -192,6 +238,26 @@ function resolveWalls(
     ball.vx = -Math.abs(ball.vx) * WALL_RESTITUTION;
     audio.hit(ball.hue);
   }
+}
+
+function resolvePeg(ball: Ball, peg: Peg, audio: RaceAudio) {
+  const ddx = ball.x - peg.x;
+  const ddy = ball.y - peg.y;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + peg.r;
+  if (dist >= min || dist === 0) return;
+  const nx = ddx / dist;
+  const ny = ddy / dist;
+  ball.x += nx * (min - dist);
+  ball.y += ny * (min - dist);
+  const vn = ball.vx * nx + ball.vy * ny;
+  if (vn < 0) {
+    ball.vx -= (1 + PEG_RESTITUTION) * vn * nx;
+    ball.vy -= (1 + PEG_RESTITUTION) * vn * ny;
+    ball.vx += (Math.random() - 0.5) * ball.r * 4;
+  }
+  ball.glow = 0.3;
+  audio.hit(ball.hue);
 }
 
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
@@ -410,6 +476,30 @@ function drawCorridor(
     ctx.moveTo(x + 6, sy);
     ctx.lineTo(x + width - 6, sy);
     ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawPegs(
+  ctx: CanvasRenderingContext2D,
+  pegs: Peg[],
+  camY: number,
+  arenaY: number,
+  viewH: number,
+) {
+  const top = camY - 80;
+  const bottom = camY + viewH + 80;
+
+  ctx.save();
+  for (const p of pegs) {
+    if (p.y < top || p.y > bottom) continue;
+    const sy = p.y - camY + arenaY;
+    ctx.beginPath();
+    ctx.arc(p.x, sy, p.r, 0, Math.PI * 2);
+    ctx.fillStyle = "#38bdf8";
+    ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+    ctx.shadowBlur = 10;
+    ctx.fill();
   }
   ctx.restore();
 }
@@ -702,6 +792,7 @@ const CollidingShapes = () => {
             ball.y += ball.vy * subDt;
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
+            for (const peg of course.pegs) resolvePeg(ball, peg, audio);
           }
           for (let i = 0; i < balls.length; i++) {
             for (let j = i + 1; j < balls.length; j++) {
@@ -766,6 +857,7 @@ const CollidingShapes = () => {
       drawCorridor(ctx, arena, camY);
 
       if (phaseNow !== "menu") {
+        drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
         drawFinishLine(ctx, course, arena, camY);
       }
 
