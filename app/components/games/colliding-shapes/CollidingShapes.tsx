@@ -20,13 +20,18 @@ const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait out a closed 
 
 const RACE_END_GRACE_MS = 6000;
 const COUNTDOWN_MS = 3000;
-const CAMERA_ZOOM_OUT = 2; // >1 shows more of the course around the arena center
+const START_SCREEN_FRACTION = 0.2; // where the start platform sits on screen (0 = top)
 
 const GATE_PERIOD_SEC = 1; // closed 1s / open 1s, repeating
 const PADDLE_KICK_K = 1.05; // × arena.width upward kick on paddle contact
 const ROTATOR_SPEED = 1.9; // rad/s
 const ROTATOR_FLING_K = 0.55; // fraction of the spinning bar's tip speed added to the ball
 const PLATFORM_OPEN_MS = 450;
+
+const PEG_RESTITUTION = 0.78;
+const BUMPER_RESTITUTION = 1.02; // >1 so bumpers ADD energy, pinball style
+const BUMPER_KICK_K = 0.55; // × arena.width impulse on bumper hit
+const CONVEYOR_PUSH_K = 0.9; // × arena.width sideways shove along a conveyor
 
 const BALL_DEFS = [
   { name: "Red", hue: 0 },
@@ -100,6 +105,31 @@ type TrapCup = {
   sendToY: number;
 };
 
+type Peg = {
+  id: number;
+  x: number;
+  y: number;
+  r: number;
+};
+
+type Bumper = {
+  id: number;
+  x: number;
+  y: number;
+  r: number;
+  flash: number; // 0..1 visual pulse, decays after a hit
+};
+
+type Conveyor = {
+  id: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  thickness: number;
+  dir: 1 | -1; // push direction along the segment (tail→head or head→tail)
+};
+
 type PlatformHalf = { x: number; y: number; w: number; h: number };
 type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
 
@@ -109,6 +139,9 @@ type Course = {
   rotators: Rotator[];
   gates: Gate[];
   traps: TrapCup[];
+  pegs: Peg[];
+  bumpers: Bumper[];
+  conveyors: Conveyor[];
   platform: StartPlatform;
   finishY: number;
 };
@@ -176,9 +209,11 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
 //
 // Fixed 3-level layout (each level is one screen-height tall):
 //   start platform (opens at GO)
-//   level 1 — funnel walls
-//   level 2 — timed bowl gate, funnels, ping-pong paddles, a rotator pair
-//   level 3 — send-back trap, maze walls, a rotator, a timed flat gate, maze, finish
+//   level 1 — "Pin Storm": funnels + staggered peg fields + a peg arc
+//   level 2 — "The Machine": timed bowl gate, bumper cluster, conveyor
+//     ramps, a rotator pair
+//   level 3 — "The Gauntlet": send-back trap, peg field, a rotator, a
+//     timed flat gate, a peg arc, bumper cluster into the finish
 //
 
 function buildStartPlatform(arena: Arena, ballR: number): StartPlatform {
@@ -213,11 +248,79 @@ function generateCourse(arena: Arena, ballR: number): Course {
   const rotators: Rotator[] = [];
   const gates: Gate[] = [];
   const traps: TrapCup[] = [];
+  const pegs: Peg[] = [];
+  const bumpers: Bumper[] = [];
+  const conveyors: Conveyor[] = [];
   let sid = 0;
   let rid = 0;
   let gid = 0;
   let tid = 0;
-  let pid = 0;
+  let pgid = 0;
+  let bid = 0;
+  let cid = 0;
+
+  // A staggered peg field — the classic Plinko scatter. Rows alternate offset
+  // so a ball can never fall straight through; every row nudges it sideways.
+  const addPegField = (topY: number, rows: number, rowGap: number) => {
+    const cols = 5;
+    const usable = width - ballR * 4;
+    const colGap = (usable / cols) * 1.25;
+    const pegR = ballR * 0.55 * 0.85;
+    for (let row = 0; row < rows; row++) {
+      const offset = row % 2 === 0 ? 0 : colGap / 2;
+      const y = topY + row * rowGap * 1.25;
+      for (let c = 0; c <= cols; c++) {
+        const x = left + ballR * 2 + c * colGap + offset;
+        if (x < left + pegR + 2 || x > right - pegR - 2) continue;
+        pegs.push({ id: pgid++, x, y, r: pegR });
+      }
+    }
+  };
+
+  // A ring/arc of pegs forming a soft curved deflector.
+  const addPegArc = (cx: number, cy: number, radius: number, count: number) => {
+    const pegR = ballR * 0.55 * 0.85;
+    for (let i = 0; i < count; i++) {
+      const t = Math.PI * (0.15 + (0.7 * i) / (count - 1));
+      pegs.push({
+        id: pgid++,
+        x: cx - Math.cos(t) * radius,
+        y: cy + Math.sin(t) * radius * 0.5,
+        r: pegR,
+      });
+    }
+  };
+
+  const addBumper = (x: number, y: number, r: number) => {
+    bumpers.push({ id: bid++, x, y, r, flash: 0 });
+  };
+
+  // Three bumpers in a triangle — a little pinball pocket.
+  const addBumperCluster = (cy: number) => {
+    const r = ballR * 1.15;
+    addBumper(left + width * 0.5, cy, r);
+    addBumper(left + width * 0.26, cy + r * 2.2, r);
+    addBumper(left + width * 0.74, cy + r * 2.2, r);
+  };
+
+  // Angled conveyor: a wall that shoves the ball along its length as it rolls.
+  const addConveyor = (
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    dir: 1 | -1,
+  ) => {
+    conveyors.push({
+      id: cid++,
+      x1,
+      y1,
+      x2,
+      y2,
+      thickness: thickness * 1.4,
+      dir,
+    });
+  };
 
   const addFunnel = (topY: number, rowH: number) => {
     const gap = ballR * (5.6 + Math.random() * 1.2);
@@ -237,21 +340,6 @@ function generateCourse(arena: Arena, ballR: number): Course {
       y1: topY,
       x2: centerX + gap / 2,
       y2: midY,
-      thickness,
-    });
-  };
-
-  const addZigzag = (topY: number, rowH: number) => {
-    const len = width * (0.42 + Math.random() * 0.18);
-    const startX = left + Math.random() * (width - len);
-    const tilt = (Math.random() - 0.5) * rowH * 0.7;
-    const midY = topY + rowH * 0.55;
-    slats.push({
-      id: sid++,
-      x1: startX,
-      y1: midY - tilt,
-      x2: startX + len,
-      y2: midY + tilt,
       thickness,
     });
   };
@@ -292,27 +380,6 @@ function generateCourse(arena: Arena, ballR: number): Course {
     });
   };
 
-  const addPaddlePair = (cy: number) => {
-    const span = width * 0.34;
-    const paddleThickness = thickness * 1.3;
-    paddles.push({
-      id: pid++,
-      x1: left + width * 0.08,
-      y1: cy + span * 0.16,
-      x2: left + width * 0.08 + span,
-      y2: cy - span * 0.16,
-      thickness: paddleThickness,
-    });
-    paddles.push({
-      id: pid++,
-      x1: right - width * 0.08,
-      y1: cy + span * 0.16,
-      x2: right - width * 0.08 - span,
-      y2: cy - span * 0.16,
-      thickness: paddleThickness,
-    });
-  };
-
   const addRotatorPair = (cy: number) => {
     const length = width * 0.24;
     rotators.push({
@@ -320,7 +387,7 @@ function generateCourse(arena: Arena, ballR: number): Course {
       cx: left + width * 0.3,
       cy,
       length,
-      thickness,
+      thickness: thickness * 1.4,
       speed: ROTATOR_SPEED,
       angle0: 0,
     });
@@ -329,7 +396,7 @@ function generateCourse(arena: Arena, ballR: number): Course {
       cx: left + width * 0.7,
       cy,
       length,
-      thickness,
+      thickness: thickness * 1.4,
       speed: -ROTATOR_SPEED,
       angle0: Math.PI / 2,
     });
@@ -340,8 +407,8 @@ function generateCourse(arena: Arena, ballR: number): Course {
       id: rid++,
       cx: left + width * 0.5,
       cy,
-      length: width * 0.3,
-      thickness,
+      length: width * 0.34,
+      thickness: thickness * 1.4,
       speed: ROTATOR_SPEED * 0.9,
       angle0: 0,
     });
@@ -358,29 +425,53 @@ function generateCourse(arena: Arena, ballR: number): Course {
     });
   };
 
-  // Level 1 — funnels
-  const level1RowH = levelH / 5;
-  for (let i = 0; i < 5; i++) {
-    addFunnel(level1Y0 + i * level1RowH, level1RowH * 0.7);
-  }
+  // Level 1 — "Pin Storm": dense Plinko scatter + funnels to reconverge.
+  addFunnel(level1Y0 + levelH * 0.02, levelH * 0.14);
+  addPegField(level1Y0 + levelH * 0.24, 6, ballR * 3.2);
+  addPegArc(left + width * 0.5, level1Y0 + levelH * 0.66, width * 0.42, 7);
+  addFunnel(level1Y0 + levelH * 0.78, levelH * 0.14);
 
-  // Level 2 — timed bowl gate, funnels, paddles, rotators
+  // Level 2 — "The Machine": bumper pocket, spinner gauntlet, timed bowl,
+  // conveyor ramps.
   addBowlGate(level2Y0 + levelH * 0.07);
-  addFunnel(level2Y0 + levelH * 0.22, levelH * 0.12);
-  addFunnel(level2Y0 + levelH * 0.36, levelH * 0.12);
-  addPaddlePair(level2Y0 + levelH * 0.55);
-  addRotatorPair(level2Y0 + levelH * 0.76);
+  addBumperCluster(level2Y0 + levelH * 0.24);
+  addConveyor(
+    left + width * 0.1,
+    level2Y0 + levelH * 0.44,
+    left + width * 0.6,
+    level2Y0 + levelH * 0.5,
+    1,
+  );
+  addConveyor(
+    right - width * 0.1,
+    level2Y0 + levelH * 0.56,
+    left + width * 0.4,
+    level2Y0 + levelH * 0.62,
+    -1,
+  );
+  addRotatorPair(level2Y0 + levelH * 0.78);
 
-  // Level 3 — send-back trap, maze, rotator, timed flat gate, maze, finish
+  // Level 3 — "The Gauntlet": send-back trap, peg maze, twin spinners, timed
+  // flat gate, bumper finale into the finish.
   addTrap(level3Y0 + levelH * 0.06);
-  addZigzag(level3Y0 + levelH * 0.18, levelH * 0.12);
-  addZigzag(level3Y0 + levelH * 0.3, levelH * 0.12);
-  addRotatorSingle(level3Y0 + levelH * 0.44);
-  addFlatGate(level3Y0 + levelH * 0.56);
-  addZigzag(level3Y0 + levelH * 0.7, levelH * 0.12);
-  addFunnel(level3Y0 + levelH * 0.84, levelH * 0.12);
+  addPegField(level3Y0 + levelH * 0.16, 4, ballR * 3.4);
+  addRotatorSingle(level3Y0 + levelH * 0.4);
+  addFlatGate(level3Y0 + levelH * 0.52);
+  addPegArc(left + width * 0.5, level3Y0 + levelH * 0.62, width * 0.4, 6);
+  addBumperCluster(level3Y0 + levelH * 0.78);
 
-  return { slats, paddles, rotators, gates, traps, platform, finishY };
+  return {
+    slats,
+    paddles,
+    rotators,
+    gates,
+    traps,
+    pegs,
+    bumpers,
+    conveyors,
+    platform,
+    finishY,
+  };
 }
 
 function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
@@ -537,6 +628,83 @@ function resolveRotator(
   ball.vy += pointVy * ROTATOR_FLING_K;
   ball.glow = 0.4;
   audio.hit(ball.hue);
+}
+
+function resolvePeg(ball: Ball, peg: Peg, audio: RaceAudio) {
+  const ddx = ball.x - peg.x;
+  const ddy = ball.y - peg.y;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + peg.r;
+  if (dist >= min || dist === 0) return;
+  const nx = ddx / dist;
+  const ny = ddy / dist;
+  ball.x += nx * (min - dist);
+  ball.y += ny * (min - dist);
+  const vn = ball.vx * nx + ball.vy * ny;
+  if (vn < 0) {
+    ball.vx -= (1 + PEG_RESTITUTION) * vn * nx;
+    ball.vy -= (1 + PEG_RESTITUTION) * vn * ny;
+    ball.vx += (Math.random() - 0.5) * ball.r * 4;
+  }
+  ball.glow = 0.3;
+  audio.hit(ball.hue);
+}
+
+function resolveBumper(
+  ball: Ball,
+  bumper: Bumper,
+  kick: number,
+  audio: RaceAudio,
+) {
+  const ddx = ball.x - bumper.x;
+  const ddy = ball.y - bumper.y;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + bumper.r;
+  if (dist >= min || dist === 0) return;
+  const nx = ddx / dist;
+  const ny = ddy / dist;
+  ball.x += nx * (min - dist);
+  ball.y += ny * (min - dist);
+  const vn = ball.vx * nx + ball.vy * ny;
+  if (vn < 0) {
+    ball.vx -= (1 + BUMPER_RESTITUTION) * vn * nx;
+    ball.vy -= (1 + BUMPER_RESTITUTION) * vn * ny;
+  }
+  ball.vx += nx * kick;
+  ball.vy += ny * kick;
+  bumper.flash = 1;
+  ball.glow = 0.5;
+  audio.hit(ball.hue);
+}
+
+function resolveConveyor(ball: Ball, c: Conveyor, audio: RaceAudio) {
+  const dx = c.x2 - c.x1;
+  const dy = c.y2 - c.y1;
+  const lenSq = dx * dx + dy * dy || 1;
+  let t = ((ball.x - c.x1) * dx + (ball.y - c.y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const px = c.x1 + t * dx;
+  const py = c.y1 + t * dy;
+  const ddx = ball.x - px;
+  const ddy = ball.y - py;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + c.thickness / 2;
+  if (dist >= min || dist === 0) return;
+  const nx = ddx / dist;
+  const ny = ddy / dist;
+  ball.x += nx * (min - dist);
+  ball.y += ny * (min - dist);
+  const vn = ball.vx * nx + ball.vy * ny;
+  if (vn < 0) {
+    ball.vx -= (1 + OBSTACLE_RESTITUTION) * vn * nx;
+    ball.vy -= (1 + OBSTACLE_RESTITUTION) * vn * ny;
+  }
+  const len = Math.sqrt(lenSq);
+  const tx = (dx / len) * c.dir;
+  const ty = (dy / len) * c.dir;
+  ball.vx += tx * CONVEYOR_PUSH_K * ball.r * 3;
+  ball.vy += ty * CONVEYOR_PUSH_K * ball.r * 3;
+  ball.glow = 0.3;
 }
 
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
@@ -861,6 +1029,54 @@ function drawObstacles(
     ctx.stroke();
   }
   ctx.restore();
+
+  ctx.save();
+  for (const p of course.pegs) {
+    if (p.y < top || p.y > bottom) continue;
+    const sy = p.y - camY + arenaY;
+    ctx.beginPath();
+    ctx.arc(p.x, sy, p.r, 0, Math.PI * 2);
+    ctx.fillStyle = "#38bdf8";
+    ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+    ctx.shadowBlur = 10;
+    ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.save();
+  for (const b of course.bumpers) {
+    if (b.y < top || b.y > bottom) continue;
+    const sy = b.y - camY + arenaY;
+    const flash = Math.max(0, b.flash);
+    const rOuter = b.r * (1 + flash * 0.25);
+    ctx.beginPath();
+    ctx.arc(b.x, sy, rOuter, 0, Math.PI * 2);
+    ctx.fillStyle = flash > 0.1 ? "#fde68a" : "#f59e0b";
+    ctx.shadowColor = "rgba(245, 158, 11, 0.9)";
+    ctx.shadowBlur = 16 + flash * 20;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(b.x, sy, b.r * 0.45, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.shadowBlur = 0;
+    ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const c of course.conveyors) {
+    if (Math.min(c.y1, c.y2) > bottom || Math.max(c.y1, c.y2) < top) continue;
+    ctx.strokeStyle = "#a78bfa";
+    ctx.shadowColor = "rgba(167, 139, 250, 0.7)";
+    ctx.shadowBlur = 12;
+    ctx.lineWidth = c.thickness;
+    ctx.beginPath();
+    ctx.moveTo(c.x1, c.y1 - camY + arenaY);
+    ctx.lineTo(c.x2, c.y2 - camY + arenaY);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 function drawStartPlatform(
@@ -1055,12 +1271,16 @@ const CollidingShapes = () => {
   const [standings, setStandings] = useState<Ball[]>([]);
 
   const buildRace = useCallback((arena: Arena) => {
-    const ballR = arena.width * 0.048 * 0.7;
+    const ballR = arena.width * 0.048 * 0.7 * 0.8;
     const course = generateCourse(arena, ballR);
     courseRef.current = course;
     ballsRef.current = spawnBalls(course.platform, ballR);
     particlesRef.current = [];
-    cameraRef.current = 0;
+    // Put the start platform at START_SCREEN_FRACTION of the way down the
+    // full screen (HUD included) instead of wherever camera = 0 lands it.
+    const platformY = course.platform.left.y;
+    const targetScreenY = arena.H * START_SCREEN_FRACTION;
+    cameraRef.current = platformY + arena.y - targetScreenY;
     finishOrderRef.current = [];
     raceEndAtRef.current = null;
     raceStartAtRef.current = null;
@@ -1162,6 +1382,13 @@ const CollidingShapes = () => {
             for (const rotator of course.rotators) {
               resolveRotator(ball, rotator, subElapsed, audio);
             }
+            for (const peg of course.pegs) resolvePeg(ball, peg, audio);
+            for (const bumper of course.bumpers) {
+              resolveBumper(ball, bumper, arena.width * BUMPER_KICK_K, audio);
+            }
+            for (const conv of course.conveyors) {
+              resolveConveyor(ball, conv, audio);
+            }
             if (closed) {
               for (const gate of course.gates) {
                 for (const seg of gate.segments) {
@@ -1176,6 +1403,10 @@ const CollidingShapes = () => {
               bounceBalls(balls[i], balls[j], audio);
             }
           }
+        }
+
+        for (const bumper of course.bumpers) {
+          if (bumper.flash > 0) bumper.flash -= dt * 3;
         }
 
         const gateClosedNow = gateIsClosed(elapsedRaceSec);
@@ -1268,15 +1499,6 @@ const CollidingShapes = () => {
       }
 
       const camY = cameraRef.current;
-      const zoomScale = 1 / CAMERA_ZOOM_OUT;
-      const zoomScaleX = mobile ? 1 : zoomScale;
-      const pivotX = arena.x + arena.width / 2;
-      const pivotY = arena.y + arena.height / 2;
-
-      ctx.save();
-      ctx.translate(pivotX, pivotY);
-      ctx.scale(zoomScaleX, zoomScale);
-      ctx.translate(-pivotX, -pivotY);
 
       drawCorridor(ctx, arena, camY);
 
@@ -1316,8 +1538,6 @@ const CollidingShapes = () => {
       if (phaseNow === "racing" || phaseNow === "finished") {
         drawParticles(ctx, particlesRef.current, camY, arena.y);
       }
-
-      ctx.restore();
 
       drawHud(
         ctx,
