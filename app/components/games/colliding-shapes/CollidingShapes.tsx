@@ -17,6 +17,7 @@ const WALL_RESTITUTION = 0.92;
 const BALL_RESTITUTION = 0.82;
 const PEG_RESTITUTION = 0.78;
 const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
+const GEAR_ROTATE_SPEED = 0.6; // rad/s
 
 const RACE_END_GRACE_MS = 6000;
 const COUNTDOWN_MS = 3000;
@@ -60,7 +61,7 @@ type Peg = {
 };
 
 // A gear/cog obstacle: a circular hub with evenly-spaced rectangular teeth
-// sticking out radially — a static "spiky wheel."
+// sticking out radially, spinning clockwise or counter-clockwise.
 type Gear = {
   id: number;
   cx: number;
@@ -69,6 +70,8 @@ type Gear = {
   toothLen: number;
   toothW: number;
   teethCount: number;
+  angle0: number;
+  speed: number; // rad/s, sign is spin direction
 };
 
 type PlatformHalf = { x: number; y: number; w: number; h: number };
@@ -208,7 +211,8 @@ function generateCourse(arena: Arena, ballR: number): Course {
   const gears: Gear[] = [];
   let gid = 0;
 
-  // A gear/cog: circular hub + 8 evenly-spaced rectangular teeth.
+  // A gear/cog: circular hub + 8 evenly-spaced rectangular teeth, spinning
+  // in a random direction.
   const addGear = (cx: number, cy: number, hubR: number) => {
     gears.push({
       id: gid++,
@@ -216,13 +220,15 @@ function generateCourse(arena: Arena, ballR: number): Course {
       cy,
       hubR,
       toothLen: hubR * 0.5,
-      toothW: hubR * 0.45,
+      toothW: hubR * 0.45 * 0.5,
       teethCount: 8,
+      angle0: Math.random() * Math.PI * 2,
+      speed: (Math.random() < 0.5 ? 1 : -1) * GEAR_ROTATE_SPEED,
     });
   };
 
   // Level 2 — gears laid out 2-1-2, top pair / middle single / bottom pair.
-  const gearR = ballR * 2.5;
+  const gearR = ballR * 2.5 * 1.5 * 1.5;
   addGear(left + width * 0.3, level2Y0 + levelH * 0.15, gearR);
   addGear(left + width * 0.7, level2Y0 + levelH * 0.15, gearR);
   addGear(left + width * 0.5, level2Y0 + levelH * 0.5, gearR);
@@ -332,7 +338,12 @@ function resolveSegment(
   audio.hit(ball.hue);
 }
 
-function resolveGear(ball: Ball, gear: Gear, audio: RaceAudio) {
+function resolveGear(
+  ball: Ball,
+  gear: Gear,
+  elapsed: number,
+  audio: RaceAudio,
+) {
   const ddx = ball.x - gear.cx;
   const ddy = ball.y - gear.cy;
   const dist = Math.hypot(ddx, ddy);
@@ -350,8 +361,9 @@ function resolveGear(ball: Ball, gear: Gear, audio: RaceAudio) {
     ball.glow = 0.3;
     audio.hit(ball.hue);
   }
+  const rot = gear.angle0 + gear.speed * elapsed;
   for (let i = 0; i < gear.teethCount; i++) {
-    const angle = (i / gear.teethCount) * Math.PI * 2;
+    const angle = rot + (i / gear.teethCount) * Math.PI * 2;
     const cosA = Math.cos(angle);
     const sinA = Math.sin(angle);
     const x1 = gear.cx + cosA * gear.hubR * 0.8;
@@ -612,6 +624,7 @@ function drawGears(
   camY: number,
   arenaY: number,
   viewH: number,
+  elapsed: number,
 ) {
   const top = camY - 120;
   const bottom = camY + viewH + 120;
@@ -625,9 +638,10 @@ function drawGears(
   for (const g of gears) {
     if (g.cy < top || g.cy > bottom) continue;
     const sy = g.cy - camY + arenaY;
+    const rot = g.angle0 + g.speed * elapsed;
 
     for (let i = 0; i < g.teethCount; i++) {
-      const angle = (i / g.teethCount) * Math.PI * 2;
+      const angle = rot + (i / g.teethCount) * Math.PI * 2;
       const midR = g.hubR * 0.8 + (g.toothLen + g.hubR * 0.2) / 2;
       const midX = g.cx + Math.cos(angle) * midR;
       const midY = sy + Math.sin(angle) * midR;
@@ -943,7 +957,9 @@ const CollidingShapes = () => {
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
             for (const peg of course.pegs) resolvePeg(ball, peg, audio);
-            for (const gear of course.gears) resolveGear(ball, gear, audio);
+            for (const gear of course.gears) {
+              resolveGear(ball, gear, now / 1000, audio);
+            }
           }
           for (let i = 0; i < balls.length; i++) {
             for (let j = i + 1; j < balls.length; j++) {
@@ -1009,7 +1025,7 @@ const CollidingShapes = () => {
 
       if (phaseNow !== "menu") {
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
-        drawGears(ctx, course.gears, camY, arena.y, arena.height);
+        drawGears(ctx, course.gears, camY, arena.y, arena.height, now / 1000);
         drawFinishLine(ctx, course, arena, camY);
       }
 
