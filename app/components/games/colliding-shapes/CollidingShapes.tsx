@@ -59,12 +59,25 @@ type Peg = {
   r: number;
 };
 
+// A gear/cog obstacle: a circular hub with evenly-spaced rectangular teeth
+// sticking out radially — a static "spiky wheel."
+type Gear = {
+  id: number;
+  cx: number;
+  cy: number;
+  hubR: number;
+  toothLen: number;
+  toothW: number;
+  teethCount: number;
+};
+
 type PlatformHalf = { x: number; y: number; w: number; h: number };
 type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
 
 type Course = {
   platform: StartPlatform;
   pegs: Peg[];
+  gears: Gear[];
   finishY: number;
 };
 
@@ -152,9 +165,10 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   const platform = buildStartPlatform(arena, ballR);
   const level1Y0 = platform.left.y + platform.left.h + ballR * 3;
-  // 3 empty screen-heights of corridor before the finish line — obstacles
-  // to be redesigned from scratch.
-  const finishY = level1Y0 + levelH * 3 + ballR * 12;
+  const level2Y0 = level1Y0 + levelH;
+  // 1 more empty screen-height of corridor before the finish line —
+  // obstacles to be redesigned from scratch.
+  const finishY = level2Y0 + levelH * 2 + ballR * 12;
 
   const pegs: Peg[] = [];
   let pgid = 0;
@@ -191,7 +205,31 @@ function generateCourse(arena: Arena, ballR: number): Course {
   // Level 1 — pure Plinko pegs, edge-to-edge.
   addPegField(level1Y0, levelH * 0.96);
 
-  return { platform, pegs, finishY };
+  const gears: Gear[] = [];
+  let gid = 0;
+
+  // A gear/cog: circular hub + 8 evenly-spaced rectangular teeth.
+  const addGear = (cx: number, cy: number, hubR: number) => {
+    gears.push({
+      id: gid++,
+      cx,
+      cy,
+      hubR,
+      toothLen: hubR * 0.5,
+      toothW: hubR * 0.45,
+      teethCount: 8,
+    });
+  };
+
+  // Level 2 — gears laid out 2-1-2, top pair / middle single / bottom pair.
+  const gearR = ballR * 2.5;
+  addGear(left + width * 0.3, level2Y0 + levelH * 0.15, gearR);
+  addGear(left + width * 0.7, level2Y0 + levelH * 0.15, gearR);
+  addGear(left + width * 0.5, level2Y0 + levelH * 0.5, gearR);
+  addGear(left + width * 0.3, level2Y0 + levelH * 0.85, gearR);
+  addGear(left + width * 0.7, level2Y0 + levelH * 0.85, gearR);
+
+  return { platform, pegs, gears, finishY };
 }
 
 function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
@@ -258,6 +296,70 @@ function resolvePeg(ball: Ball, peg: Peg, audio: RaceAudio) {
   }
   ball.glow = 0.3;
   audio.hit(ball.hue);
+}
+
+function resolveSegment(
+  ball: Ball,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  thickness: number,
+  audio: RaceAudio,
+) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy || 1;
+  let t = ((ball.x - x1) * dx + (ball.y - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const px = x1 + t * dx;
+  const py = y1 + t * dy;
+  const ddx = ball.x - px;
+  const ddy = ball.y - py;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + thickness / 2;
+  if (dist >= min || dist === 0) return;
+  const nx = ddx / dist;
+  const ny = ddy / dist;
+  ball.x += nx * (min - dist);
+  ball.y += ny * (min - dist);
+  const vn = ball.vx * nx + ball.vy * ny;
+  if (vn < 0) {
+    ball.vx -= (1 + PEG_RESTITUTION) * vn * nx;
+    ball.vy -= (1 + PEG_RESTITUTION) * vn * ny;
+  }
+  ball.glow = 0.35;
+  audio.hit(ball.hue);
+}
+
+function resolveGear(ball: Ball, gear: Gear, audio: RaceAudio) {
+  const ddx = ball.x - gear.cx;
+  const ddy = ball.y - gear.cy;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + gear.hubR;
+  if (dist < min && dist !== 0) {
+    const nx = ddx / dist;
+    const ny = ddy / dist;
+    ball.x += nx * (min - dist);
+    ball.y += ny * (min - dist);
+    const vn = ball.vx * nx + ball.vy * ny;
+    if (vn < 0) {
+      ball.vx -= (1 + PEG_RESTITUTION) * vn * nx;
+      ball.vy -= (1 + PEG_RESTITUTION) * vn * ny;
+    }
+    ball.glow = 0.3;
+    audio.hit(ball.hue);
+  }
+  for (let i = 0; i < gear.teethCount; i++) {
+    const angle = (i / gear.teethCount) * Math.PI * 2;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    const x1 = gear.cx + cosA * gear.hubR * 0.8;
+    const y1 = gear.cy + sinA * gear.hubR * 0.8;
+    const x2 = gear.cx + cosA * (gear.hubR + gear.toothLen);
+    const y2 = gear.cy + sinA * (gear.hubR + gear.toothLen);
+    resolveSegment(ball, x1, y1, x2, y2, gear.toothW, audio);
+  }
 }
 
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
@@ -500,6 +602,54 @@ function drawPegs(
     ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
     ctx.shadowBlur = 10;
     ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawGears(
+  ctx: CanvasRenderingContext2D,
+  gears: Gear[],
+  camY: number,
+  arenaY: number,
+  viewH: number,
+) {
+  const top = camY - 120;
+  const bottom = camY + viewH + 120;
+
+  ctx.save();
+  ctx.fillStyle = "#c084fc";
+  ctx.strokeStyle = "rgba(147, 51, 234, 0.9)";
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "rgba(192, 132, 252, 0.7)";
+  ctx.shadowBlur = 12;
+  for (const g of gears) {
+    if (g.cy < top || g.cy > bottom) continue;
+    const sy = g.cy - camY + arenaY;
+
+    for (let i = 0; i < g.teethCount; i++) {
+      const angle = (i / g.teethCount) * Math.PI * 2;
+      const midR = g.hubR * 0.8 + (g.toothLen + g.hubR * 0.2) / 2;
+      const midX = g.cx + Math.cos(angle) * midR;
+      const midY = sy + Math.sin(angle) * midR;
+      ctx.save();
+      ctx.translate(midX, midY);
+      ctx.rotate(angle);
+      ctx.beginPath();
+      ctx.rect(
+        -(g.toothLen + g.hubR * 0.2) / 2,
+        -g.toothW / 2,
+        g.toothLen + g.hubR * 0.2,
+        g.toothW,
+      );
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.beginPath();
+    ctx.arc(g.cx, sy, g.hubR, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
   }
   ctx.restore();
 }
@@ -793,6 +943,7 @@ const CollidingShapes = () => {
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
             for (const peg of course.pegs) resolvePeg(ball, peg, audio);
+            for (const gear of course.gears) resolveGear(ball, gear, audio);
           }
           for (let i = 0; i < balls.length; i++) {
             for (let j = i + 1; j < balls.length; j++) {
@@ -858,6 +1009,7 @@ const CollidingShapes = () => {
 
       if (phaseNow !== "menu") {
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
+        drawGears(ctx, course.gears, camY, arena.y, arena.height);
         drawFinishLine(ctx, course, arena, camY);
       }
 
