@@ -1269,12 +1269,13 @@ const CollidingShapes = () => {
 
       const camY = cameraRef.current;
       const zoomScale = 1 / CAMERA_ZOOM_OUT;
+      const zoomScaleX = mobile ? 1 : zoomScale;
       const pivotX = arena.x + arena.width / 2;
       const pivotY = arena.y + arena.height / 2;
 
       ctx.save();
       ctx.translate(pivotX, pivotY);
-      ctx.scale(zoomScale, zoomScale);
+      ctx.scale(zoomScaleX, zoomScale);
       ctx.translate(-pivotX, -pivotY);
 
       drawCorridor(ctx, arena, camY);
