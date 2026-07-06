@@ -11,7 +11,7 @@ const MAX_DT = 1 / 30;
 const SUBSTEPS = 5;
 const SOUND_GAP_MS = 55;
 
-const GRAVITY_K = 0.75; // px/s² per px of corridor width
+const GRAVITY_K = 0.45; // px/s² per px of corridor width
 const MAX_FALL_K = 1.85; // px/s cap per px of corridor width
 const WALL_RESTITUTION = 0.92;
 const OBSTACLE_RESTITUTION = 0.7;
@@ -261,14 +261,17 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   // A staggered peg field — the classic Plinko scatter. Rows alternate offset
   // so a ball can never fall straight through; every row nudges it sideways.
-  const addPegField = (topY: number, rows: number, rowGap: number) => {
+  // `span` is the absolute world-unit height the field should occupy, so it
+  // always fills the zone it's given regardless of ball size or screen height.
+  const addPegField = (topY: number, rows: number, span: number) => {
     const cols = 5;
     const usable = width - ballR * 4;
     const colGap = (usable / cols) * 1.25;
+    const rowGap = rows > 1 ? span / (rows - 1) : 0;
     const pegR = ballR * 0.55 * 0.85;
     for (let row = 0; row < rows; row++) {
       const offset = row % 2 === 0 ? 0 : colGap / 2;
-      const y = topY + row * rowGap * 1.25;
+      const y = topY + row * rowGap;
       for (let c = 0; c <= cols; c++) {
         const x = left + ballR * 2 + c * colGap + offset;
         if (x < left + pegR + 2 || x > right - pegR - 2) continue;
@@ -347,13 +350,13 @@ function generateCourse(arena: Arena, ballR: number): Course {
   const addBowlGate = (cy: number) => {
     const cx = left + width / 2;
     const radius = width / 2 - ballR * 0.3;
-    const segCount = 8;
+    const segCount = 28;
     const points: { x: number; y: number }[] = [];
     for (let i = 0; i <= segCount; i++) {
       const t = (i / segCount) * Math.PI;
       points.push({
         x: cx - Math.cos(t) * radius,
-        y: cy + Math.sin(t) * radius * 0.28,
+        y: cy + Math.sin(t) * radius * 0.4,
       });
     }
     const segments: Slat[] = [];
@@ -425,40 +428,52 @@ function generateCourse(arena: Arena, ballR: number): Course {
     });
   };
 
-  // Level 1 — "Pin Storm": dense Plinko scatter + funnels to reconverge.
-  addFunnel(level1Y0 + levelH * 0.02, levelH * 0.14);
-  addPegField(level1Y0 + levelH * 0.24, 6, ballR * 3.2);
-  addPegArc(left + width * 0.5, level1Y0 + levelH * 0.66, width * 0.42, 7);
-  addFunnel(level1Y0 + levelH * 0.78, levelH * 0.14);
+  // Level 1 — "Pin Storm": alternating funnels and peg fields, edge-to-edge
+  // with no dead space between features.
+  addFunnel(level1Y0 + levelH * 0.0, levelH * 0.12);
+  addPegField(level1Y0 + levelH * 0.14, 5, levelH * 0.2);
+  addPegArc(left + width * 0.5, level1Y0 + levelH * 0.37, width * 0.42, 7);
+  addFunnel(level1Y0 + levelH * 0.42, levelH * 0.12);
+  addPegField(level1Y0 + levelH * 0.56, 5, levelH * 0.2);
+  addPegArc(left + width * 0.5, level1Y0 + levelH * 0.79, width * 0.42, 7);
+  addFunnel(level1Y0 + levelH * 0.86, levelH * 0.12);
 
-  // Level 2 — "The Machine": bumper pocket, spinner gauntlet, timed bowl,
-  // conveyor ramps.
-  addBowlGate(level2Y0 + levelH * 0.07);
-  addBumperCluster(level2Y0 + levelH * 0.24);
+  // Level 2 — "The Machine": bumpers, peg fields, conveyor ramps and
+  // rotators packed back-to-back down the whole level.
+  addBowlGate(level2Y0 + levelH * 0.05);
+  addBumperCluster(level2Y0 + levelH * 0.11);
+  addPegField(level2Y0 + levelH * 0.19, 4, levelH * 0.16);
   addConveyor(
     left + width * 0.1,
-    level2Y0 + levelH * 0.44,
+    level2Y0 + levelH * 0.38,
     left + width * 0.6,
-    level2Y0 + levelH * 0.5,
+    level2Y0 + levelH * 0.44,
     1,
   );
+  addRotatorSingle(level2Y0 + levelH * 0.5);
+  addPegArc(left + width * 0.5, level2Y0 + levelH * 0.57, width * 0.4, 6);
   addConveyor(
     right - width * 0.1,
-    level2Y0 + levelH * 0.56,
+    level2Y0 + levelH * 0.64,
     left + width * 0.4,
-    level2Y0 + levelH * 0.62,
+    level2Y0 + levelH * 0.7,
     -1,
   );
-  addRotatorPair(level2Y0 + levelH * 0.78);
+  addBumperCluster(level2Y0 + levelH * 0.78);
+  addRotatorPair(level2Y0 + levelH * 0.88);
 
-  // Level 3 — "The Gauntlet": send-back trap, peg maze, twin spinners, timed
-  // flat gate, bumper finale into the finish.
-  addTrap(level3Y0 + levelH * 0.06);
-  addPegField(level3Y0 + levelH * 0.16, 4, ballR * 3.4);
-  addRotatorSingle(level3Y0 + levelH * 0.4);
-  addFlatGate(level3Y0 + levelH * 0.52);
-  addPegArc(left + width * 0.5, level3Y0 + levelH * 0.62, width * 0.4, 6);
-  addBumperCluster(level3Y0 + levelH * 0.78);
+  // Level 3 — "The Gauntlet": send-back trap, peg fields, rotators, and a
+  // timed flat gate, packed all the way to the finish.
+  addTrap(level3Y0 + levelH * 0.04);
+  addPegField(level3Y0 + levelH * 0.12, 4, levelH * 0.16);
+  addRotatorSingle(level3Y0 + levelH * 0.32);
+  addPegArc(left + width * 0.5, level3Y0 + levelH * 0.39, width * 0.4, 6);
+  addFlatGate(level3Y0 + levelH * 0.46);
+  addPegField(level3Y0 + levelH * 0.52, 4, levelH * 0.16);
+  addRotatorSingle(level3Y0 + levelH * 0.72);
+  addPegArc(left + width * 0.5, level3Y0 + levelH * 0.79, width * 0.4, 6);
+  addBumperCluster(level3Y0 + levelH * 0.86);
+  addFunnel(level3Y0 + levelH * 0.94, levelH * 0.06);
 
   return {
     slats,
@@ -996,22 +1011,24 @@ function drawObstacles(
   const closed = gateIsClosed(elapsed);
   ctx.save();
   ctx.lineCap = "round";
+  ctx.lineJoin = "round";
   for (const g of course.gates) {
     const segTop = Math.min(...g.segments.map((s) => Math.min(s.y1, s.y2)));
     const segBottom = Math.max(...g.segments.map((s) => Math.max(s.y1, s.y2)));
     if (segBottom < top || segTop > bottom) continue;
-    ctx.strokeStyle = closed ? "#facc15" : "rgba(250, 204, 21, 0.25)";
+    ctx.strokeStyle = closed ? "#fbbf24" : "rgba(251, 191, 36, 0.22)";
     ctx.shadowColor = closed
-      ? "rgba(250, 204, 21, 0.7)"
-      : "rgba(250, 204, 21, 0.15)";
-    ctx.shadowBlur = closed ? 12 : 4;
+      ? "rgba(251, 191, 36, 0.75)"
+      : "rgba(251, 191, 36, 0.15)";
+    ctx.shadowBlur = closed ? 14 : 4;
+    ctx.lineWidth = g.segments[0].thickness;
+    ctx.beginPath();
+    const first = g.segments[0];
+    ctx.moveTo(first.x1, first.y1 - camY + arenaY);
     for (const seg of g.segments) {
-      ctx.lineWidth = seg.thickness;
-      ctx.beginPath();
-      ctx.moveTo(seg.x1, seg.y1 - camY + arenaY);
       ctx.lineTo(seg.x2, seg.y2 - camY + arenaY);
-      ctx.stroke();
     }
+    ctx.stroke();
   }
   ctx.restore();
 
