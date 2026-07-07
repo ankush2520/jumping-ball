@@ -876,9 +876,24 @@ function createAudio(): RaceAudio {
 function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
   ctx.clearRect(0, 0, W, H);
   const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, "#020617");
-  grad.addColorStop(1, "#050b1f");
+  grad.addColorStop(0, "#0b0f2a");
+  grad.addColorStop(0.55, "#0d1130");
+  grad.addColorStop(1, "#020410");
   ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  const glow = ctx.createRadialGradient(
+    W / 2,
+    H * 0.12,
+    0,
+    W / 2,
+    H * 0.12,
+    Math.max(W, H) * 0.65,
+  );
+  glow.addColorStop(0, "rgba(247, 201, 72, 0.05)");
+  glow.addColorStop(0.4, "rgba(94, 234, 212, 0.035)");
+  glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+  ctx.fillStyle = glow;
   ctx.fillRect(0, 0, W, H);
 }
 
@@ -890,7 +905,7 @@ function drawCorridor(
   const { x, y, width, height } = arena;
 
   ctx.save();
-  ctx.strokeStyle = "rgba(226, 232, 240, 0.05)";
+  ctx.strokeStyle = "rgba(180, 200, 255, 0.055)";
   ctx.lineWidth = 1;
   const spacing = 90;
   const firstGuide = Math.floor(camY / spacing) * spacing;
@@ -921,8 +936,8 @@ function drawPegs(
     const sy = p.y - camY + arenaY;
     ctx.beginPath();
     ctx.arc(p.x, sy, p.r, 0, Math.PI * 2);
-    ctx.fillStyle = "#38bdf8";
-    ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+    ctx.fillStyle = "#2dd4bf";
+    ctx.shadowColor = "rgba(45, 212, 191, 0.85)";
     ctx.shadowBlur = 10;
     ctx.fill();
   }
@@ -941,8 +956,8 @@ function drawGates(
   const bottom = camY + viewH + 80;
 
   ctx.save();
-  ctx.fillStyle = "#38bdf8";
-  ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+  ctx.fillStyle = "#2dd4bf";
+  ctx.shadowColor = "rgba(45, 212, 191, 0.85)";
   ctx.shadowBlur = 10;
   for (const g of gates) {
     if (g.trackY < top || g.trackY > bottom) continue;
@@ -975,9 +990,9 @@ function drawSpinners(
   const bottom = camY + viewH + 60;
 
   ctx.save();
-  ctx.strokeStyle = "#38bdf8";
-  ctx.fillStyle = "#38bdf8";
-  ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+  ctx.strokeStyle = "#2dd4bf";
+  ctx.fillStyle = "#2dd4bf";
+  ctx.shadowColor = "rgba(45, 212, 191, 0.85)";
   ctx.shadowBlur = 10;
   ctx.lineCap = "round";
   for (const s of spinners) {
@@ -1020,9 +1035,9 @@ function drawVortexRings(
   const bottom = camY + viewH + 120;
 
   ctx.save();
-  ctx.strokeStyle = "#38bdf8";
-  ctx.fillStyle = "#38bdf8";
-  ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+  ctx.strokeStyle = "#2dd4bf";
+  ctx.fillStyle = "#2dd4bf";
+  ctx.shadowColor = "rgba(45, 212, 191, 0.85)";
   ctx.shadowBlur = 10;
   ctx.lineCap = "round";
   for (const r of rings) {
@@ -1062,15 +1077,18 @@ function drawStartPlatform(
     { half: platform.right, dir: 1 },
   ];
   ctx.save();
-  ctx.fillStyle = "#334155";
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.8)";
+  ctx.strokeStyle = "rgba(247, 201, 72, 0.55)";
   ctx.lineWidth = 2;
-  ctx.shadowColor = "rgba(100, 160, 255, 0.3)";
+  ctx.shadowColor = "rgba(247, 201, 72, 0.28)";
   ctx.shadowBlur = 10;
   for (const { half, dir } of halves) {
     const slideX = dir * t * half.w * 0.9;
     const dropY = t * half.h * 6;
     const sy = half.y - camY + arenaY + dropY;
+    const grad = ctx.createLinearGradient(0, sy, 0, sy + half.h);
+    grad.addColorStop(0, "#3a4362");
+    grad.addColorStop(1, "#1c2237");
+    ctx.fillStyle = grad;
     ctx.globalAlpha = Math.max(0, 1 - t * 1.2);
     ctx.beginPath();
     ctx.rect(half.x + slideX, sy, half.w, half.h);
@@ -1090,12 +1108,15 @@ function drawFinishLine(
   if (sy < -60 || sy > arena.y + arena.height + 60) return;
   const tile = 14;
   ctx.save();
+  ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
+  ctx.shadowBlur = 6;
   for (let i = 0; i * tile < arena.width; i++) {
-    ctx.fillStyle = i % 2 === 0 ? "#e2e8f0" : "#0f172a";
+    ctx.fillStyle = i % 2 === 0 ? "#f7c948" : "#161225";
     ctx.fillRect(arena.x + i * tile, sy, tile, tile * 0.7);
   }
+  ctx.shadowBlur = 10;
   ctx.font = "900 14px Arial, Helvetica, sans-serif";
-  ctx.fillStyle = "#f8fafc";
+  ctx.fillStyle = "#fde9b8";
   ctx.textAlign = "center";
   ctx.fillText("FINISH", arena.x + arena.width / 2, sy - 8);
   ctx.restore();
@@ -1106,7 +1127,6 @@ function drawBalls(
   balls: Ball[],
   camY: number,
   arenaY: number,
-  leaderId: number | null,
   bob: (index: number) => number,
 ) {
   balls.forEach((b, i) => {
@@ -1124,15 +1144,6 @@ function drawBalls(
     ctx.shadowBlur = 0;
     ctx.fill();
     ctx.restore();
-
-    if (leaderId === b.id && !b.finished) {
-      ctx.save();
-      ctx.font = `${Math.round(b.r * 1.8)}px serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "bottom";
-      ctx.fillText("👑", b.x, sy - b.r * 1.15);
-      ctx.restore();
-    }
   });
 }
 
@@ -1151,14 +1162,24 @@ function drawHud(
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = "rgba(241, 245, 249, 0.96)";
-  ctx.shadowColor = "rgba(96, 165, 250, 0.35)";
-  ctx.shadowBlur = 16;
   ctx.font = `900 ${mobile ? 26 : 38}px Arial, Helvetica, sans-serif`;
+  const titleW = ctx.measureText("BALL RACE").width;
+  const titleGrad = ctx.createLinearGradient(
+    cx - titleW / 2,
+    0,
+    cx + titleW / 2,
+    0,
+  );
+  titleGrad.addColorStop(0, "#fde9b8");
+  titleGrad.addColorStop(0.5, "#f7c948");
+  titleGrad.addColorStop(1, "#d4a017");
+  ctx.fillStyle = titleGrad;
+  ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
+  ctx.shadowBlur = 18;
   ctx.fillText("BALL RACE", cx, mobile ? 44 : 56);
 
   ctx.font = `700 ${mobile ? 12 : 14}px Arial, Helvetica, sans-serif`;
-  ctx.fillStyle = "rgba(248, 250, 252, 0.7)";
+  ctx.fillStyle = "rgba(254, 247, 233, 0.78)";
   ctx.shadowBlur = 0;
   const subtitle =
     phase === "racing"
@@ -1176,7 +1197,7 @@ function drawHud(
     const trackW = width - (mobile ? 24 : 12);
     const trackX = cx - trackW / 2;
     ctx.save();
-    ctx.strokeStyle = "rgba(148, 163, 184, 0.35)";
+    ctx.strokeStyle = "rgba(247, 201, 72, 0.28)";
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
     ctx.beginPath();
@@ -1211,10 +1232,15 @@ function drawCountdown(
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillStyle = "rgba(241, 245, 249, 0.96)";
-  ctx.shadowColor = "rgba(96, 165, 250, 0.55)";
-  ctx.shadowBlur = 26;
   ctx.font = `900 ${mobile ? 64 : 88}px Arial, Helvetica, sans-serif`;
+  const labelW = ctx.measureText(label).width;
+  const grad = ctx.createLinearGradient(cx - labelW / 2, 0, cx + labelW / 2, 0);
+  grad.addColorStop(0, "#fde9b8");
+  grad.addColorStop(0.5, "#f7c948");
+  grad.addColorStop(1, "#d4a017");
+  ctx.fillStyle = grad;
+  ctx.shadowColor = "rgba(247, 201, 72, 0.6)";
+  ctx.shadowBlur = 26;
   ctx.fillText(label, cx, cy);
   ctx.restore();
 }
@@ -1232,6 +1258,11 @@ const CollidingShapes = () => {
   const audioRef = useRef(createAudio());
   const phaseRef = useRef<Phase>("menu");
   const cameraRef = useRef(0);
+  // The ball currently in the lead. Updated every frame to whichever ball
+  // still racing is furthest along; the camera tweens toward its
+  // position. A finished ball is dropped from consideration and the next
+  // furthest-along ball becomes the new leader.
+  const leadingBallRef = useRef<Ball | null>(null);
   const countdownEndAtRef = useRef<number | null>(null);
   const raceStartAtRef = useRef<number | null>(null);
   const finishOrderRef = useRef<Ball[]>([]);
@@ -1250,6 +1281,7 @@ const CollidingShapes = () => {
     const platformY = course.platform.left.y;
     const targetScreenY = arena.H * START_SCREEN_FRACTION;
     cameraRef.current = platformY + arena.y - targetScreenY;
+    leadingBallRef.current = null;
     finishOrderRef.current = [];
     raceStartAtRef.current = null;
   }, []);
@@ -1371,22 +1403,26 @@ const CollidingShapes = () => {
           }
         }
 
-        // Camera follows the furthest-along ball that hasn't finished yet
-        // — as soon as the leader crosses the line, tracking hands off to
-        // whoever's now in front among the balls still racing, cascading
-        // all the way down to the last ball still on the course.
-        const activeBalls = balls.filter((b) => !b.finished);
-        const leaderY =
-          activeBalls.length > 0
-            ? Math.max(
-                ...activeBalls.map((b) => Math.min(b.y, course.finishY)),
-              )
-            : course.finishY;
+        // leadingBallRef always points at whichever ball still racing is
+        // furthest along, recomputed fresh every frame. A finished ball is
+        // excluded by the !b.finished check, so the instant the leader
+        // crosses the line it drops out and the next furthest-along ball
+        // takes over automatically.
+        leadingBallRef.current = balls.reduce(
+          (best: Ball | null, b) =>
+            !b.finished && (!best || b.y > best.y) ? b : best,
+          null,
+        );
+
+        const leadingBall = leadingBallRef.current;
+        const leadingBallPosition = leadingBall
+          ? Math.min(leadingBall.y, course.finishY)
+          : course.finishY;
         const anchor = arena.height * 0.34;
-        const target = leaderY - anchor;
-        // No one-way clamp here: when the leader finishes and tracking
-        // hands off to the ball behind, the camera has to be able to move
-        // back up to reach it, not just hold wherever it last was.
+        const target = leadingBallPosition - anchor;
+        // Tween smoothly toward the leader's position every frame — no
+        // one-way clamp, so the camera can ease both down (falling) and
+        // up (a bounce, or handing off to a ball that's behind).
         cameraRef.current += (target - cameraRef.current) * Math.min(1, dt * 6);
 
         // The race only ends once every ball has reached the finish line
@@ -1438,14 +1474,11 @@ const CollidingShapes = () => {
         }
       }
 
-      // Same hand-off as the camera: the "leading" ball is the
-      // furthest-along one still racing, not a ball that already finished.
-      const leaderPool = balls.some((b) => !b.finished)
-        ? balls.filter((b) => !b.finished)
-        : balls;
+      // Reuse leadingBallRef so the HUD's "X is leading!" text always
+      // names the same ball the camera is following.
       const leader =
         phaseNow === "racing" || phaseNow === "finished"
-          ? leaderPool.reduce((best, b) => (b.y > best.y ? b : best), leaderPool[0])
+          ? leadingBallRef.current
           : null;
 
       const bob =
@@ -1462,7 +1495,7 @@ const CollidingShapes = () => {
         ctx.clip();
       }
 
-      drawBalls(ctx, balls, camY, arena.y, leader ? leader.id : null, bob);
+      drawBalls(ctx, balls, camY, arena.y, bob);
 
       if (phaseNow === "racing" || phaseNow === "finished") {
         drawParticles(ctx, particlesRef.current, camY, arena.y);
@@ -1557,7 +1590,7 @@ const CollidingShapes = () => {
           height: 100dvh;
           min-height: 100dvh;
           overflow: hidden;
-          background: #020617;
+          background: #0b0f2a;
           color: #f8fafc;
         }
 
@@ -1582,17 +1615,21 @@ const CollidingShapes = () => {
         .cr-play-btn {
           pointer-events: all;
           padding: 13px 52px;
-          border: 1px solid rgba(100, 180, 255, 0.52);
+          border: 1px solid rgba(247, 201, 72, 0.55);
           border-radius: 12px;
-          background: rgba(14, 50, 110, 0.52);
-          color: #dbeafe;
+          background: linear-gradient(
+            160deg,
+            rgba(58, 44, 12, 0.6),
+            rgba(16, 20, 40, 0.62)
+          );
+          color: #fde9b8;
           font-family: Arial, Helvetica, sans-serif;
           font-size: clamp(0.95rem, 2.5vw, 1.1rem);
           font-weight: 900;
           letter-spacing: 0.18em;
           cursor: pointer;
           backdrop-filter: blur(10px);
-          box-shadow: 0 0 28px rgba(60, 130, 255, 0.18);
+          box-shadow: 0 0 28px rgba(247, 201, 72, 0.2);
           transition:
             transform 0.2s,
             box-shadow 0.2s,
@@ -1600,8 +1637,12 @@ const CollidingShapes = () => {
         }
 
         .cr-play-btn:hover {
-          background: rgba(22, 78, 160, 0.68);
-          box-shadow: 0 0 40px rgba(60, 130, 255, 0.36);
+          background: linear-gradient(
+            160deg,
+            rgba(80, 60, 14, 0.72),
+            rgba(20, 26, 52, 0.72)
+          );
+          box-shadow: 0 0 40px rgba(247, 201, 72, 0.4);
           transform: scale(1.05);
         }
 
@@ -1615,7 +1656,7 @@ const CollidingShapes = () => {
           display: flex;
           align-items: center;
           justify-content: center;
-          background: rgba(2, 6, 23, 0.55);
+          background: rgba(6, 5, 16, 0.6);
           pointer-events: none;
           padding: 0 20px;
         }
@@ -1628,11 +1669,11 @@ const CollidingShapes = () => {
           gap: 18px;
           padding: clamp(20px, 4vw, 32px);
           width: min(92vw, 380px);
-          border: 1px solid rgba(100, 180, 255, 0.4);
+          border: 1px solid rgba(247, 201, 72, 0.38);
           border-radius: 18px;
-          background: rgba(8, 20, 45, 0.82);
+          background: rgba(10, 12, 28, 0.86);
           backdrop-filter: blur(12px);
-          box-shadow: 0 0 44px rgba(60, 130, 255, 0.22);
+          box-shadow: 0 0 44px rgba(247, 201, 72, 0.16);
         }
 
         .cr-panel-title {
@@ -1641,7 +1682,7 @@ const CollidingShapes = () => {
           font-size: clamp(1.25rem, 5vw, 1.7rem);
           font-weight: 900;
           text-align: center;
-          color: #f8fafc;
+          color: #fde9b8;
         }
 
         .cr-standings {
@@ -1657,7 +1698,7 @@ const CollidingShapes = () => {
           gap: 10px;
           padding: 8px 14px;
           border-radius: 10px;
-          background: rgba(255, 255, 255, 0.05);
+          background: rgba(247, 201, 72, 0.07);
         }
 
         .cr-standing-medal {
@@ -1679,7 +1720,7 @@ const CollidingShapes = () => {
           font-family: Arial, Helvetica, sans-serif;
           font-size: clamp(0.9rem, 3vw, 1.05rem);
           font-weight: 700;
-          color: #f1f5f9;
+          color: #f7f2e7;
         }
       `}</style>
     </div>
