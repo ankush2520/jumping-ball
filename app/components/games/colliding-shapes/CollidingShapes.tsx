@@ -19,7 +19,7 @@ const PEG_RESTITUTION = 0.78;
 const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
 
 const GATE_MOVEMENT_SPEED = 1.15; // rad/s — oscillation frequency of a gate's gap
-const GATE_GAP_BALL_FACTOR = 3.4; // gap width, in ball-diameters — generous for touch/tilt latency
+const GATE_GAP_BALL_FACTOR = 3.4 * 2; // gap width, in ball-diameters — generous for touch/tilt latency
 const GATE_BAR_THICKNESS_FACTOR = 0.9; // bar thickness, in ball-radii
 const GATE_WALL_MARGIN_FACTOR = 0.6; // min ball-radii of clearance kept at the wall when the gap swings to an extreme
 const GATE_SPACING_BALL_FACTOR = 7; // vertical spacing between gates, in ball-diameters — gives reaction time
@@ -39,9 +39,9 @@ const SPINNER_ROW_PATTERN = [3, 2]; // spinners per row, in order down the level
 // opening (a "C", not a closed loop) — just the ring, nothing attached to
 // it, so there's no piece that could ever close into a pocket.
 const VORTEX_ROTATE_SPEED = 0.7; // rad/s — how fast a vortex ring spins
-const VORTEX_RADIUS_FACTOR = 0.26; // outer ring radius, as a fraction of corridor width
+const VORTEX_RADIUS_FACTOR = 0.26 * 1.5 * 1.25; // outer ring radius, as a fraction of corridor width — spans nearly the full corridor, so the gap is the only way through
 const VORTEX_WALL_THICKNESS_FACTOR = 0.8; // ring wall thickness, in ball-radii
-const VORTEX_GAP_BALL_FACTOR = 4.5; // the single opening's arc width, in ball-diameters — generous, since there's no second gap to fall back on
+const VORTEX_GAP_BALL_FACTOR = 4.5 * 3; // the single opening's arc width, in ball-diameters — generous, since there's no second gap to fall back on
 const VORTEX_SPACING_BALL_FACTOR = 4; // extra reaction-room buffer added on top of the ring's own diameter, in ball-diameters
 const VORTEX_COUNT = 3;
 const VORTEX_RING_STEPS = 48; // straight segments approximating the ring
@@ -384,12 +384,25 @@ function generateCourse(arena: Arena, ballR: number): Course {
   const spinners: Spinner[] = [];
   let spinnerId = 0;
   let spinnerRowY = spinnerTopY;
+  // Keep the outermost spinner's reach at least this far from a wall, so
+  // widening a row's gap can never push an arm past the physics walls.
+  const spinnerRowWallMargin = spinnerArmLen + ballR * 1.5;
   for (const rowCount of SPINNER_ROW_PATTERN) {
+    const baseGap = width / (rowCount + 1);
+    // The row of 3 gets a 2x gap per the level design; other row sizes
+    // keep their original spacing.
+    const desiredGap = rowCount === 3 ? baseGap * 2 : baseGap;
+    const maxSpan = Math.max(0, width - spinnerRowWallMargin * 2);
+    const gap =
+      rowCount > 1
+        ? Math.min(desiredGap, maxSpan / (rowCount - 1))
+        : desiredGap;
+    const totalSpan = gap * (rowCount - 1);
+    const startX = left + width / 2 - totalSpan / 2;
     for (let i = 0; i < rowCount; i++) {
-      const frac = (i + 1) / (rowCount + 1);
       spinners.push({
         id: spinnerId,
-        cx: left + width * frac,
+        cx: startX + i * gap,
         cy: spinnerRowY,
         armLen: spinnerArmLen,
         thickness: spinnerThickness,
