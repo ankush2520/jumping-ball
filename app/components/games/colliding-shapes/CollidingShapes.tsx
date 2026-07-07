@@ -50,7 +50,6 @@ const BALL_TRAIL_LIFE = 0.22; // seconds a speed-trail particle lives
 const TRACK_Y_MOBILE = 84;
 const TRACK_Y_DESKTOP = 100;
 
-const RACE_END_GRACE_MS = 6000;
 const COUNTDOWN_MS = 3000;
 const START_SCREEN_FRACTION = 0.2; // where the start platform sits on screen (0 = top)
 const PLATFORM_OPEN_MS = 450;
@@ -444,7 +443,7 @@ function generateCourse(arena: Arena, ballR: number): Course {
   }
   const vortexEndY = vortexTopY + (VORTEX_COUNT - 1) * vortexSpacing;
 
-  const finishY = vortexEndY + vortexR + levelH * 0.6 + ballR * 12;
+  const finishY = vortexEndY + vortexR + ballR * 8;
 
   return { platform, pegs, gates, spinners, vortexRings, finishY };
 }
@@ -1235,7 +1234,6 @@ const CollidingShapes = () => {
   const cameraRef = useRef(0);
   const countdownEndAtRef = useRef<number | null>(null);
   const raceStartAtRef = useRef<number | null>(null);
-  const raceEndAtRef = useRef<number | null>(null);
   const finishOrderRef = useRef<Ball[]>([]);
 
   const [phase, setPhase] = useState<Phase>("menu");
@@ -1253,7 +1251,6 @@ const CollidingShapes = () => {
     const targetScreenY = arena.H * START_SCREEN_FRACTION;
     cameraRef.current = platformY + arena.y - targetScreenY;
     finishOrderRef.current = [];
-    raceEndAtRef.current = null;
     raceStartAtRef.current = null;
   }, []);
 
@@ -1371,34 +1368,31 @@ const CollidingShapes = () => {
             finishOrderRef.current.push(ball);
             spawnBurst(particlesRef.current, ball.x, ball.y, ball.hue, 26);
             audio.win();
-            if (raceEndAtRef.current === null) {
-              raceEndAtRef.current = now + RACE_END_GRACE_MS;
-            }
           }
         }
 
-        const leaderY = Math.max(
-          ...balls.map((b) => Math.min(b.y, course.finishY)),
-        );
+        // Camera follows the furthest-along ball that hasn't finished yet
+        // — as soon as the leader crosses the line, tracking hands off to
+        // whoever's now in front among the balls still racing, cascading
+        // all the way down to the last ball still on the course.
+        const activeBalls = balls.filter((b) => !b.finished);
+        const leaderY =
+          activeBalls.length > 0
+            ? Math.max(
+                ...activeBalls.map((b) => Math.min(b.y, course.finishY)),
+              )
+            : course.finishY;
         const anchor = arena.height * 0.34;
         const target = leaderY - anchor;
-        const desired = Math.max(cameraRef.current, target);
-        cameraRef.current +=
-          (desired - cameraRef.current) * Math.min(1, dt * 6);
+        // No one-way clamp here: when the leader finishes and tracking
+        // hands off to the ball behind, the camera has to be able to move
+        // back up to reach it, not just hold wherever it last was.
+        cameraRef.current += (target - cameraRef.current) * Math.min(1, dt * 6);
 
+        // The race only ends once every ball has reached the finish line
+        // on its own — no time-based cutoff.
         const allDone = finishOrderRef.current.length === balls.length;
-        if (
-          raceEndAtRef.current !== null &&
-          (now >= raceEndAtRef.current || allDone)
-        ) {
-          const remaining = balls
-            .filter((b) => !b.finished)
-            .sort((a, b) => b.y - a.y);
-          for (const b of remaining) {
-            b.finished = true;
-            b.rank = finishOrderRef.current.length + 1;
-            finishOrderRef.current.push(b);
-          }
+        if (allDone) {
           phaseRef.current = "finished";
           setStandings(finishOrderRef.current.slice());
           setPhase("finished");
@@ -1444,9 +1438,14 @@ const CollidingShapes = () => {
         }
       }
 
+      // Same hand-off as the camera: the "leading" ball is the
+      // furthest-along one still racing, not a ball that already finished.
+      const leaderPool = balls.some((b) => !b.finished)
+        ? balls.filter((b) => !b.finished)
+        : balls;
       const leader =
         phaseNow === "racing" || phaseNow === "finished"
-          ? balls.reduce((best, b) => (b.y > best.y ? b : best), balls[0])
+          ? leaderPool.reduce((best, b) => (b.y > best.y ? b : best), leaderPool[0])
           : null;
 
       const bob =
