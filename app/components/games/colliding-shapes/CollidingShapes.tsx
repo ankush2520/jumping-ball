@@ -41,11 +41,11 @@ const SPINNER_ROW_PATTERN = [3, 2]; // spinners per row, in order down the level
 const VORTEX_ROTATE_SPEED = 0.7; // rad/s — how fast a vortex ring spins
 const VORTEX_RADIUS_FACTOR = 0.26 * 1.5 * 1.25; // outer ring radius, as a fraction of corridor width — spans nearly the full corridor, so the gap is the only way through
 const VORTEX_WALL_THICKNESS_FACTOR = 0.8; // ring wall thickness, in ball-radii
+const VORTEX_HUB_RADIUS_FACTOR = 0.7; // center pivot dot's radius, as a fraction of wall thickness — collidable, same as a peg
 const VORTEX_GAP_BALL_FACTOR = 4.5 * 3; // the single opening's arc width, in ball-diameters — generous, since there's no second gap to fall back on
 const VORTEX_SPACING_BALL_FACTOR = 4; // extra reaction-room buffer added on top of the ring's own diameter, in ball-diameters
 const VORTEX_COUNT = 3;
 const VORTEX_RING_STEPS = 48; // straight segments approximating the ring
-const BALL_TRAIL_LIFE = 0.22; // seconds a speed-trail particle lives
 
 const TRACK_Y_MOBILE = 84;
 const TRACK_Y_DESKTOP = 100;
@@ -54,13 +54,19 @@ const COUNTDOWN_MS = 3000;
 const START_SCREEN_FRACTION = 0.2; // where the start platform sits on screen (0 = top)
 const PLATFORM_OPEN_MS = 450;
 
+// hue is only used for the glow/particle-trail/HUD-dot effects — evenly
+// spaced around the wheel so those small flat-color contexts stay
+// distinguishable. The ball itself is rendered as that country's actual
+// flag (see drawCountryFlag), which is the real identity signal.
 const BALL_DEFS = [
-  { name: "Red", hue: 0 },
-  { name: "Yellow", hue: 60 },
-  { name: "Green", hue: 120 },
-  { name: "Cyan", hue: 180 },
-  { name: "Blue", hue: 240 },
-  { name: "Pink", hue: 300 },
+  { name: "Colombia", hue: 0 },
+  { name: "Argentina", hue: 45 },
+  { name: "England", hue: 90 },
+  { name: "Norway", hue: 135 },
+  { name: "Spain", hue: 180 },
+  { name: "Belgium", hue: 225 },
+  { name: "France", hue: 270 },
+  { name: "Morocco", hue: 315 },
 ];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -146,6 +152,8 @@ type Course = {
   gates: Gate[];
   spinners: Spinner[];
   vortexRings: VortexRing[];
+  level2Y0: number;
+  level3Y0: number;
   finishY: number;
 };
 
@@ -445,14 +453,23 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   const finishY = vortexEndY + vortexR + ballR * 8;
 
-  return { platform, pegs, gates, spinners, vortexRings, finishY };
+  return {
+    platform,
+    pegs,
+    gates,
+    spinners,
+    vortexRings,
+    level2Y0,
+    level3Y0,
+    finishY,
+  };
 }
 
 function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
-  const leftXs = [0.22, 0.5, 0.78].map(
+  const leftXs = [0.14, 0.38, 0.62, 0.86].map(
     (f) => platform.left.x + platform.left.w * f,
   );
-  const rightXs = [0.22, 0.5, 0.78].map(
+  const rightXs = [0.14, 0.38, 0.62, 0.86].map(
     (f) => platform.right.x + platform.right.w * f,
   );
   const xs = [...leftXs, ...rightXs];
@@ -494,7 +511,13 @@ function resolveWalls(
   }
 }
 
-function resolvePeg(ball: Ball, peg: Peg, audio: RaceAudio) {
+// Circle-vs-circle collision against any peg-like point — reused for the
+// vortex ring's center hub, which is exactly a peg sitting at its pivot.
+function resolvePeg(
+  ball: Ball,
+  peg: { x: number; y: number; r: number },
+  audio: RaceAudio,
+) {
   const ddx = ball.x - peg.x;
   const ddy = ball.y - peg.y;
   const dist = Math.hypot(ddx, ddy);
@@ -658,6 +681,12 @@ function resolveVortexRing(
 ) {
   if (Math.abs(ball.y - ring.cy) > ring.outerR + ball.r) return;
 
+  resolvePeg(
+    ball,
+    { x: ring.cx, y: ring.cy, r: ring.wallThickness * VORTEX_HUB_RADIUS_FACTOR },
+    audio,
+  );
+
   const angle = ring.angle0 + ring.rotationSpeed * elapsed;
   const cosA = Math.cos(angle);
   const sinA = Math.sin(angle);
@@ -735,21 +764,6 @@ function spawnBurst(
     });
   }
   if (particles.length > 180) particles.splice(0, particles.length - 180);
-}
-
-// Player ball glowing speed trail: one faint, short-lived particle spawned
-// per ball per frame while racing.
-function spawnTrail(particles: Particle[], ball: Ball) {
-  particles.push({
-    x: ball.x,
-    y: ball.y,
-    vx: -ball.vx * 0.08 + (Math.random() - 0.5) * ball.r * 0.4,
-    vy: -ball.vy * 0.08,
-    life: BALL_TRAIL_LIFE,
-    maxLife: BALL_TRAIL_LIFE,
-    hue: ball.hue,
-  });
-  if (particles.length > 220) particles.splice(0, particles.length - 220);
 }
 
 function updateParticles(particles: Particle[], dt: number) {
@@ -871,14 +885,100 @@ function createAudio(): RaceAudio {
   };
 }
 
+// ─── Level color themes ─────────────────────────────────────────────────────
+//
+// Each level gets its own obstacle accent and background tint, escalating
+// from cool blue (start) through violet (mid) to gold (final/reward) — the
+// "blue = default, violet = rarity, gold = reward" convention used across
+// premium game UIs.
+const LEVEL_THEMES = [
+  {
+    obstacle: "#38bdf8",
+    obstacleGlow: "rgba(56, 189, 248, 0.85)",
+    bgTop: "#0b0f2a",
+    bgMid: "#0d1130",
+    bgBottom: "#020410",
+    ambient: "#38bdf8",
+  },
+  {
+    obstacle: "#a78bfa",
+    obstacleGlow: "rgba(167, 139, 250, 0.85)",
+    bgTop: "#160f2e",
+    bgMid: "#1d1240",
+    bgBottom: "#07040f",
+    ambient: "#a78bfa",
+  },
+  {
+    obstacle: "#f7c948",
+    obstacleGlow: "rgba(247, 201, 72, 0.85)",
+    bgTop: "#1c130a",
+    bgMid: "#241a0d",
+    bgBottom: "#0a0603",
+    ambient: "#f7c948",
+  },
+] as const;
+
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function lerpColor(a: string, b: string, t: number): string {
+  const [ar, ag, ab] = hexToRgb(a);
+  const [br, bg, bb] = hexToRgb(b);
+  const r = Math.round(ar + (br - ar) * t);
+  const g = Math.round(ag + (bg - ag) * t);
+  const bl = Math.round(ab + (bb - ab) * t);
+  return `rgb(${r}, ${g}, ${bl})`;
+}
+
+function withAlpha(rgb: string, alpha: number): string {
+  return rgb.replace("rgb(", "rgba(").replace(")", `, ${alpha})`);
+}
+
+// How far through the level sequence camY currently is: 0 = deep in level
+// 1, 1 = deep in level 2, 2 = deep in level 3 — linearly blended across
+// `span` on either side of each boundary, so the background eases between
+// themes instead of cutting sharply at the exact transition line.
+function levelZone(
+  camY: number,
+  level2Y0: number,
+  level3Y0: number,
+  span: number,
+): number {
+  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+  const z1 = clamp01((camY - (level2Y0 - span)) / (span * 2));
+  const z2 = clamp01((camY - (level3Y0 - span)) / (span * 2));
+  return z1 + z2;
+}
+
+function blendedLevelTheme(zone: number) {
+  const z = Math.max(0, Math.min(2, zone));
+  const i = Math.min(1, Math.floor(z));
+  const t = z - i;
+  const a = LEVEL_THEMES[i];
+  const b = LEVEL_THEMES[Math.min(2, i + 1)];
+  return {
+    bgTop: lerpColor(a.bgTop, b.bgTop, t),
+    bgMid: lerpColor(a.bgMid, b.bgMid, t),
+    bgBottom: lerpColor(a.bgBottom, b.bgBottom, t),
+    ambient: lerpColor(a.ambient, b.ambient, t),
+  };
+}
+
 // ─── Drawing ──────────────────────────────────────────────────────────────────
 
-function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
+function drawBackground(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  theme: { bgTop: string; bgMid: string; bgBottom: string; ambient: string },
+) {
   ctx.clearRect(0, 0, W, H);
   const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, "#0b0f2a");
-  grad.addColorStop(0.55, "#0d1130");
-  grad.addColorStop(1, "#020410");
+  grad.addColorStop(0, theme.bgTop);
+  grad.addColorStop(0.55, theme.bgMid);
+  grad.addColorStop(1, theme.bgBottom);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
 
@@ -890,8 +990,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
     H * 0.12,
     Math.max(W, H) * 0.65,
   );
-  glow.addColorStop(0, "rgba(247, 201, 72, 0.05)");
-  glow.addColorStop(0.4, "rgba(94, 234, 212, 0.035)");
+  glow.addColorStop(0, withAlpha(theme.ambient, 0.07));
   glow.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, W, H);
@@ -936,8 +1035,8 @@ function drawPegs(
     const sy = p.y - camY + arenaY;
     ctx.beginPath();
     ctx.arc(p.x, sy, p.r, 0, Math.PI * 2);
-    ctx.fillStyle = "#2dd4bf";
-    ctx.shadowColor = "rgba(45, 212, 191, 0.85)";
+    ctx.fillStyle = LEVEL_THEMES[0].obstacle;
+    ctx.shadowColor = LEVEL_THEMES[0].obstacleGlow;
     ctx.shadowBlur = 10;
     ctx.fill();
   }
@@ -956,8 +1055,8 @@ function drawGates(
   const bottom = camY + viewH + 80;
 
   ctx.save();
-  ctx.fillStyle = "#2dd4bf";
-  ctx.shadowColor = "rgba(45, 212, 191, 0.85)";
+  ctx.fillStyle = LEVEL_THEMES[1].obstacle;
+  ctx.shadowColor = LEVEL_THEMES[1].obstacleGlow;
   ctx.shadowBlur = 10;
   for (const g of gates) {
     if (g.trackY < top || g.trackY > bottom) continue;
@@ -977,7 +1076,7 @@ function drawGates(
   ctx.restore();
 }
 
-// Spinners — a rotating "+" cross. Matches the dark theme's peg/gate blue.
+// Spinners — a rotating "+" cross, in Level 3's gold accent.
 function drawSpinners(
   ctx: CanvasRenderingContext2D,
   spinners: Spinner[],
@@ -990,9 +1089,9 @@ function drawSpinners(
   const bottom = camY + viewH + 60;
 
   ctx.save();
-  ctx.strokeStyle = "#2dd4bf";
-  ctx.fillStyle = "#2dd4bf";
-  ctx.shadowColor = "rgba(45, 212, 191, 0.85)";
+  ctx.strokeStyle = LEVEL_THEMES[2].obstacle;
+  ctx.fillStyle = LEVEL_THEMES[2].obstacle;
+  ctx.shadowColor = LEVEL_THEMES[2].obstacleGlow;
   ctx.shadowBlur = 10;
   ctx.lineCap = "round";
   for (const s of spinners) {
@@ -1035,9 +1134,9 @@ function drawVortexRings(
   const bottom = camY + viewH + 120;
 
   ctx.save();
-  ctx.strokeStyle = "#2dd4bf";
-  ctx.fillStyle = "#2dd4bf";
-  ctx.shadowColor = "rgba(45, 212, 191, 0.85)";
+  ctx.strokeStyle = LEVEL_THEMES[2].obstacle;
+  ctx.fillStyle = LEVEL_THEMES[2].obstacle;
+  ctx.shadowColor = LEVEL_THEMES[2].obstacleGlow;
   ctx.shadowBlur = 10;
   ctx.lineCap = "round";
   for (const r of rings) {
@@ -1057,7 +1156,7 @@ function drawVortexRings(
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(0, 0, r.wallThickness * 0.7, 0, Math.PI * 2);
+    ctx.arc(0, 0, r.wallThickness * VORTEX_HUB_RADIUS_FACTOR, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.restore();
@@ -1122,6 +1221,119 @@ function drawFinishLine(
   ctx.restore();
 }
 
+// Draws a country's flag flattened over the ball's bounding box; the
+// caller is expected to have already clipped to the ball's circle, so
+// these rects/paths just need to cover [cx±r, cy±r] and the clip crops
+// them to the roundel. Patterns are simplified (no coats of arms /
+// suns / fine detail) since they render at ball-sized (tens of px).
+function drawCountryFlag(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  r: number,
+  country: string,
+) {
+  const x0 = cx - r;
+  const y0 = cy - r;
+  const w = r * 2;
+  const h = r * 2;
+
+  const hBands = (stops: [string, number][]) => {
+    let y = y0;
+    for (const [color, frac] of stops) {
+      const bandH = h * frac;
+      ctx.fillStyle = color;
+      ctx.fillRect(x0, y, w, bandH + 0.5);
+      y += bandH;
+    }
+  };
+
+  const vBands = (colors: string[]) => {
+    const bandW = w / colors.length;
+    colors.forEach((color, i) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(x0 + i * bandW, y0, bandW + 0.5, h);
+    });
+  };
+
+  switch (country) {
+    case "Colombia":
+      hBands([
+        ["#fcd116", 0.5],
+        ["#003893", 0.25],
+        ["#ce1126", 0.25],
+      ]);
+      break;
+    case "Argentina":
+      hBands([
+        ["#75aadb", 1 / 3],
+        ["#f6f6f6", 1 / 3],
+        ["#75aadb", 1 / 3],
+      ]);
+      break;
+    case "England": {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(x0, y0, w, h);
+      ctx.fillStyle = "#ce1124";
+      const barT = h * 0.32;
+      ctx.fillRect(x0, cy - barT / 2, w, barT);
+      ctx.fillRect(cx - barT / 2, y0, barT, h);
+      break;
+    }
+    case "Norway": {
+      ctx.fillStyle = "#ba0c2f";
+      ctx.fillRect(x0, y0, w, h);
+      const vx = x0 + w * 0.36; // Nordic cross sits toward the hoist side
+      const whiteT = h * 0.42;
+      const blueT = h * 0.2;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(x0, cy - whiteT / 2, w, whiteT);
+      ctx.fillRect(vx - whiteT / 2, y0, whiteT, h);
+      ctx.fillStyle = "#00205b";
+      ctx.fillRect(x0, cy - blueT / 2, w, blueT);
+      ctx.fillRect(vx - blueT / 2, y0, blueT, h);
+      break;
+    }
+    case "Spain":
+      hBands([
+        ["#aa151b", 0.25],
+        ["#f1bf00", 0.5],
+        ["#aa151b", 0.25],
+      ]);
+      break;
+    case "Belgium":
+      vBands(["#000000", "#fdda24", "#ef3340"]);
+      break;
+    case "France":
+      vBands(["#0055a4", "#f5f5f5", "#ef4135"]);
+      break;
+    case "Morocco": {
+      ctx.fillStyle = "#c1272d";
+      ctx.fillRect(x0, y0, w, h);
+      ctx.strokeStyle = "#006233";
+      ctx.lineWidth = Math.max(1, r * 0.09);
+      ctx.beginPath();
+      const spikes = 5;
+      const outerR = r * 0.62;
+      const innerR = outerR * 0.5;
+      for (let i = 0; i <= spikes * 2; i++) {
+        const ang = (Math.PI / spikes) * i - Math.PI / 2;
+        const rad = i % 2 === 0 ? outerR : innerR;
+        const px = cx + Math.cos(ang) * rad;
+        const py = cy + Math.sin(ang) * rad;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.stroke();
+      break;
+    }
+    default:
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillRect(x0, y0, w, h);
+  }
+}
+
 function drawBalls(
   ctx: CanvasRenderingContext2D,
   balls: Ball[],
@@ -1131,17 +1343,34 @@ function drawBalls(
 ) {
   balls.forEach((b, i) => {
     const sy = b.y + bob(i) - camY + arenaY;
+
     ctx.save();
     ctx.beginPath();
     ctx.arc(b.x, sy, b.r, 0, Math.PI * 2);
+    // Fill once with the hue while the shadow is active to get the glow
+    // halo, then turn the shadow off and clip before painting the flag so
+    // the individual bands/cross bars don't each cast their own blur.
     ctx.fillStyle = `hsl(${b.hue}, 88%, 58%)`;
     ctx.shadowColor = `hsl(${b.hue}, 100%, 68%)`;
     ctx.shadowBlur = b.glow > 0 ? b.r * 2.6 : b.r * 1.2;
     ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.clip();
+    drawCountryFlag(ctx, b.x, sy, b.r, b.name);
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(b.x, sy, b.r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.45)";
+    ctx.lineWidth = Math.max(1, b.r * 0.08);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
     ctx.beginPath();
     ctx.arc(b.x - b.r * 0.28, sy - b.r * 0.3, b.r * 0.36, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(255,255,255,0.24)";
-    ctx.shadowBlur = 0;
     ctx.fill();
     ctx.restore();
   });
@@ -1188,7 +1417,7 @@ function drawHud(
         ? "Get ready…"
         : phase === "finished"
           ? "Race complete!"
-          : "6 balls enter. Only 1 wins the maze.";
+          : "8 balls enter. Only 1 wins the maze.";
   ctx.fillText(subtitle, cx, mobile ? 66 : 80);
   ctx.restore();
 
@@ -1345,7 +1574,15 @@ const CollidingShapes = () => {
       const balls = ballsRef.current;
       const raceStartAt = raceStartAtRef.current;
 
-      drawBackground(ctx, W, H);
+      const bgZone = course
+        ? levelZone(
+            cameraRef.current,
+            course.level2Y0,
+            course.level3Y0,
+            arena.height * 0.5,
+          )
+        : 0;
+      drawBackground(ctx, W, H, blendedLevelTheme(bgZone));
       drawCanvasWatermark(ctx, W, H);
 
       if (!course || balls.length === 0) {
@@ -1390,7 +1627,6 @@ const CollidingShapes = () => {
         for (const ball of balls) {
           if (ball.finished) continue;
           applyAntiStall(ball, dt);
-          spawnTrail(particlesRef.current, ball);
         }
 
         for (const ball of balls) {
