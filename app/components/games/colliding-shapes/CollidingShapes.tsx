@@ -23,7 +23,29 @@ const GATE_GAP_BALL_FACTOR = 3.4; // gap width, in ball-diameters — generous f
 const GATE_BAR_THICKNESS_FACTOR = 0.9; // bar thickness, in ball-radii
 const GATE_WALL_MARGIN_FACTOR = 0.6; // min ball-radii of clearance kept at the wall when the gap swings to an extreme
 const GATE_SPACING_BALL_FACTOR = 7; // vertical spacing between gates, in ball-diameters — gives reaction time
-const GATE_MIN_COUNT = 5; // always at least this many gates, spacing stays fixed — the level lengthens instead of compressing
+const GATE_MIN_COUNT = 6; // always at least this many gates, spacing stays fixed — the level lengthens instead of compressing
+
+// Level 3, part A — "Spinner": a small rotating cross the ball dodges
+// around. Its arms are short relative to the corridor, so there's always
+// clear space to route around it — it narrows the path, it never seals it.
+// Laid out in rows across the corridor, alternating row sizes.
+const SPINNER_ROTATE_SPEED = 2.2; // rad/s — how fast a spinner's cross spins
+const SPINNER_ARM_LEN_FACTOR = 0.11; // each arm's reach from center, as a fraction of corridor width
+const SPINNER_THICKNESS_FACTOR = 0.8; // arm thickness, in ball-radii
+const SPINNER_SPACING_BALL_FACTOR = 6; // vertical spacing between spinner rows, in ball-diameters
+const SPINNER_ROW_PATTERN = [3, 2]; // spinners per row, in order down the level
+
+// Level 3, part B — "Vortex": a large rotating ring with a single wide
+// opening (a "C", not a closed loop) — just the ring, nothing attached to
+// it, so there's no piece that could ever close into a pocket.
+const VORTEX_ROTATE_SPEED = 0.7; // rad/s — how fast a vortex ring spins
+const VORTEX_RADIUS_FACTOR = 0.26; // outer ring radius, as a fraction of corridor width
+const VORTEX_WALL_THICKNESS_FACTOR = 0.8; // ring wall thickness, in ball-radii
+const VORTEX_GAP_BALL_FACTOR = 4.5; // the single opening's arc width, in ball-diameters — generous, since there's no second gap to fall back on
+const VORTEX_SPACING_BALL_FACTOR = 4; // extra reaction-room buffer added on top of the ring's own diameter, in ball-diameters
+const VORTEX_COUNT = 3;
+const VORTEX_RING_STEPS = 48; // straight segments approximating the ring
+const BALL_TRAIL_LIFE = 0.22; // seconds a speed-trail particle lives
 
 const TRACK_Y_MOBILE = 84;
 const TRACK_Y_DESKTOP = 100;
@@ -84,6 +106,38 @@ type Gate = {
   right: number;
 };
 
+// A small rotating cross (two perpendicular bars sharing a pivot) — the
+// "Spinner" obstacle. Arms are short relative to the corridor, so a ball
+// always has room to route around it.
+type Spinner = {
+  id: number;
+  cx: number;
+  cy: number;
+  armLen: number; // reach from center to a tip
+  thickness: number;
+  angle0: number;
+  rotationSpeed: number; // rad/s, sign is spin direction
+};
+
+// One wall segment of a vortex ring's geometry, in the ring's own local
+// (unrotated) coordinates — pre-built once and rotated per-frame rather
+// than regenerated, since the shape itself never changes, only its angle.
+type MazeSegment = { ax: number; ay: number; bx: number; by: number };
+
+// A large rotating ring with a single wide opening — the "Vortex"
+// obstacle. `localSegments` is shared by every ring of the same size,
+// since the geometry is identical; only cx/cy/angle differ per instance.
+type VortexRing = {
+  id: number;
+  cx: number;
+  cy: number;
+  outerR: number;
+  wallThickness: number;
+  angle0: number;
+  rotationSpeed: number; // rad/s, sign is spin direction
+  localSegments: MazeSegment[];
+};
+
 type PlatformHalf = { x: number; y: number; w: number; h: number };
 type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
 
@@ -91,6 +145,8 @@ type Course = {
   platform: StartPlatform;
   pegs: Peg[];
   gates: Gate[];
+  spinners: Spinner[];
+  vortexRings: VortexRing[];
   finishY: number;
 };
 
@@ -171,6 +227,41 @@ function buildStartPlatform(arena: Arena, ballR: number): StartPlatform {
   };
 }
 
+// Wraps an angle difference into [-π, π] — used to test whether an angle
+// falls within a gap centered elsewhere on the circle.
+function normalizeAngleDiff(a: number): number {
+  let d = ((a + Math.PI) % (Math.PI * 2)) - Math.PI;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+// Builds a vortex ring's wall geometry once, in local (unrotated)
+// coordinates centered on the ring's pivot: just the ring itself, broken
+// by a single wide opening (a "C", not a closed loop) — nothing else
+// attached, so there's no piece that could ever close into a pocket.
+function buildVortexSegments(
+  outerR: number,
+  gapAngle: number,
+): MazeSegment[] {
+  const segments: MazeSegment[] = [];
+  const gapCenter = -Math.PI / 2;
+
+  for (let i = 0; i < VORTEX_RING_STEPS; i++) {
+    const a0 = (i / VORTEX_RING_STEPS) * Math.PI * 2 - Math.PI;
+    const a1 = ((i + 1) / VORTEX_RING_STEPS) * Math.PI * 2 - Math.PI;
+    const mid = (a0 + a1) / 2;
+    if (Math.abs(normalizeAngleDiff(mid - gapCenter)) < gapAngle) continue;
+    segments.push({
+      ax: Math.cos(a0) * outerR,
+      ay: Math.sin(a0) * outerR,
+      bx: Math.cos(a1) * outerR,
+      by: Math.sin(a1) * outerR,
+    });
+  }
+
+  return segments;
+}
+
 function generateCourse(arena: Arena, ballR: number): Course {
   const width = arena.width;
   const left = arena.x;
@@ -178,22 +269,6 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   const platform = buildStartPlatform(arena, ballR);
   const level1Y0 = platform.left.y + platform.left.h + ballR * 3;
-  const level2Y0 = level1Y0 + levelH;
-
-  // Level 2's gates keep a fixed spacing and never drop below
-  // GATE_MIN_COUNT — on short screens the level lengthens (rather than the
-  // gates compressing together) to fit them all in.
-  const gateSpacing = ballR * 2 * GATE_SPACING_BALL_FACTOR;
-  const gateSpanFit = levelH * 0.9;
-  const gateCount = Math.max(
-    GATE_MIN_COUNT,
-    Math.round(gateSpanFit / gateSpacing) + 1,
-  );
-  const gateSpan = (gateCount - 1) * gateSpacing;
-
-  // 1 more empty screen-height of corridor before the finish line —
-  // obstacles to be redesigned from scratch.
-  const finishY = level2Y0 + Math.max(levelH, gateSpan) + levelH + ballR * 12;
 
   const pegs: Peg[] = [];
   let pgid = 0;
@@ -229,6 +304,7 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   // Level 1 — pure Plinko pegs, edge-to-edge.
   addPegField(level1Y0, levelH * 0.96);
+  const level1EndY = pegs.reduce((maxY, p) => Math.max(maxY, p.y), level1Y0);
 
   // Level 2 — "The Rhythmic Pulse": a sequence of gates whose gap swings
   // left/right on a sine wave. Consecutive gates alternate phaseOffset
@@ -268,6 +344,22 @@ function generateCourse(arena: Arena, ballR: number): Course {
     0,
     width / 2 - gateGapW / 2 - ballR * GATE_WALL_MARGIN_FACTOR,
   );
+
+  // Gates keep a fixed spacing and never drop below GATE_MIN_COUNT — on
+  // short screens the level lengthens (rather than the gates compressing
+  // together) to fit them all in.
+  const gateSpacing = ballR * 2 * GATE_SPACING_BALL_FACTOR;
+  const gateSpanFit = levelH * 0.9;
+  const gateCount = Math.max(
+    GATE_MIN_COUNT,
+    Math.round(gateSpanFit / gateSpacing) + 1,
+  );
+  const gateSpan = (gateCount - 1) * gateSpacing;
+
+  // At least 4 ball-diameters of clear corridor between the last Level 1
+  // peg row and the first Level 2 bar, so they never visually/physically
+  // run into each other.
+  const level2Y0 = level1EndY + ballR * 8;
   const gateTopY = level2Y0 + Math.max(0, levelH - gateSpan) / 2;
   for (let i = 0; i < gateCount; i++) {
     addGate(
@@ -280,7 +372,68 @@ function generateCourse(arena: Arena, ballR: number): Course {
     );
   }
 
-  return { platform, pegs, gates, finishY };
+  const level3Y0 = gateTopY + gateSpan + ballR * 6;
+
+  // Level 3, part A — Spinners: rows across the corridor, alternating row
+  // size per SPINNER_ROW_PATTERN (3 across, then 2 across).
+  const spinnerArmLen = width * SPINNER_ARM_LEN_FACTOR;
+  const spinnerThickness = ballR * SPINNER_THICKNESS_FACTOR;
+  const spinnerSpacing = ballR * 2 * SPINNER_SPACING_BALL_FACTOR;
+  const spinnerTopY = level3Y0 + spinnerSpacing / 2;
+
+  const spinners: Spinner[] = [];
+  let spinnerId = 0;
+  let spinnerRowY = spinnerTopY;
+  for (const rowCount of SPINNER_ROW_PATTERN) {
+    for (let i = 0; i < rowCount; i++) {
+      const frac = (i + 1) / (rowCount + 1);
+      spinners.push({
+        id: spinnerId,
+        cx: left + width * frac,
+        cy: spinnerRowY,
+        armLen: spinnerArmLen,
+        thickness: spinnerThickness,
+        angle0: Math.random() * Math.PI * 2,
+        rotationSpeed: (spinnerId % 2 === 0 ? 1 : -1) * SPINNER_ROTATE_SPEED,
+      });
+      spinnerId++;
+    }
+    spinnerRowY += spinnerSpacing;
+  }
+  const spinnersEndY = spinnerRowY - spinnerSpacing;
+
+  // Level 3, part B — Vortex rings. A ring's own diameter dwarfs the
+  // ball, so spacing has to clear that diameter first and only then add
+  // reaction room — a ball-diameter multiple alone (as gates use) would
+  // let consecutive rings overlap.
+  const vortexR = width * VORTEX_RADIUS_FACTOR;
+  const vortexGapW = ballR * 2 * VORTEX_GAP_BALL_FACTOR;
+  const vortexGapAngle = vortexGapW / (2 * vortexR);
+  const vortexWallH = ballR * VORTEX_WALL_THICKNESS_FACTOR;
+  // Every ring this level is the same size, so they all share one
+  // precomputed geometry — only cx/cy/angle differ per instance.
+  const vortexLocalSegments = buildVortexSegments(vortexR, vortexGapAngle);
+  const vortexSpacing = vortexR * 2 + ballR * 2 * VORTEX_SPACING_BALL_FACTOR;
+  const vortexTopY = spinnersEndY + spinnerSpacing * 1.5 + vortexR;
+
+  const vortexRings: VortexRing[] = [];
+  for (let i = 0; i < VORTEX_COUNT; i++) {
+    vortexRings.push({
+      id: i,
+      cx: left + width / 2,
+      cy: vortexTopY + i * vortexSpacing,
+      outerR: vortexR,
+      wallThickness: vortexWallH,
+      angle0: Math.random() * Math.PI * 2,
+      rotationSpeed: (i % 2 === 0 ? 1 : -1) * VORTEX_ROTATE_SPEED,
+      localSegments: vortexLocalSegments,
+    });
+  }
+  const vortexEndY = vortexTopY + (VORTEX_COUNT - 1) * vortexSpacing;
+
+  const finishY = vortexEndY + vortexR + levelH * 0.6 + ballR * 12;
+
+  return { platform, pegs, gates, spinners, vortexRings, finishY };
 }
 
 function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
@@ -427,6 +580,84 @@ function resolveGate(
   }
 }
 
+// Circle-to-Rotated-Line collision: rotate a bar's two endpoints by its
+// current angle (two cos/sin calls) and hand off to the same
+// closest-point segment test every other obstacle in this file uses.
+function resolveRotatedBar(
+  ball: Ball,
+  cx: number,
+  cy: number,
+  angle: number,
+  length: number,
+  thickness: number,
+  audio: RaceAudio,
+) {
+  const halfLen = length / 2;
+  const cosA = Math.cos(angle);
+  const sinA = Math.sin(angle);
+  const x1 = cx - cosA * halfLen;
+  const y1 = cy - sinA * halfLen;
+  const x2 = cx + cosA * halfLen;
+  const y2 = cy + sinA * halfLen;
+  resolveSegment(ball, x1, y1, x2, y2, thickness, audio);
+}
+
+// A Spinner is a cross: two perpendicular bars sharing a pivot. angle is
+// driven by absolute elapsed time, so — like the Level 2 gates — it can't
+// drift under frame-rate variance.
+function resolveSpinner(
+  ball: Ball,
+  spinner: Spinner,
+  elapsed: number,
+  audio: RaceAudio,
+) {
+  const angle = spinner.angle0 + spinner.rotationSpeed * elapsed;
+  const fullLen = spinner.armLen * 2;
+  resolveRotatedBar(
+    ball,
+    spinner.cx,
+    spinner.cy,
+    angle,
+    fullLen,
+    spinner.thickness,
+    audio,
+  );
+  resolveRotatedBar(
+    ball,
+    spinner.cx,
+    spinner.cy,
+    angle + Math.PI / 2,
+    fullLen,
+    spinner.thickness,
+    audio,
+  );
+}
+
+// The vortex ring's wall geometry is precomputed once in local
+// coordinates (buildVortexSegments); each frame we just rotate that fixed
+// shape by its current angle — one cos/sin pair for the whole ring,
+// reused for every segment — and hand each rotated segment to the same
+// closest-point-on-segment test used everywhere else in this file.
+function resolveVortexRing(
+  ball: Ball,
+  ring: VortexRing,
+  elapsed: number,
+  audio: RaceAudio,
+) {
+  if (Math.abs(ball.y - ring.cy) > ring.outerR + ball.r) return;
+
+  const angle = ring.angle0 + ring.rotationSpeed * elapsed;
+  const cosA = Math.cos(angle);
+  const sinA = Math.sin(angle);
+  for (const seg of ring.localSegments) {
+    const ax = ring.cx + seg.ax * cosA - seg.ay * sinA;
+    const ay = ring.cy + seg.ax * sinA + seg.ay * cosA;
+    const bx = ring.cx + seg.bx * cosA - seg.by * sinA;
+    const by = ring.cy + seg.bx * sinA + seg.by * cosA;
+    resolveSegment(ball, ax, ay, bx, by, ring.wallThickness, audio);
+  }
+}
+
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -492,6 +723,21 @@ function spawnBurst(
     });
   }
   if (particles.length > 180) particles.splice(0, particles.length - 180);
+}
+
+// Player ball glowing speed trail: one faint, short-lived particle spawned
+// per ball per frame while racing.
+function spawnTrail(particles: Particle[], ball: Ball) {
+  particles.push({
+    x: ball.x,
+    y: ball.y,
+    vx: -ball.vx * 0.08 + (Math.random() - 0.5) * ball.r * 0.4,
+    vy: -ball.vy * 0.08,
+    life: BALL_TRAIL_LIFE,
+    maxLife: BALL_TRAIL_LIFE,
+    hue: ball.hue,
+  });
+  if (particles.length > 220) particles.splice(0, particles.length - 220);
 }
 
 function updateParticles(particles: Particle[], dt: number) {
@@ -700,6 +946,94 @@ function drawGates(
     if (gapRightX < g.right) {
       ctx.fillRect(gapRightX, sy - halfH, g.right - gapRightX, g.barH);
     }
+  }
+  ctx.restore();
+}
+
+// Spinners — a rotating "+" cross. Matches the dark theme's peg/gate blue.
+function drawSpinners(
+  ctx: CanvasRenderingContext2D,
+  spinners: Spinner[],
+  camY: number,
+  arenaY: number,
+  viewH: number,
+  elapsed: number,
+) {
+  const top = camY - 60;
+  const bottom = camY + viewH + 60;
+
+  ctx.save();
+  ctx.strokeStyle = "#38bdf8";
+  ctx.fillStyle = "#38bdf8";
+  ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+  ctx.shadowBlur = 10;
+  ctx.lineCap = "round";
+  for (const s of spinners) {
+    if (s.cy < top || s.cy > bottom) continue;
+    const sy = s.cy - camY + arenaY;
+    const angle = s.angle0 + s.rotationSpeed * elapsed;
+
+    ctx.save();
+    ctx.translate(s.cx, sy);
+    ctx.rotate(angle);
+    ctx.lineWidth = s.thickness;
+    ctx.beginPath();
+    ctx.moveTo(-s.armLen, 0);
+    ctx.lineTo(s.armLen, 0);
+    ctx.moveTo(0, -s.armLen);
+    ctx.lineTo(0, s.armLen);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(0, 0, s.thickness * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+// Vortex rings — drawn by rotating the same local-space geometry used for
+// collision (as a bundle of short lines rather than arcs, so the visible
+// boundary can never drift out of sync with the physics boundary).
+function drawVortexRings(
+  ctx: CanvasRenderingContext2D,
+  rings: VortexRing[],
+  camY: number,
+  arenaY: number,
+  viewH: number,
+  elapsed: number,
+) {
+  const top = camY - 120;
+  const bottom = camY + viewH + 120;
+
+  ctx.save();
+  ctx.strokeStyle = "#38bdf8";
+  ctx.fillStyle = "#38bdf8";
+  ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+  ctx.shadowBlur = 10;
+  ctx.lineCap = "round";
+  for (const r of rings) {
+    if (r.cy < top || r.cy > bottom) continue;
+    const sy = r.cy - camY + arenaY;
+    const angle = r.angle0 + r.rotationSpeed * elapsed;
+
+    ctx.save();
+    ctx.translate(r.cx, sy);
+    ctx.rotate(angle);
+    ctx.lineWidth = r.wallThickness;
+    ctx.beginPath();
+    for (const seg of r.localSegments) {
+      ctx.moveTo(seg.ax, seg.ay);
+      ctx.lineTo(seg.bx, seg.by);
+    }
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(0, 0, r.wallThickness * 0.7, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
   }
   ctx.restore();
 }
@@ -996,6 +1330,12 @@ const CollidingShapes = () => {
             for (const gate of course.gates) {
               resolveGate(ball, gate, now / 1000, audio);
             }
+            for (const spinner of course.spinners) {
+              resolveSpinner(ball, spinner, now / 1000, audio);
+            }
+            for (const ring of course.vortexRings) {
+              resolveVortexRing(ball, ring, now / 1000, audio);
+            }
           }
           for (let i = 0; i < balls.length; i++) {
             for (let j = i + 1; j < balls.length; j++) {
@@ -1008,6 +1348,7 @@ const CollidingShapes = () => {
         for (const ball of balls) {
           if (ball.finished) continue;
           applyAntiStall(ball, dt);
+          spawnTrail(particlesRef.current, ball);
         }
 
         for (const ball of balls) {
@@ -1062,6 +1403,22 @@ const CollidingShapes = () => {
       if (phaseNow !== "menu") {
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
         drawGates(ctx, course.gates, camY, arena.y, arena.height, now / 1000);
+        drawSpinners(
+          ctx,
+          course.spinners,
+          camY,
+          arena.y,
+          arena.height,
+          now / 1000,
+        );
+        drawVortexRings(
+          ctx,
+          course.vortexRings,
+          camY,
+          arena.y,
+          arena.height,
+          now / 1000,
+        );
         drawFinishLine(ctx, course, arena, camY);
       }
 
