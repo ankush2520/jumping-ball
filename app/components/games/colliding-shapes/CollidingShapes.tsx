@@ -19,6 +19,9 @@ const PEG_RESTITUTION = 0.78;
 const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
 const GEAR_ROTATE_SPEED = 0.6; // rad/s
 
+const TRACK_Y_MOBILE = 84;
+const TRACK_Y_DESKTOP = 100;
+
 const RACE_END_GRACE_MS = 6000;
 const COUNTDOWN_MS = 3000;
 const START_SCREEN_FRACTION = 0.2; // where the start platform sits on screen (0 = top)
@@ -219,7 +222,7 @@ function generateCourse(arena: Arena, ballR: number): Course {
       cx,
       cy,
       hubR,
-      toothLen: hubR * 0.5,
+      toothLen: hubR * 0.5 * 0.65 * 1.25,
       toothW: hubR * 0.45 * 0.5,
       teethCount: 8,
       angle0: Math.random() * Math.PI * 2,
@@ -228,12 +231,14 @@ function generateCourse(arena: Arena, ballR: number): Course {
   };
 
   // Level 2 — gears laid out 2-1-2, top pair / middle single / bottom pair.
-  const gearR = ballR * 2.5 * 1.5 * 1.5;
-  addGear(left + width * 0.3, level2Y0 + levelH * 0.15, gearR);
-  addGear(left + width * 0.7, level2Y0 + levelH * 0.15, gearR);
+  const gearR = ballR * 2.5 * 1.5 * 1.5 * 1.25;
+  const gearRPair = gearR * 0.75;
+  const pairOffset = 0.2 * 1.25;
+  addGear(left + width * (0.5 - pairOffset), level2Y0 + levelH * 0.15, gearRPair);
+  addGear(left + width * (0.5 + pairOffset), level2Y0 + levelH * 0.15, gearRPair);
   addGear(left + width * 0.5, level2Y0 + levelH * 0.5, gearR);
-  addGear(left + width * 0.3, level2Y0 + levelH * 0.85, gearR);
-  addGear(left + width * 0.7, level2Y0 + levelH * 0.85, gearR);
+  addGear(left + width * (0.5 - pairOffset), level2Y0 + levelH * 0.85, gearRPair);
+  addGear(left + width * (0.5 + pairOffset), level2Y0 + levelH * 0.85, gearRPair);
 
   return { platform, pegs, gears, finishY };
 }
@@ -790,7 +795,7 @@ function drawHud(
   ctx.restore();
 
   if (phase === "racing" || phase === "finished") {
-    const trackY = mobile ? 84 : 100;
+    const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
     const trackW = width - (mobile ? 24 : 12);
     const trackX = cx - trackW / 2;
     ctx.save();
@@ -1048,10 +1053,23 @@ const CollidingShapes = () => {
           ? (i: number) => Math.sin(now / 650 + i * 1.3) * balls[i].r * 0.5
           : () => 0;
 
+      const clipToArena = phaseNow === "racing" || phaseNow === "finished";
+      if (clipToArena) {
+        const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(arena.x, trackY, arena.width, arena.H - trackY);
+        ctx.clip();
+      }
+
       drawBalls(ctx, balls, camY, arena.y, leader ? leader.id : null, bob);
 
       if (phaseNow === "racing" || phaseNow === "finished") {
         drawParticles(ctx, particlesRef.current, camY, arena.y);
+      }
+
+      if (clipToArena) {
+        ctx.restore();
       }
 
       drawHud(
