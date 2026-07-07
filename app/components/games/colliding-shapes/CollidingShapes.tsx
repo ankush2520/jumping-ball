@@ -17,7 +17,13 @@ const WALL_RESTITUTION = 0.92;
 const BALL_RESTITUTION = 0.82;
 const PEG_RESTITUTION = 0.78;
 const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
-const GEAR_ROTATE_SPEED = 0.6; // rad/s
+
+const GATE_MOVEMENT_SPEED = 1.15; // rad/s — oscillation frequency of a gate's gap
+const GATE_GAP_BALL_FACTOR = 3.4; // gap width, in ball-diameters — generous for touch/tilt latency
+const GATE_BAR_THICKNESS_FACTOR = 0.9; // bar thickness, in ball-radii
+const GATE_WALL_MARGIN_FACTOR = 0.6; // min ball-radii of clearance kept at the wall when the gap swings to an extreme
+const GATE_SPACING_BALL_FACTOR = 7; // vertical spacing between gates, in ball-diameters — gives reaction time
+const GATE_MIN_COUNT = 5; // always at least this many gates, spacing stays fixed — the level lengthens instead of compressing
 
 const TRACK_Y_MOBILE = 84;
 const TRACK_Y_DESKTOP = 100;
@@ -63,18 +69,19 @@ type Peg = {
   r: number;
 };
 
-// A gear/cog obstacle: a circular hub with evenly-spaced rectangular teeth
-// sticking out radially, spinning clockwise or counter-clockwise.
-type Gear = {
+// A horizontal gate: two solid bars with a gap between them. The gap slides
+// left/right along a sine wave, so the ball must time its pass through it.
+type Gate = {
   id: number;
-  cx: number;
-  cy: number;
-  hubR: number;
-  toothLen: number;
-  toothW: number;
-  teethCount: number;
-  angle0: number;
-  speed: number; // rad/s, sign is spin direction
+  trackY: number;
+  baseX: number; // resting (mid-swing) x of the gap center
+  amplitude: number; // movementDistance — how far the gap swings from baseX
+  frequency: number; // movementSpeed — angular speed of the oscillation (rad/s)
+  phaseOffset: number; // staggers gates into an alternating slalom
+  gapW: number;
+  barH: number;
+  left: number;
+  right: number;
 };
 
 type PlatformHalf = { x: number; y: number; w: number; h: number };
@@ -83,7 +90,7 @@ type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
 type Course = {
   platform: StartPlatform;
   pegs: Peg[];
-  gears: Gear[];
+  gates: Gate[];
   finishY: number;
 };
 
@@ -172,9 +179,21 @@ function generateCourse(arena: Arena, ballR: number): Course {
   const platform = buildStartPlatform(arena, ballR);
   const level1Y0 = platform.left.y + platform.left.h + ballR * 3;
   const level2Y0 = level1Y0 + levelH;
+
+  // Level 2's gates keep a fixed spacing and never drop below
+  // GATE_MIN_COUNT — on short screens the level lengthens (rather than the
+  // gates compressing together) to fit them all in.
+  const gateSpacing = ballR * 2 * GATE_SPACING_BALL_FACTOR;
+  const gateSpanFit = levelH * 0.9;
+  const gateCount = Math.max(
+    GATE_MIN_COUNT,
+    Math.round(gateSpanFit / gateSpacing) + 1,
+  );
+  const gateSpan = (gateCount - 1) * gateSpacing;
+
   // 1 more empty screen-height of corridor before the finish line —
   // obstacles to be redesigned from scratch.
-  const finishY = level2Y0 + levelH * 2 + ballR * 12;
+  const finishY = level2Y0 + Math.max(levelH, gateSpan) + levelH + ballR * 12;
 
   const pegs: Peg[] = [];
   let pgid = 0;
@@ -211,36 +230,57 @@ function generateCourse(arena: Arena, ballR: number): Course {
   // Level 1 — pure Plinko pegs, edge-to-edge.
   addPegField(level1Y0, levelH * 0.96);
 
-  const gears: Gear[] = [];
-  let gid = 0;
-
-  // A gear/cog: circular hub + 8 evenly-spaced rectangular teeth, spinning
-  // in a random direction.
-  const addGear = (cx: number, cy: number, hubR: number) => {
-    gears.push({
-      id: gid++,
-      cx,
-      cy,
-      hubR,
-      toothLen: hubR * 0.5 * 0.65 * 1.25,
-      toothW: hubR * 0.45 * 0.5,
-      teethCount: 8,
-      angle0: Math.random() * Math.PI * 2,
-      speed: (Math.random() < 0.5 ? 1 : -1) * GEAR_ROTATE_SPEED,
+  // Level 2 — "The Rhythmic Pulse": a sequence of gates whose gap swings
+  // left/right on a sine wave. Consecutive gates alternate phaseOffset
+  // (0, PI), so timing that clears one gate's gap runs out of sync for the
+  // next, forcing a slalom rhythm rather than a straight run down the middle.
+  const gates: Gate[] = [];
+  let gateId = 0;
+  const addGate = (
+    trackY: number,
+    phaseOffset: number,
+    frequency: number,
+    amplitude: number,
+    gapW: number,
+    barH: number,
+  ) => {
+    gates.push({
+      id: gateId++,
+      trackY,
+      baseX: left + width / 2,
+      amplitude,
+      frequency,
+      phaseOffset,
+      gapW,
+      barH,
+      left,
+      right: left + width,
     });
   };
 
-  // Level 2 — gears laid out 2-1-2, top pair / middle single / bottom pair.
-  const gearR = ballR * 2.5 * 1.5 * 1.5 * 1.25;
-  const gearRPair = gearR * 0.75;
-  const pairOffset = 0.2 * 1.25;
-  addGear(left + width * (0.5 - pairOffset), level2Y0 + levelH * 0.15, gearRPair);
-  addGear(left + width * (0.5 + pairOffset), level2Y0 + levelH * 0.15, gearRPair);
-  addGear(left + width * 0.5, level2Y0 + levelH * 0.5, gearR);
-  addGear(left + width * (0.5 - pairOffset), level2Y0 + levelH * 0.85, gearRPair);
-  addGear(left + width * (0.5 + pairOffset), level2Y0 + levelH * 0.85, gearRPair);
+  // Dynamic bounds: gap width, bar thickness, swing amplitude and row
+  // spacing are all derived from the corridor width and ball size (never a
+  // hardcoded pixel value), so the pattern scales cleanly across mobile
+  // aspect ratios and never lets a bar clip past the walls.
+  const gateGapW = ballR * 2 * GATE_GAP_BALL_FACTOR;
+  const gateBarH = ballR * GATE_BAR_THICKNESS_FACTOR;
+  const gateAmplitude = Math.max(
+    0,
+    width / 2 - gateGapW / 2 - ballR * GATE_WALL_MARGIN_FACTOR,
+  );
+  const gateTopY = level2Y0 + Math.max(0, levelH - gateSpan) / 2;
+  for (let i = 0; i < gateCount; i++) {
+    addGate(
+      gateTopY + i * gateSpacing,
+      i % 2 === 0 ? 0 : Math.PI,
+      GATE_MOVEMENT_SPEED,
+      gateAmplitude,
+      gateGapW,
+      gateBarH,
+    );
+  }
 
-  return { platform, pegs, gears, finishY };
+  return { platform, pegs, gates, finishY };
 }
 
 function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
@@ -343,39 +383,47 @@ function resolveSegment(
   audio.hit(ball.hue);
 }
 
-function resolveGear(
+// Gap center follows a sine wave driven by absolute elapsed time (not a
+// per-frame accumulator), so its position is exact regardless of frame
+// drops — no dt-accumulation drift to compensate for.
+function gateGapCenterX(gate: Gate, elapsed: number): number {
+  return (
+    gate.baseX +
+    gate.amplitude * Math.sin(gate.frequency * elapsed + gate.phaseOffset)
+  );
+}
+
+function resolveGate(
   ball: Ball,
-  gear: Gear,
+  gate: Gate,
   elapsed: number,
   audio: RaceAudio,
 ) {
-  const ddx = ball.x - gear.cx;
-  const ddy = ball.y - gear.cy;
-  const dist = Math.hypot(ddx, ddy);
-  const min = ball.r + gear.hubR;
-  if (dist < min && dist !== 0) {
-    const nx = ddx / dist;
-    const ny = ddy / dist;
-    ball.x += nx * (min - dist);
-    ball.y += ny * (min - dist);
-    const vn = ball.vx * nx + ball.vy * ny;
-    if (vn < 0) {
-      ball.vx -= (1 + PEG_RESTITUTION) * vn * nx;
-      ball.vy -= (1 + PEG_RESTITUTION) * vn * ny;
-    }
-    ball.glow = 0.3;
-    audio.hit(ball.hue);
+  const gapCenter = gateGapCenterX(gate, elapsed);
+  const gapHalf = gate.gapW / 2;
+  const gapLeftX = gapCenter - gapHalf;
+  const gapRightX = gapCenter + gapHalf;
+  if (gapLeftX > gate.left) {
+    resolveSegment(
+      ball,
+      gate.left,
+      gate.trackY,
+      gapLeftX,
+      gate.trackY,
+      gate.barH,
+      audio,
+    );
   }
-  const rot = gear.angle0 + gear.speed * elapsed;
-  for (let i = 0; i < gear.teethCount; i++) {
-    const angle = rot + (i / gear.teethCount) * Math.PI * 2;
-    const cosA = Math.cos(angle);
-    const sinA = Math.sin(angle);
-    const x1 = gear.cx + cosA * gear.hubR * 0.8;
-    const y1 = gear.cy + sinA * gear.hubR * 0.8;
-    const x2 = gear.cx + cosA * (gear.hubR + gear.toothLen);
-    const y2 = gear.cy + sinA * (gear.hubR + gear.toothLen);
-    resolveSegment(ball, x1, y1, x2, y2, gear.toothW, audio);
+  if (gapRightX < gate.right) {
+    resolveSegment(
+      ball,
+      gapRightX,
+      gate.trackY,
+      gate.right,
+      gate.trackY,
+      gate.barH,
+      audio,
+    );
   }
 }
 
@@ -623,52 +671,35 @@ function drawPegs(
   ctx.restore();
 }
 
-function drawGears(
+function drawGates(
   ctx: CanvasRenderingContext2D,
-  gears: Gear[],
+  gates: Gate[],
   camY: number,
   arenaY: number,
   viewH: number,
   elapsed: number,
 ) {
-  const top = camY - 120;
-  const bottom = camY + viewH + 120;
+  const top = camY - 80;
+  const bottom = camY + viewH + 80;
 
   ctx.save();
-  ctx.fillStyle = "#c084fc";
-  ctx.strokeStyle = "rgba(147, 51, 234, 0.9)";
-  ctx.lineWidth = 2;
-  ctx.shadowColor = "rgba(192, 132, 252, 0.7)";
-  ctx.shadowBlur = 12;
-  for (const g of gears) {
-    if (g.cy < top || g.cy > bottom) continue;
-    const sy = g.cy - camY + arenaY;
-    const rot = g.angle0 + g.speed * elapsed;
-
-    for (let i = 0; i < g.teethCount; i++) {
-      const angle = rot + (i / g.teethCount) * Math.PI * 2;
-      const midR = g.hubR * 0.8 + (g.toothLen + g.hubR * 0.2) / 2;
-      const midX = g.cx + Math.cos(angle) * midR;
-      const midY = sy + Math.sin(angle) * midR;
-      ctx.save();
-      ctx.translate(midX, midY);
-      ctx.rotate(angle);
-      ctx.beginPath();
-      ctx.rect(
-        -(g.toothLen + g.hubR * 0.2) / 2,
-        -g.toothW / 2,
-        g.toothLen + g.hubR * 0.2,
-        g.toothW,
-      );
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
+  ctx.fillStyle = "#38bdf8";
+  ctx.shadowColor = "rgba(56, 189, 248, 0.8)";
+  ctx.shadowBlur = 10;
+  for (const g of gates) {
+    if (g.trackY < top || g.trackY > bottom) continue;
+    const sy = g.trackY - camY + arenaY;
+    const gapCenter = gateGapCenterX(g, elapsed);
+    const gapHalf = g.gapW / 2;
+    const gapLeftX = gapCenter - gapHalf;
+    const gapRightX = gapCenter + gapHalf;
+    const halfH = g.barH / 2;
+    if (gapLeftX > g.left) {
+      ctx.fillRect(g.left, sy - halfH, gapLeftX - g.left, g.barH);
     }
-
-    ctx.beginPath();
-    ctx.arc(g.cx, sy, g.hubR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
+    if (gapRightX < g.right) {
+      ctx.fillRect(gapRightX, sy - halfH, g.right - gapRightX, g.barH);
+    }
   }
   ctx.restore();
 }
@@ -962,8 +993,8 @@ const CollidingShapes = () => {
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
             for (const peg of course.pegs) resolvePeg(ball, peg, audio);
-            for (const gear of course.gears) {
-              resolveGear(ball, gear, now / 1000, audio);
+            for (const gate of course.gates) {
+              resolveGate(ball, gate, now / 1000, audio);
             }
           }
           for (let i = 0; i < balls.length; i++) {
@@ -1030,7 +1061,7 @@ const CollidingShapes = () => {
 
       if (phaseNow !== "menu") {
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
-        drawGears(ctx, course.gears, camY, arena.y, arena.height, now / 1000);
+        drawGates(ctx, course.gates, camY, arena.y, arena.height, now / 1000);
         drawFinishLine(ctx, course, arena, camY);
       }
 
