@@ -59,7 +59,7 @@ const PLATFORM_OPEN_MS = 450;
 // distinguishable. The ball itself is rendered as that country's actual
 // flag (see drawCountryFlag), which is the real identity signal.
 const BALL_DEFS = [
-  { name: "Colombia", hue: 0 },
+  { name: "Switzerland", hue: 0 },
   { name: "Argentina", hue: 45 },
   { name: "England", hue: 90 },
   { name: "Norway", hue: 135 },
@@ -1257,13 +1257,16 @@ function drawCountryFlag(
   };
 
   switch (country) {
-    case "Colombia":
-      hBands([
-        ["#fcd116", 0.5],
-        ["#003893", 0.25],
-        ["#ce1126", 0.25],
-      ]);
+    case "Switzerland": {
+      ctx.fillStyle = "#d52b1e";
+      ctx.fillRect(x0, y0, w, h);
+      ctx.fillStyle = "#ffffff";
+      const armT = h * 0.2;
+      const armLen = h * 0.56;
+      ctx.fillRect(cx - armT / 2, cy - armLen / 2, armT, armLen);
+      ctx.fillRect(cx - armLen / 2, cy - armT / 2, armLen, armT);
       break;
+    }
     case "Argentina":
       hBands([
         ["#75aadb", 1 / 3],
@@ -1376,6 +1379,21 @@ function drawBalls(
   });
 }
 
+function ordinal(n: number): string {
+  const v = n % 100;
+  if (v >= 11 && v <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1:
+      return `${n}st`;
+    case 2:
+      return `${n}nd`;
+    case 3:
+      return `${n}rd`;
+    default:
+      return `${n}th`;
+  }
+}
+
 function drawHud(
   ctx: CanvasRenderingContext2D,
   arena: Arena,
@@ -1384,6 +1402,7 @@ function drawHud(
   balls: Ball[],
   finishY: number,
   leaderName: string,
+  finishedCount: number,
 ) {
   const { x, width } = arena;
   const cx = x + width / 2;
@@ -1410,9 +1429,15 @@ function drawHud(
   ctx.font = `700 ${mobile ? 12 : 14}px Arial, Helvetica, sans-serif`;
   ctx.fillStyle = "rgba(254, 247, 233, 0.78)";
   ctx.shadowBlur = 0;
+  const racingSubtitle = () => {
+    const remaining = balls.length - finishedCount;
+    if (finishedCount === 0) return `${leaderName} is leading!`;
+    if (remaining === 1) return `${leaderName} is last`;
+    return `${leaderName} is ${ordinal(finishedCount + 1)}`;
+  };
   const subtitle =
     phase === "racing"
-      ? `${leaderName} is leading!`
+      ? racingSubtitle()
       : phase === "countdown"
         ? "Get ready…"
         : phase === "finished"
@@ -1749,6 +1774,7 @@ const CollidingShapes = () => {
         balls,
         course.finishY,
         leader ? leader.name : "",
+        finishOrderRef.current.length,
       );
 
       if (phaseNow === "countdown") {
