@@ -10,7 +10,7 @@ const HUD_MOBILE = 168;
 const MAX_DT = 1 / 30;
 const SUBSTEPS = 5;
 const SOUND_GAP_MS = 55;
-const BG_MUSIC_VOLUME = 0.65;
+const BG_MUSIC_VOLUME = 0.2;
 
 const GRAVITY_K = 0.45; // px/s² per px of corridor width
 const MAX_FALL_K = 1.85; // px/s cap per px of corridor width
@@ -1526,49 +1526,6 @@ function drawCountryFlag(
   }
 }
 
-// Renders the same flag art used on the racing balls (via drawCountryFlag)
-// into a small circular canvas, so the leaderboard identifies balls by
-// flag instead of just the hue dot.
-function MiniFlag({ country, size = 22 }: { country: string; size?: number }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.scale(dpr, dpr);
-
-    const cx = size / 2;
-    const cy = size / 2;
-    const r = size / 2 - 1;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.clip();
-    drawCountryFlag(ctx, cx, cy, r, country);
-    ctx.restore();
-
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(15, 23, 42, 0.45)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }, [country, size]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      className="cr-standing-flag"
-      style={{ width: size, height: size }}
-    />
-  );
-}
-
 function drawBalls(
   ctx: CanvasRenderingContext2D,
   balls: Ball[],
@@ -1642,8 +1599,22 @@ function drawHud(
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  ctx.font = `900 ${mobile ? 26 : 38}px Arial, Helvetica, sans-serif`;
-  const titleW = ctx.measureText("COUNTRY BALL RACE").width;
+
+  // The fixed "back to menu" home button (app/page.tsx) sits at the
+  // viewport's top-left corner — right edge ~56px on mobile, ~44px on
+  // desktop — and this canvas shares the same pixel coordinate space as
+  // the viewport. Shrink the title (never below the 18px legibility
+  // floor) so it always clears that button instead of rendering under it.
+  const HOME_BTN_CLEARANCE = mobile ? 64 : 54;
+  let titleFontSize = mobile ? 26 : 38;
+  ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
+  let titleW = ctx.measureText("COUNTRY BALL RACE").width;
+  const maxTitleW = (cx - HOME_BTN_CLEARANCE) * 2;
+  if (maxTitleW > 0 && titleW > maxTitleW) {
+    titleFontSize = Math.max(18, titleFontSize * (maxTitleW / titleW));
+    ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
+    titleW = ctx.measureText("COUNTRY BALL RACE").width;
+  }
   const titleGrad = ctx.createLinearGradient(
     cx - titleW / 2,
     0,
@@ -1756,29 +1727,16 @@ const CollidingShapes = () => {
   const [phase, setPhase] = useState<Phase>("menu");
   const [standings, setStandings] = useState<Ball[]>([]);
   const [musicPromptOpen, setMusicPromptOpen] = useState(true);
-  const [musicOn, setMusicOn] = useState(false);
 
   const enableMusic = useCallback(() => {
     audioRef.current.unlock();
     audioRef.current.startMusic(BG_MUSIC_VOLUME);
-    setMusicOn(true);
     setMusicPromptOpen(false);
   }, []);
 
   const skipMusic = useCallback(() => {
     setMusicPromptOpen(false);
   }, []);
-
-  const toggleMusic = useCallback(() => {
-    if (musicOn) {
-      audioRef.current.stopMusic();
-      setMusicOn(false);
-    } else {
-      audioRef.current.unlock();
-      audioRef.current.startMusic(BG_MUSIC_VOLUME);
-      setMusicOn(true);
-    }
-  }, [musicOn]);
 
   const buildRace = useCallback((arena: Arena) => {
     const ballR = arena.width * 0.048 * 0.7 * 0.8;
@@ -1958,6 +1916,18 @@ const CollidingShapes = () => {
 
       const camY = cameraRef.current;
 
+      // Everything below is actual race content (corridor, obstacles,
+      // balls, particles). None of it should ever be able to paint above
+      // the HUD's track line, regardless of phase or camera position, so
+      // it's all drawn inside a single clip covering trackY..bottom. Only
+      // the full-bleed background/watermark above and the HUD/countdown
+      // overlay below fall outside this clip.
+      const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(arena.x, trackY, arena.width, arena.H - trackY);
+      ctx.clip();
+
       drawCorridor(ctx, arena, camY);
 
       if (phaseNow !== "menu") {
@@ -1991,26 +1961,10 @@ const CollidingShapes = () => {
         }
       }
 
-      // Reuse leadingBallRef so the HUD's "X is leading!" text always
-      // names the same ball the camera is following.
-      const leader =
-        phaseNow === "racing" || phaseNow === "finished"
-          ? leadingBallRef.current
-          : null;
-
       const bob =
         phaseNow === "menu" || phaseNow === "countdown"
           ? (i: number) => Math.sin(now / 650 + i * 1.3) * balls[i].r * 0.5
           : () => 0;
-
-      const clipToArena = phaseNow === "racing" || phaseNow === "finished";
-      if (clipToArena) {
-        const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(arena.x, trackY, arena.width, arena.H - trackY);
-        ctx.clip();
-      }
 
       drawBalls(ctx, balls, camY, arena.y, bob);
 
@@ -2018,9 +1972,14 @@ const CollidingShapes = () => {
         drawParticles(ctx, particlesRef.current, camY, arena.y);
       }
 
-      if (clipToArena) {
-        ctx.restore();
-      }
+      ctx.restore();
+
+      // Reuse leadingBallRef so the HUD's "X is leading!" text always
+      // names the same ball the camera is following.
+      const leader =
+        phaseNow === "racing" || phaseNow === "finished"
+          ? leadingBallRef.current
+          : null;
 
       drawHud(
         ctx,
@@ -2061,17 +2020,6 @@ const CollidingShapes = () => {
   return (
     <div className="cr-root">
       <canvas ref={canvasRef} className="cr-canvas" />
-
-      {!musicPromptOpen && (
-        <button
-          type="button"
-          className="cr-music-toggle"
-          onClick={toggleMusic}
-          aria-label={musicOn ? "Turn music off" : "Turn music on"}
-        >
-          {musicOn ? "🔊" : "🔇"}
-        </button>
-      )}
 
       {musicPromptOpen && (
         <div className="cr-finished">
@@ -2114,7 +2062,10 @@ const CollidingShapes = () => {
                           ? "🥉"
                           : `${i + 1}.`}
                   </span>
-                  <MiniFlag country={b.name} />
+                  <span
+                    className="cr-standing-dot"
+                    style={{ background: `hsl(${b.hue}, 88%, 58%)` }}
+                  />
                   <span className="cr-standing-name">{b.name}</span>
                 </div>
               ))}
@@ -2250,23 +2201,6 @@ const CollidingShapes = () => {
           cursor: pointer;
         }
 
-        .cr-music-toggle {
-          position: absolute;
-          top: max(12px, env(safe-area-inset-top));
-          right: max(12px, env(safe-area-inset-right));
-          z-index: 5;
-          width: 38px;
-          height: 38px;
-          border-radius: 50%;
-          border: 1px solid rgba(247, 201, 72, 0.38);
-          background: rgba(10, 12, 28, 0.72);
-          backdrop-filter: blur(8px);
-          color: #fde9b8;
-          font-size: 16px;
-          line-height: 1;
-          cursor: pointer;
-        }
-
         .cr-standings {
           width: 100%;
           display: flex;
@@ -2290,14 +2224,11 @@ const CollidingShapes = () => {
           text-align: center;
         }
 
-        .cr-standing-flag {
-          /* globals.css sets canvas { min-height: 100dvh } for the main
-             game canvas; the inline width/height on this element already
-             beats the rest of that rule, but min-height isn't set inline
-             so it still applies here and stretches this small flag icon
-             full-height unless we zero it out. */
-          min-height: 0;
+        .cr-standing-dot {
+          width: 14px;
+          height: 14px;
           border-radius: 50%;
+          box-shadow: 0 0 10px currentColor;
           flex-shrink: 0;
         }
 
