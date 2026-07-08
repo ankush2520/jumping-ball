@@ -10,7 +10,9 @@ const HUD_MOBILE = 168;
 const MAX_DT = 1 / 30;
 const SUBSTEPS = 5;
 const SOUND_GAP_MS = 55;
-const BG_MUSIC_VOLUME = 0.2;
+const BG_MUSIC_VOLUME = 0.075;
+const ARENA_PAD = 10; // clearance kept from every screen edge
+const HUD_TOP_PAD = 25; // fallback gap from the screen's top edge to the HUD text, if ball size isn't known yet
 
 const GRAVITY_K = 0.45; // px/s² per px of corridor width
 const MAX_FALL_K = 1.85; // px/s cap per px of corridor width
@@ -40,12 +42,14 @@ const SPINNER_ROW_PATTERN = [3, 2]; // spinners per row, in order down the level
 // opening (a "C", not a closed loop) — just the ring, nothing attached to
 // it, so there's no piece that could ever close into a pocket.
 const VORTEX_ROTATE_SPEED = 0.7; // rad/s — how fast a vortex ring spins
+const VORTEX_SPOKE_SPEED_MULT = 2.5; // the hub spoke spins this much faster than the ring (opposite direction)
 const VORTEX_RADIUS_FACTOR = 0.26 * 1.5 * 1.25; // outer ring radius, as a fraction of corridor width — spans nearly the full corridor, so the gap is the only way through
 const VORTEX_WALL_THICKNESS_FACTOR = 0.8; // ring wall thickness, in ball-radii
 const VORTEX_HUB_RADIUS_FACTOR = 0.7; // center pivot dot's radius, as a fraction of wall thickness — collidable, same as a peg
 const VORTEX_GAP_BALL_FACTOR = 4.5 * 3; // the single opening's arc width, in ball-diameters — generous, since there's no second gap to fall back on
 const VORTEX_SPACING_BALL_FACTOR = 4; // extra reaction-room buffer added on top of the ring's own diameter, in ball-diameters
-const VORTEX_COUNT = 3;
+const VORTEX_SMALL_RADIUS_FACTOR = 0.33 * 1.5; // side-by-side top/bottom rings, as a fraction of the big middle ring's radius
+const VORTEX_SMALL_GAP_FACTOR = 0.5; // side-by-side rings' opening width, relative to the standard gap formula — narrower, so they're harder to slip through
 const VORTEX_RING_STEPS = 48; // straight segments approximating the ring
 
 const TRACK_Y_MOBILE = 84;
@@ -198,10 +202,9 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
   const H = Math.round(window.visualViewport?.height ?? window.innerHeight);
   const mobile = W < 600;
   const hudH = mobile ? HUD_MOBILE : HUD_DESKTOP;
-  const pad = mobile ? 0 : 24;
   const maxWidth = mobile ? Infinity : 520;
-  const width = Math.min(W - pad * 2, maxWidth);
-  const height = Math.max(240, H - hudH - (mobile ? 0 : pad));
+  const width = Math.min(W - ARENA_PAD * 2, maxWidth);
+  const height = Math.max(240, H - hudH - ARENA_PAD);
   const x = Math.round((W - width) / 2);
   const y = hudH;
 
@@ -425,36 +428,61 @@ function generateCourse(arena: Arena, ballR: number): Course {
   }
   const spinnersEndY = spinnerRowY - spinnerSpacing;
 
-  // Level 3, part B — Vortex rings. A ring's own diameter dwarfs the
-  // ball, so spacing has to clear that diameter first and only then add
-  // reaction room — a ball-diameter multiple alone (as gates use) would
-  // let consecutive rings overlap.
+  // Level 3, part B — Vortex rings, arranged as a diamond instead of a
+  // single vertical line: two smaller rings side-by-side, then one big
+  // centered ring, then two more smaller rings side-by-side. A ring's own
+  // diameter dwarfs the ball, so spacing has to clear that diameter first
+  // and only then add reaction room — a ball-diameter multiple alone (as
+  // gates use) would let consecutive rows overlap.
   const vortexR = width * VORTEX_RADIUS_FACTOR;
-  const vortexGapW = ballR * 2 * VORTEX_GAP_BALL_FACTOR;
-  const vortexGapAngle = vortexGapW / (2 * vortexR);
   const vortexWallH = ballR * VORTEX_WALL_THICKNESS_FACTOR;
-  // Every ring this level is the same size, so they all share one
-  // precomputed geometry — only cx/cy/angle differ per instance.
-  const vortexLocalSegments = buildVortexSegments(vortexR, vortexGapAngle);
-  const vortexSpacing = vortexR * 2 + ballR * 2 * VORTEX_SPACING_BALL_FACTOR;
-  const vortexTopY = spinnersEndY + spinnerSpacing * 1.5 + vortexR;
+  const vortexRowWallMargin = ballR * 2; // clearance kept from the corridor wall
+  const vortexSmallR = Math.min(
+    vortexR * VORTEX_SMALL_RADIUS_FACTOR,
+    Math.max(ballR * 4, width * 0.25 - vortexRowWallMargin),
+  );
+  const gapAngleFor = (r: number, gapFactor = 1) =>
+    (ballR * 2 * VORTEX_GAP_BALL_FACTOR * gapFactor) / (2 * r);
+  const bigSegments = buildVortexSegments(vortexR, gapAngleFor(vortexR));
+  const smallSegments = buildVortexSegments(
+    vortexSmallR,
+    gapAngleFor(vortexSmallR, VORTEX_SMALL_GAP_FACTOR),
+  );
+
+  type VortexRow = { radius: number; segments: MazeSegment[]; cxFractions: number[] };
+  const vortexRows: VortexRow[] = [
+    { radius: vortexSmallR, segments: smallSegments, cxFractions: [0.25, 0.75] },
+    { radius: vortexR, segments: bigSegments, cxFractions: [0.5] },
+    { radius: vortexSmallR, segments: smallSegments, cxFractions: [0.25, 0.75] },
+  ];
 
   const vortexRings: VortexRing[] = [];
-  for (let i = 0; i < VORTEX_COUNT; i++) {
-    vortexRings.push({
-      id: i,
-      cx: left + width / 2,
-      cy: vortexTopY + i * vortexSpacing,
-      outerR: vortexR,
-      wallThickness: vortexWallH,
-      angle0: Math.random() * Math.PI * 2,
-      rotationSpeed: (i % 2 === 0 ? 1 : -1) * VORTEX_ROTATE_SPEED,
-      localSegments: vortexLocalSegments,
-    });
+  let vortexId = 0;
+  let rowCy = spinnersEndY + spinnerSpacing * 1.5 + vortexRows[0].radius;
+  let prevRadius = 0;
+  for (let rowI = 0; rowI < vortexRows.length; rowI++) {
+    const row = vortexRows[rowI];
+    if (rowI > 0) {
+      rowCy += prevRadius + row.radius + ballR * 2 * VORTEX_SPACING_BALL_FACTOR;
+    }
+    for (const frac of row.cxFractions) {
+      vortexRings.push({
+        id: vortexId,
+        cx: left + width * frac,
+        cy: rowCy,
+        outerR: row.radius,
+        wallThickness: vortexWallH,
+        angle0: Math.random() * Math.PI * 2,
+        rotationSpeed: (vortexId % 2 === 0 ? 1 : -1) * VORTEX_ROTATE_SPEED,
+        localSegments: row.segments,
+      });
+      vortexId++;
+    }
+    prevRadius = row.radius;
   }
-  const vortexEndY = vortexTopY + (VORTEX_COUNT - 1) * vortexSpacing;
+  const vortexEndY = rowCy;
 
-  const finishY = vortexEndY + vortexR + ballR * 8;
+  const finishY = vortexEndY + prevRadius + ballR * 8;
 
   return {
     platform,
@@ -700,6 +728,26 @@ function resolveVortexRing(
     const by = ring.cy + seg.bx * sinA + seg.by * cosA;
     resolveSegment(ball, ax, ay, bx, by, ring.wallThickness, audio);
   }
+
+  // The rotating spoke through the hub (drawVortexRings) spins the
+  // opposite direction from the ring wall, and VORTEX_SPOKE_SPEED_MULT
+  // times faster — an independent angle, so it needs its own cos/sin
+  // rather than reusing cosA/sinA above.
+  const hubR = ring.wallThickness * VORTEX_HUB_RADIUS_FACTOR;
+  const spokeLen = ring.outerR * 0.5;
+  const spokeAngle =
+    -(ring.angle0 + ring.rotationSpeed * VORTEX_SPOKE_SPEED_MULT * elapsed);
+  const spokeTipX = ring.cx + spokeLen * Math.sin(spokeAngle);
+  const spokeTipY = ring.cy - spokeLen * Math.cos(spokeAngle);
+  resolveSegment(
+    ball,
+    ring.cx,
+    ring.cy,
+    spokeTipX,
+    spokeTipY,
+    hubR * 2,
+    audio,
+  );
 }
 
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
@@ -1077,32 +1125,32 @@ function createAudio(): RaceAudio {
 // ─── Level color themes ─────────────────────────────────────────────────────
 //
 // Each level gets its own obstacle accent and background tint, escalating
-// from cool blue (start) through violet (mid) to gold (final/reward) — the
-// "blue = default, violet = rarity, gold = reward" convention used across
-// premium game UIs.
+// from cool blue (start) through hot pink (mid) to gold (final/reward) —
+// the "blue = default, pink = rarity, gold = reward" convention used
+// across premium game UIs.
 const LEVEL_THEMES = [
   {
     obstacle: "#38bdf8",
     obstacleGlow: "rgba(56, 189, 248, 0.85)",
-    bgTop: "#0b0f2a",
-    bgMid: "#0d1130",
-    bgBottom: "#020410",
+    bgTop: "#30334a",
+    bgMid: "#31354f",
+    bgBottom: "#282a34",
     ambient: "#38bdf8",
   },
   {
-    obstacle: "#a78bfa",
-    obstacleGlow: "rgba(167, 139, 250, 0.85)",
-    bgTop: "#160f2e",
-    bgMid: "#1d1240",
-    bgBottom: "#07040f",
-    ambient: "#a78bfa",
+    obstacle: "#ec4899",
+    obstacleGlow: "rgba(236, 72, 153, 0.85)",
+    bgTop: "#403343",
+    bgMid: "#4a3449",
+    bgBottom: "#2f2a30",
+    ambient: "#ec4899",
   },
   {
     obstacle: "#f7c948",
     obstacleGlow: "rgba(247, 201, 72, 0.85)",
-    bgTop: "#1c130a",
-    bgMid: "#241a0d",
-    bgBottom: "#0a0603",
+    bgTop: "#3e362f",
+    bgMid: "#453c31",
+    bgBottom: "#2f2b29",
     ambient: "#f7c948",
   },
 ] as const;
@@ -1183,6 +1231,19 @@ function drawBackground(
   glow.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, W, H);
+}
+
+// A light-gray strip along all four screen edges so the ARENA_PAD margin
+// kept around the race content is actually visible, instead of just
+// blending into the background theme color.
+function drawPaddingFrame(ctx: CanvasRenderingContext2D, W: number, H: number) {
+  ctx.save();
+  ctx.fillStyle = "rgba(212, 212, 216, 0.85)";
+  ctx.fillRect(0, 0, W, ARENA_PAD);
+  ctx.fillRect(0, H - ARENA_PAD, W, ARENA_PAD);
+  ctx.fillRect(0, 0, ARENA_PAD, H);
+  ctx.fillRect(W - ARENA_PAD, 0, ARENA_PAD, H);
+  ctx.restore();
 }
 
 function drawCorridor(
@@ -1333,8 +1394,12 @@ function drawVortexRings(
     const sy = r.cy - camY + arenaY;
     const angle = r.angle0 + r.rotationSpeed * elapsed;
 
+    const hubR = r.wallThickness * VORTEX_HUB_RADIUS_FACTOR;
+
     ctx.save();
     ctx.translate(r.cx, sy);
+
+    ctx.save();
     ctx.rotate(angle);
     ctx.lineWidth = r.wallThickness;
     ctx.beginPath();
@@ -1345,8 +1410,25 @@ function drawVortexRings(
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(0, 0, r.wallThickness * VORTEX_HUB_RADIUS_FACTOR, 0, Math.PI * 2);
+    ctx.arc(0, 0, hubR, 0, Math.PI * 2);
     ctx.fill();
+    ctx.restore();
+
+    // A rotating spoke through the hub dot — as thick as the dot itself
+    // and reaching out to half the ring's own radius. Spins the opposite
+    // direction from the ring itself (its own save/restore, separate from
+    // the ring's +angle transform above), and VORTEX_SPOKE_SPEED_MULT
+    // times faster.
+    const spokeAngle =
+      -(r.angle0 + r.rotationSpeed * VORTEX_SPOKE_SPEED_MULT * elapsed);
+    ctx.save();
+    ctx.rotate(spokeAngle);
+    ctx.lineWidth = hubR * 2;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(0, -r.outerR * 0.5);
+    ctx.stroke();
+    ctx.restore();
 
     ctx.restore();
   }
@@ -1596,6 +1678,26 @@ function drawHud(
   const { x, width } = arena;
   const cx = x + width / 2;
 
+  // The big "COUNTRY BALL RACE" title only shows for the pre-race beat
+  // (menu + countdown). Once racing starts it's replaced by just the
+  // leading-country status line, promoted up into the title's slot —
+  // no heading sitting at the top during the race itself.
+  const showTitle = phase === "menu" || phase === "countdown";
+
+  const racingSubtitle = () => {
+    const remaining = balls.length - finishedCount;
+    if (finishedCount === 0) return `${leaderName} is leading!`;
+    if (remaining === 1) return `${leaderName} is last`;
+    return `${leaderName} is ${ordinal(finishedCount + 1)}`;
+  };
+  const statusText = phase === "racing"
+    ? racingSubtitle()
+    : phase === "countdown"
+      ? "Get ready…"
+      : phase === "finished"
+        ? "Race complete!"
+        : "8 balls enter. Only 1 wins the maze.";
+
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
@@ -1603,54 +1705,72 @@ function drawHud(
   // The fixed "back to menu" home button (app/page.tsx) sits at the
   // viewport's top-left corner — right edge ~56px on mobile, ~44px on
   // desktop — and this canvas shares the same pixel coordinate space as
-  // the viewport. Shrink the title (never below the 18px legibility
-  // floor) so it always clears that button instead of rendering under it.
+  // the viewport. Shrink whatever text sits in the top slot (never below
+  // a legible floor) so it always clears that button.
   const HOME_BTN_CLEARANCE = mobile ? 64 : 54;
-  let titleFontSize = mobile ? 26 : 38;
-  ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
-  let titleW = ctx.measureText("COUNTRY BALL RACE").width;
-  const maxTitleW = (cx - HOME_BTN_CLEARANCE) * 2;
-  if (maxTitleW > 0 && titleW > maxTitleW) {
-    titleFontSize = Math.max(18, titleFontSize * (maxTitleW / titleW));
-    ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
-    titleW = ctx.measureText("COUNTRY BALL RACE").width;
-  }
-  const titleGrad = ctx.createLinearGradient(
-    cx - titleW / 2,
-    0,
-    cx + titleW / 2,
-    0,
-  );
-  titleGrad.addColorStop(0, "#fde9b8");
-  titleGrad.addColorStop(0.5, "#f7c948");
-  titleGrad.addColorStop(1, "#d4a017");
-  ctx.fillStyle = titleGrad;
-  ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
-  ctx.shadowBlur = 18;
-  ctx.fillText("COUNTRY BALL RACE", cx, mobile ? 44 : 56);
+  const maxTopW = (cx - HOME_BTN_CLEARANCE) * 2;
 
-  ctx.font = `700 ${mobile ? 12 : 14}px Arial, Helvetica, sans-serif`;
-  ctx.fillStyle = "rgba(254, 247, 233, 0.78)";
-  ctx.shadowBlur = 0;
-  const racingSubtitle = () => {
-    const remaining = balls.length - finishedCount;
-    if (finishedCount === 0) return `${leaderName} is leading!`;
-    if (remaining === 1) return `${leaderName} is last`;
-    return `${leaderName} is ${ordinal(finishedCount + 1)}`;
-  };
-  const subtitle =
-    phase === "racing"
-      ? racingSubtitle()
-      : phase === "countdown"
-        ? "Get ready…"
-        : phase === "finished"
-          ? "Race complete!"
-          : "8 balls enter. Only 1 wins the maze.";
-  ctx.fillText(subtitle, cx, mobile ? 66 : 80);
+  // Keep a gap of 5 ball-diameters between the screen's top edge and the
+  // visible top of whichever text occupies the top slot (title or, once
+  // racing starts, the promoted status line) — cap-height for this bold
+  // sans-serif runs roughly 0.75x the font size above the baseline.
+  const ballDiameter = balls.length > 0 ? balls[0].r * 2 : 0;
+  const topPad = ballDiameter > 0 ? ballDiameter * 5 : HUD_TOP_PAD;
+  const topOfTextY = (fontSize: number) => topPad + fontSize * 0.75;
+
+  // The progress track line (drawn below, once racing/finished) sits at
+  // trackY. On larger ball sizes the 5-diameter gap above can push past
+  // it, so the status line's baseline is clamped to stay clear of the
+  // line instead of overlapping it.
+  const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
+  const LINE_CLEARANCE = 14;
+
+  if (showTitle) {
+    let titleFontSize = mobile ? 26 : 38;
+    ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
+    let titleW = ctx.measureText("COUNTRY BALL RACE").width;
+    if (maxTopW > 0 && titleW > maxTopW) {
+      titleFontSize = Math.max(18, titleFontSize * (maxTopW / titleW));
+      ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
+      titleW = ctx.measureText("COUNTRY BALL RACE").width;
+    }
+    const titleGrad = ctx.createLinearGradient(
+      cx - titleW / 2,
+      0,
+      cx + titleW / 2,
+      0,
+    );
+    titleGrad.addColorStop(0, "#fde9b8");
+    titleGrad.addColorStop(0.5, "#f7c948");
+    titleGrad.addColorStop(1, "#d4a017");
+    ctx.fillStyle = titleGrad;
+    ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
+    ctx.shadowBlur = 18;
+    const titleY = topOfTextY(titleFontSize);
+    ctx.fillText("COUNTRY BALL RACE", cx, titleY);
+
+    const subtitleFontSize = mobile ? 12 : 14;
+    ctx.font = `700 ${subtitleFontSize}px Arial, Helvetica, sans-serif`;
+    ctx.fillStyle = "rgba(254, 247, 233, 0.78)";
+    ctx.shadowBlur = 0;
+    ctx.fillText(statusText, cx, titleY + (mobile ? 22 : 24));
+  } else {
+    let fontSize = mobile ? 20 : 26;
+    ctx.font = `800 ${fontSize}px Arial, Helvetica, sans-serif`;
+    let textW = ctx.measureText(statusText).width;
+    if (maxTopW > 0 && textW > maxTopW) {
+      fontSize = Math.max(14, fontSize * (maxTopW / textW));
+      ctx.font = `800 ${fontSize}px Arial, Helvetica, sans-serif`;
+    }
+    ctx.fillStyle = "#fde9b8";
+    ctx.shadowColor = "rgba(247, 201, 72, 0.45)";
+    ctx.shadowBlur = 12;
+    const statusY = Math.min(topOfTextY(fontSize), trackY - LINE_CLEARANCE);
+    ctx.fillText(statusText, cx, statusY);
+  }
   ctx.restore();
 
   if (phase === "racing" || phase === "finished") {
-    const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
     const trackW = width - (mobile ? 24 : 12);
     const trackX = cx - trackW / 2;
     ctx.save();
@@ -1739,7 +1859,7 @@ const CollidingShapes = () => {
   }, []);
 
   const buildRace = useCallback((arena: Arena) => {
-    const ballR = arena.width * 0.048 * 0.7 * 0.8;
+    const ballR = arena.width * 0.048 * 0.7 * 0.8 * 0.8;
     const course = generateCourse(arena, ballR);
     courseRef.current = course;
     ballsRef.current = spawnBalls(course.platform, ballR);
@@ -1822,6 +1942,7 @@ const CollidingShapes = () => {
           )
         : 0;
       drawBackground(ctx, W, H, blendedLevelTheme(bgZone));
+      drawPaddingFrame(ctx, W, H);
       drawCanvasWatermark(ctx, W, H);
 
       if (!course || balls.length === 0) {
@@ -1925,7 +2046,7 @@ const CollidingShapes = () => {
       const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
       ctx.save();
       ctx.beginPath();
-      ctx.rect(arena.x, trackY, arena.width, arena.H - trackY);
+      ctx.rect(arena.x, trackY, arena.width, arena.H - trackY - ARENA_PAD);
       ctx.clip();
 
       drawCorridor(ctx, arena, camY);
@@ -2084,7 +2205,7 @@ const CollidingShapes = () => {
           height: 100dvh;
           min-height: 100dvh;
           overflow: hidden;
-          background: #0b0f2a;
+          background: #30334a;
           color: #f8fafc;
         }
 
