@@ -10,6 +10,7 @@ const HUD_MOBILE = 168;
 const MAX_DT = 1 / 30;
 const SUBSTEPS = 5;
 const SOUND_GAP_MS = 55;
+const BG_MUSIC_VOLUME = 0.65;
 
 const GRAVITY_K = 0.45; // px/s² per px of corridor width
 const MAX_FALL_K = 1.85; // px/s cap per px of corridor width
@@ -181,6 +182,8 @@ type RaceAudio = {
   hit: (hue: number) => void;
   penalty: () => void;
   win: () => void;
+  startMusic: (volume: number) => void;
+  stopMusic: () => void;
   dispose: () => void;
 };
 
@@ -865,6 +868,165 @@ function createAudio(): RaceAudio {
     };
   };
 
+  // Struck-string timbre used by the background melody: a handful of
+  // harmonics with a fast attack and an exponential decay, instead of a
+  // single swept sine, so notes read as piano rather than a synth blip.
+  // `decay` controls how long the note rings on after the attack.
+  const struckTone = (
+    ctx: AudioContext,
+    dest: AudioNode,
+    freq: number,
+    t: number,
+    decay: number,
+    vol: number,
+    partials: [number, number][],
+  ) => {
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, t);
+    master.gain.linearRampToValueAtTime(vol, t + 0.008);
+    master.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+    master.connect(dest);
+
+    partials.forEach(([mult, amp]) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq * mult, t);
+      g.gain.value = amp;
+      osc.connect(g);
+      g.connect(master);
+      osc.start(t);
+      osc.stop(t + decay + 0.05);
+      osc.onended = () => {
+        osc.disconnect();
+        g.disconnect();
+      };
+    });
+  };
+
+  // Background music: the opening theme of Beethoven's "Für Elise", the
+  // most widely recognized classical piano piece, sequenced as a melody
+  // (right hand) plus a soft broken-chord bass (left hand). Public domain.
+  const NOTE = {
+    E2: 82.41,
+    A2: 110.0,
+    C3: 130.81,
+    E3: 164.81,
+    GS3: 207.65,
+    B3: 246.94,
+    C4: 261.63,
+    E4: 329.63,
+    GS4: 415.3,
+    A4: 440.0,
+    B4: 493.88,
+    C5: 523.25,
+    D5: 587.33,
+    DS5: 622.25,
+    E5: 659.25,
+  };
+  const EIGHTH = 0.34; // seconds per melody beat — a calm, unhurried tempo
+
+  type MelodyNote = { freq: number; beats: number };
+  const PHRASE: MelodyNote[] = [
+    { freq: NOTE.E5, beats: 1 },
+    { freq: NOTE.DS5, beats: 1 },
+    { freq: NOTE.E5, beats: 1 },
+    { freq: NOTE.DS5, beats: 1 },
+    { freq: NOTE.E5, beats: 1 },
+    { freq: NOTE.B4, beats: 1 },
+    { freq: NOTE.D5, beats: 1 },
+    { freq: NOTE.C5, beats: 1 },
+    { freq: NOTE.A4, beats: 3 },
+    { freq: NOTE.C4, beats: 1 },
+    { freq: NOTE.E4, beats: 1 },
+    { freq: NOTE.A4, beats: 1 },
+    { freq: NOTE.B4, beats: 3 },
+    { freq: NOTE.E4, beats: 1 },
+    { freq: NOTE.GS4, beats: 1 },
+    { freq: NOTE.B4, beats: 1 },
+    { freq: NOTE.C5, beats: 3 },
+    { freq: NOTE.E4, beats: 6 },
+  ];
+  const MELODY: MelodyNote[] = [...PHRASE, ...PHRASE];
+  const PHRASE_BEATS = PHRASE.reduce((sum, n) => sum + n.beats, 0);
+
+  type BassNote = { freq: number; startBeat: number; beats: number };
+  const BASS_PHRASE: BassNote[] = [
+    { freq: NOTE.A2, startBeat: 8, beats: 1 },
+    { freq: NOTE.C3, startBeat: 9, beats: 1 },
+    { freq: NOTE.E3, startBeat: 10, beats: 1 },
+    { freq: NOTE.E3, startBeat: 14, beats: 1 },
+    { freq: NOTE.GS3, startBeat: 15, beats: 1 },
+    { freq: NOTE.B3, startBeat: 16, beats: 1 },
+    { freq: NOTE.A2, startBeat: 20, beats: 1 },
+    { freq: NOTE.C3, startBeat: 21, beats: 1 },
+    { freq: NOTE.E3, startBeat: 22, beats: 1 },
+    { freq: NOTE.E2, startBeat: 23, beats: 2 },
+    { freq: NOTE.GS3, startBeat: 25, beats: 2 },
+    { freq: NOTE.B3, startBeat: 27, beats: 2 },
+  ];
+  const BASS: BassNote[] = [
+    ...BASS_PHRASE,
+    ...BASS_PHRASE.map((n) => ({ ...n, startBeat: n.startBeat + PHRASE_BEATS })),
+  ];
+
+  const LOOP_LEN =
+    MELODY.reduce((sum, n) => sum + n.beats, 0) * EIGHTH;
+
+  const MELODY_PARTIALS: [number, number][] = [
+    [1, 1],
+    [2, 0.4],
+    [3, 0.15],
+  ];
+  const BASS_PARTIALS: [number, number][] = [
+    [1, 1],
+    [2, 0.25],
+  ];
+
+  let musicGain: GainNode | null = null;
+  let musicTimeoutId: number | null = null;
+  let musicPlaying = false;
+
+  const scheduleMelody = (startTime: number) => {
+    const ctx = ensure();
+    if (!ctx || !musicGain) return;
+    const gain = musicGain;
+    let cursor = 0;
+    for (const note of MELODY) {
+      const dur = note.beats * EIGHTH;
+      struckTone(
+        ctx,
+        gain,
+        note.freq,
+        startTime + cursor,
+        dur * 1.6 + 0.15,
+        0.1,
+        MELODY_PARTIALS,
+      );
+      cursor += dur;
+    }
+    for (const note of BASS) {
+      struckTone(
+        ctx,
+        gain,
+        note.freq,
+        startTime + note.startBeat * EIGHTH,
+        note.beats * EIGHTH * 1.6 + 0.15,
+        0.055,
+        BASS_PARTIALS,
+      );
+    }
+  };
+
+  const loopMusic = () => {
+    const ctx = ensure();
+    if (!ctx || !musicPlaying) return;
+    scheduleMelody(ctx.currentTime + 0.05);
+    musicTimeoutId = window.setTimeout(() => {
+      if (musicPlaying) loopMusic();
+    }, LOOP_LEN * 1000);
+  };
+
   return {
     unlock: () => {
       ensure();
@@ -876,9 +1038,36 @@ function createAudio(): RaceAudio {
       timeouts.push(window.setTimeout(() => ping(660, 0.16, false), 120));
       timeouts.push(window.setTimeout(() => ping(880, 0.18, false), 260));
     },
+    startMusic: (volume: number) => {
+      const ctx = ensure();
+      if (!ctx || musicPlaying) return;
+      musicPlaying = true;
+      musicGain = ctx.createGain();
+      musicGain.gain.value = volume;
+      musicGain.connect(ctx.destination);
+      loopMusic();
+    },
+    stopMusic: () => {
+      musicPlaying = false;
+      if (musicTimeoutId !== null) {
+        window.clearTimeout(musicTimeoutId);
+        musicTimeoutId = null;
+      }
+      if (musicGain && ac) {
+        const g = musicGain;
+        const t = ac.currentTime;
+        g.gain.cancelScheduledValues(t);
+        g.gain.setValueAtTime(g.gain.value, t);
+        g.gain.linearRampToValueAtTime(0.0001, t + 0.3);
+        window.setTimeout(() => g.disconnect(), 400);
+      }
+      musicGain = null;
+    },
     dispose: () => {
       timeouts.forEach((id) => window.clearTimeout(id));
       timeouts.length = 0;
+      musicPlaying = false;
+      if (musicTimeoutId !== null) window.clearTimeout(musicTimeoutId);
       void ac?.close();
       ac = null;
     },
@@ -1337,6 +1526,49 @@ function drawCountryFlag(
   }
 }
 
+// Renders the same flag art used on the racing balls (via drawCountryFlag)
+// into a small circular canvas, so the leaderboard identifies balls by
+// flag instead of just the hue dot.
+function MiniFlag({ country, size = 22 }: { country: string; size?: number }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = size * dpr;
+    canvas.height = size * dpr;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+
+    const cx = size / 2;
+    const cy = size / 2;
+    const r = size / 2 - 1;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    drawCountryFlag(ctx, cx, cy, r, country);
+    ctx.restore();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(15, 23, 42, 0.45)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }, [country, size]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="cr-standing-flag"
+      style={{ width: size, height: size }}
+    />
+  );
+}
+
 function drawBalls(
   ctx: CanvasRenderingContext2D,
   balls: Ball[],
@@ -1411,7 +1643,7 @@ function drawHud(
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
   ctx.font = `900 ${mobile ? 26 : 38}px Arial, Helvetica, sans-serif`;
-  const titleW = ctx.measureText("BALL RACE").width;
+  const titleW = ctx.measureText("COUNTRY BALL RACE").width;
   const titleGrad = ctx.createLinearGradient(
     cx - titleW / 2,
     0,
@@ -1424,7 +1656,7 @@ function drawHud(
   ctx.fillStyle = titleGrad;
   ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
   ctx.shadowBlur = 18;
-  ctx.fillText("BALL RACE", cx, mobile ? 44 : 56);
+  ctx.fillText("COUNTRY BALL RACE", cx, mobile ? 44 : 56);
 
   ctx.font = `700 ${mobile ? 12 : 14}px Arial, Helvetica, sans-serif`;
   ctx.fillStyle = "rgba(254, 247, 233, 0.78)";
@@ -1523,6 +1755,30 @@ const CollidingShapes = () => {
 
   const [phase, setPhase] = useState<Phase>("menu");
   const [standings, setStandings] = useState<Ball[]>([]);
+  const [musicPromptOpen, setMusicPromptOpen] = useState(true);
+  const [musicOn, setMusicOn] = useState(false);
+
+  const enableMusic = useCallback(() => {
+    audioRef.current.unlock();
+    audioRef.current.startMusic(BG_MUSIC_VOLUME);
+    setMusicOn(true);
+    setMusicPromptOpen(false);
+  }, []);
+
+  const skipMusic = useCallback(() => {
+    setMusicPromptOpen(false);
+  }, []);
+
+  const toggleMusic = useCallback(() => {
+    if (musicOn) {
+      audioRef.current.stopMusic();
+      setMusicOn(false);
+    } else {
+      audioRef.current.unlock();
+      audioRef.current.startMusic(BG_MUSIC_VOLUME);
+      setMusicOn(true);
+    }
+  }, [musicOn]);
 
   const buildRace = useCallback((arena: Arena) => {
     const ballR = arena.width * 0.048 * 0.7 * 0.8;
@@ -1806,6 +2062,34 @@ const CollidingShapes = () => {
     <div className="cr-root">
       <canvas ref={canvasRef} className="cr-canvas" />
 
+      {!musicPromptOpen && (
+        <button
+          type="button"
+          className="cr-music-toggle"
+          onClick={toggleMusic}
+          aria-label={musicOn ? "Turn music off" : "Turn music on"}
+        >
+          {musicOn ? "🔊" : "🔇"}
+        </button>
+      )}
+
+      {musicPromptOpen && (
+        <div className="cr-finished">
+          <div className="cr-panel">
+            <h2 className="cr-panel-title">🎵 Background Music</h2>
+            <p className="cr-music-desc">
+              Play music while you race? You can turn it off anytime.
+            </p>
+            <button type="button" className="cr-play-btn" onClick={enableMusic}>
+              🎶 MUSIC ON
+            </button>
+            <button type="button" className="cr-skip-btn" onClick={skipMusic}>
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
+
       {phase === "menu" && (
         <div className="cr-menu">
           <button type="button" className="cr-play-btn" onClick={startRace}>
@@ -1830,10 +2114,7 @@ const CollidingShapes = () => {
                           ? "🥉"
                           : `${i + 1}.`}
                   </span>
-                  <span
-                    className="cr-standing-dot"
-                    style={{ background: `hsl(${b.hue}, 88%, 58%)` }}
-                  />
+                  <MiniFlag country={b.name} />
                   <span className="cr-standing-name">{b.name}</span>
                 </div>
               ))}
@@ -1915,6 +2196,7 @@ const CollidingShapes = () => {
         .cr-finished {
           position: absolute;
           inset: 0;
+          z-index: 10;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -1947,6 +2229,44 @@ const CollidingShapes = () => {
           color: #fde9b8;
         }
 
+        .cr-music-desc {
+          margin: 0;
+          font-family: Arial, Helvetica, sans-serif;
+          font-size: clamp(0.85rem, 3vw, 0.95rem);
+          text-align: center;
+          color: rgba(254, 247, 233, 0.78);
+        }
+
+        .cr-skip-btn {
+          pointer-events: all;
+          background: none;
+          border: none;
+          color: rgba(254, 247, 233, 0.6);
+          font-family: Arial, Helvetica, sans-serif;
+          font-size: clamp(0.8rem, 2.5vw, 0.9rem);
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-decoration: underline;
+          cursor: pointer;
+        }
+
+        .cr-music-toggle {
+          position: absolute;
+          top: max(12px, env(safe-area-inset-top));
+          right: max(12px, env(safe-area-inset-right));
+          z-index: 5;
+          width: 38px;
+          height: 38px;
+          border-radius: 50%;
+          border: 1px solid rgba(247, 201, 72, 0.38);
+          background: rgba(10, 12, 28, 0.72);
+          backdrop-filter: blur(8px);
+          color: #fde9b8;
+          font-size: 16px;
+          line-height: 1;
+          cursor: pointer;
+        }
+
         .cr-standings {
           width: 100%;
           display: flex;
@@ -1970,11 +2290,14 @@ const CollidingShapes = () => {
           text-align: center;
         }
 
-        .cr-standing-dot {
-          width: 14px;
-          height: 14px;
+        .cr-standing-flag {
+          /* globals.css sets canvas { min-height: 100dvh } for the main
+             game canvas; the inline width/height on this element already
+             beats the rest of that rule, but min-height isn't set inline
+             so it still applies here and stretches this small flag icon
+             full-height unless we zero it out. */
+          min-height: 0;
           border-radius: 50%;
-          box-shadow: 0 0 10px currentColor;
           flex-shrink: 0;
         }
 
