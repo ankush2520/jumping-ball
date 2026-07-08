@@ -1233,12 +1233,12 @@ function drawBackground(
   ctx.fillRect(0, 0, W, H);
 }
 
-// A light-gray strip along all four screen edges so the ARENA_PAD margin
+// A pure-black strip along all four screen edges so the ARENA_PAD margin
 // kept around the race content is actually visible, instead of just
 // blending into the background theme color.
 function drawPaddingFrame(ctx: CanvasRenderingContext2D, W: number, H: number) {
   ctx.save();
-  ctx.fillStyle = "rgba(212, 212, 216, 0.85)";
+  ctx.fillStyle = "#000000";
   ctx.fillRect(0, 0, W, ARENA_PAD);
   ctx.fillRect(0, H - ARENA_PAD, W, ARENA_PAD);
   ctx.fillRect(0, 0, ARENA_PAD, H);
