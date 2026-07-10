@@ -83,7 +83,8 @@ const MOBILE_BOTTOM_SAFE_SPACING = 28;
 const PHYSICS_SUBSTEPS = 3;
 const RESTITUTION = 1;
 const SPEED_SCALE = 1.5;
-const BODY_SPEED_RATIO = 0.32 * SPEED_SCALE;
+const MERGE_SPEED_SCALE = 0.75;
+const BODY_SPEED_RATIO = 0.32 * SPEED_SCALE * MERGE_SPEED_SCALE;
 const CONNECTOR_TOLERANCE_RADIANS = (15 * Math.PI) / 180;
 const SAFFRON = "#28d0ea";
 const TRIANGLE_COLORS = [SAFFRON, SAFFRON, SAFFRON, SAFFRON];
@@ -1061,7 +1062,7 @@ const BrokenSquare = () => {
       const subDt = dt / PHYSICS_SUBSTEPS;
       const sc = squareCountRef.current;
       const isCountdown = !allowCollisionRef.current;
-      const countdownSpeed = (getBodySpeed(arena, 1) * 4) / Math.pow(sc, 0.25);
+      const countdownSpeed = getBodySpeed(arena, sc);
 
       for (let step = 0; step < PHYSICS_SUBSTEPS; step += 1) {
         if (isCountdown) {
