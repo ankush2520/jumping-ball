@@ -55,7 +55,7 @@ type WallSeg = { x1: number; y1: number; x2: number; y2: number };
 // ─── Canvas / Arena ───────────────────────────────────────────────────────────
 
 function resizeCanvas(canvas: HTMLCanvasElement): { arena: Arena } {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const W = Math.round(window.visualViewport?.width ?? window.innerWidth);
   const H = Math.round(window.visualViewport?.height ?? window.innerHeight);
   const mobile = W < 600;

@@ -160,7 +160,7 @@ const createBounceAudio = (): BounceAudio => {
 };
 
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const width = window.innerWidth;
   const height = window.innerHeight;
   const ctx = canvas.getContext("2d");

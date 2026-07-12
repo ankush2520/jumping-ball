@@ -36,7 +36,7 @@ type Arena = {
 };
 
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const viewport = window.visualViewport;
   const width = Math.round(viewport?.width ?? window.innerWidth);
   const height = Math.round(viewport?.height ?? window.innerHeight);

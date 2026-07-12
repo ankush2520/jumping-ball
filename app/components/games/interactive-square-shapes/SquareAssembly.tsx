@@ -264,7 +264,7 @@ const createAudio = (): AssemblyAudio => {
 //   headingH + 4*(A/G) + A + botPad = height
 //   A * (1 + 4/G) = height - headingH - botPad
 const resizeCanvas = (canvas: HTMLCanvasElement): Arena => {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const width = canvas.offsetWidth || window.innerWidth;
   const height = canvas.offsetHeight || window.innerHeight;
   const ctx = canvas.getContext("2d");
@@ -657,7 +657,7 @@ const drawArenaFrame = (
   arena: Arena,
   headingText: string,
 ) => {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const W = ctx.canvas.width / dpr;
   const H = ctx.canvas.height / dpr;
   const isMobile = W < 600;

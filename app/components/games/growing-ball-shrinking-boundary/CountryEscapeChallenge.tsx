@@ -96,7 +96,7 @@ function createAudio() {
 // ─── Canvas resize ────────────────────────────────────────────────────────────
 
 function resizeCanvas(canvas: HTMLCanvasElement): { arena: Arena; dpr: number } {
-  const dpr    = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr    = Math.min(window.devicePixelRatio || 1, 3);
   const W      = window.innerWidth;
   const H      = window.innerHeight;
   const ctx    = canvas.getContext("2d");

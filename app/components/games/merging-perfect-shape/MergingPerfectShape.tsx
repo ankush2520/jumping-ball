@@ -819,7 +819,7 @@ export default function MergingPerfectShape() {
   const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
     const W = window.innerWidth, H = window.innerHeight;
     canvas.style.width  = `${W}px`;
     canvas.style.height = `${H}px`;

@@ -197,7 +197,7 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
   arena: Arena;
   dpr: number;
 } {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const W = Math.round(window.visualViewport?.width ?? window.innerWidth);
   const H = Math.round(window.visualViewport?.height ?? window.innerHeight);
   const mobile = W < 600;
