@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 import BallInPendulumMotion from "../components/games/illusion-of-circle/BallInPendulumMotion";
 import BrokenSquare from "../components/games/merging-triangles/BrokenSquare";
-import CollidingShapes from "../components/games/colliding-shapes/CollidingShapes";
+import BallRace from "../components/games/ball-race/BallRace";
 import CountryEscapeChallenge from "../components/games/growing-ball-shrinking-boundary/CountryEscapeChallenge";
 import MergingPerfectShape from "../components/games/merging-perfect-shape/MergingPerfectShape";
 import PlasmaBounce from "../components/games/kessler-effect/PlasmaBounce";
@@ -27,21 +27,21 @@ export type Simulation = {
     | "square-assembly"
     | "merging-perfect-shape"
     | "ball-in-pendulum-motion"
-    | "colliding-shapes"
+    | "ball-race"
     | "yin-yang-balls";
   glow: "card-cyan" | "card-emerald" | "card-amber" | "card-violet" | "card-rose" | "card-orange" | "card-blue" | "card-indigo" | "card-slate";
 };
 
 export const simulations: Simulation[] = [
   {
-    id: "colliding-shapes",
+    id: "ball-race",
     title: "Ball Race",
     subtitle: "ARENA SPEED RACE",
     description: "Colorful balls race around the arena, bouncing off walls and crashing into each other.",
-    component: CollidingShapes,
+    component: BallRace,
     status: "experimental",
     accentColor: "#818cf8",
-    icon: "colliding-shapes",
+    icon: "ball-race",
     glow: "card-indigo",
   },
   {

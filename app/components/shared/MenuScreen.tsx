@@ -419,7 +419,7 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
     );
   }
 
-  if (icon === "colliding-shapes") {
+  if (icon === "ball-race") {
     return (
       <svg
         viewBox="0 0 72 72"

@@ -1824,7 +1824,7 @@ function drawCountdown(
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-const CollidingShapes = () => {
+const BallRace = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const arenaRef = useRef<Arena | null>(null);
   const courseRef = useRef<Course | null>(null);
@@ -2364,4 +2364,4 @@ const CollidingShapes = () => {
   );
 };
 
-export default CollidingShapes;
+export default BallRace;
