@@ -5,8 +5,8 @@ import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const HUD_DESKTOP = 150;
-const HUD_MOBILE = 168;
+const HUD_DESKTOP = 100;
+const HUD_MOBILE = 84;
 const MAX_DT = 1 / 30;
 const SUBSTEPS = 5;
 const SOUND_GAP_MS = 55;
@@ -21,42 +21,22 @@ const BALL_RESTITUTION = 0.82;
 const PEG_RESTITUTION = 0.78;
 const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
 
-const GATE_MOVEMENT_SPEED = 1.15; // rad/s — oscillation frequency of a gate's gap
-const GATE_GAP_BALL_FACTOR = 3.4 * 2; // gap width, in ball-diameters — generous for touch/tilt latency
-const GATE_BAR_THICKNESS_FACTOR = 0.9; // bar thickness, in ball-radii
-const GATE_WALL_MARGIN_FACTOR = 0.6; // min ball-radii of clearance kept at the wall when the gap swings to an extreme
-const GATE_SPACING_BALL_FACTOR = 7; // vertical spacing between gates, in ball-diameters — gives reaction time
-const GATE_MIN_COUNT = 6; // always at least this many gates, spacing stays fixed — the level lengthens instead of compressing
+// The peg field spans the entire screen (top to bottom) in a hex/brick
+// lattice. Every adjacent pair of pegs is a candidate "link" — a thin
+// connecting bar, solid to balls — but only PEG_LINK_FRACTION of those
+// candidates actually get one at any moment, so most gaps between pegs
+// stay open for a ball to fall through while some are walled off, forcing
+// it to route around. Which candidates are walled is re-rolled from
+// scratch every PEG_LINK_SWAP_SECS, so the layout keeps shifting under
+// the balls throughout the race.
+const PEG_LINK_FRACTION = 0.5;
+const PEG_LINK_THICKNESS_FACTOR = 0.45; // connecting bar thickness, in ball-radii — thin enough that unconnected gaps clearly read as open
+const PEG_LINK_SWAP_SECS = 5; // how often the open/walled combination re-rolls
+const PEG_LINK_FLASH_SECS = 0.35; // brief extra glow on a fresh combination right after it swaps
 
-// Level 3, part A — "Spinner": a small rotating cross the ball dodges
-// around. Its arms are short relative to the corridor, so there's always
-// clear space to route around it — it narrows the path, it never seals it.
-// Laid out in rows across the corridor, alternating row sizes.
-const SPINNER_ROTATE_SPEED = 2.2; // rad/s — how fast a spinner's cross spins
-const SPINNER_ARM_LEN_FACTOR = 0.11; // each arm's reach from center, as a fraction of corridor width
-const SPINNER_THICKNESS_FACTOR = 0.8; // arm thickness, in ball-radii
-const SPINNER_SPACING_BALL_FACTOR = 6; // vertical spacing between spinner rows, in ball-diameters
-const SPINNER_ROW_PATTERN = [3, 2]; // spinners per row, in order down the level
-
-// Level 3, part B — "Vortex": a large rotating ring with a single wide
-// opening (a "C", not a closed loop) — just the ring, nothing attached to
-// it, so there's no piece that could ever close into a pocket.
-const VORTEX_ROTATE_SPEED = 0.7; // rad/s — how fast a vortex ring spins
-const VORTEX_SPOKE_SPEED_MULT = 2.5; // the hub spoke spins this much faster than the ring (opposite direction)
-const VORTEX_RADIUS_FACTOR = 0.26 * 1.5 * 1.25; // outer ring radius, as a fraction of corridor width — spans nearly the full corridor, so the gap is the only way through
-const VORTEX_WALL_THICKNESS_FACTOR = 0.8; // ring wall thickness, in ball-radii
-const VORTEX_HUB_RADIUS_FACTOR = 0.7; // center pivot dot's radius, as a fraction of wall thickness — collidable, same as a peg
-const VORTEX_GAP_BALL_FACTOR = 4.5 * 3; // the single opening's arc width, in ball-diameters — generous, since there's no second gap to fall back on
-const VORTEX_SPACING_BALL_FACTOR = 4; // extra reaction-room buffer added on top of the ring's own diameter, in ball-diameters
-const VORTEX_SMALL_RADIUS_FACTOR = 0.33 * 1.5; // side-by-side top/bottom rings, as a fraction of the big middle ring's radius
-const VORTEX_SMALL_GAP_FACTOR = 0.5; // side-by-side rings' opening width, relative to the standard gap formula — narrower, so they're harder to slip through
-const VORTEX_RING_STEPS = 48; // straight segments approximating the ring
-
-const TRACK_Y_MOBILE = 84;
-const TRACK_Y_DESKTOP = 100;
+const DROP_STAGGER_SECS = 0.25; // gap between each ball's release, so 8 balls don't hit the same first gap at once
 
 const COUNTDOWN_MS = 3000;
-const START_SCREEN_FRACTION = 0.2; // where the start platform sits on screen (0 = top)
 const PLATFORM_OPEN_MS = 450;
 
 // hue is only used for the glow/particle-trail/HUD-dot effects — evenly
@@ -92,6 +72,7 @@ type Ball = {
   rank: number | null;
   stuckTimer: number;
   maxY: number;
+  dropDelay: number; // seconds after the start before gravity kicks in for this ball
 };
 
 type Peg = {
@@ -101,52 +82,21 @@ type Peg = {
   r: number;
 };
 
-// A horizontal gate: two solid bars with a gap between them. The gap slides
-// left/right along a sine wave, so the ball must time its pass through it.
-type Gate = {
-  id: number;
-  trackY: number;
-  baseX: number; // resting (mid-swing) x of the gap center
-  amplitude: number; // movementDistance — how far the gap swings from baseX
-  frequency: number; // movementSpeed — angular speed of the oscillation (rad/s)
-  phaseOffset: number; // staggers gates into an alternating slalom
-  gapW: number;
-  barH: number;
-  left: number;
-  right: number;
+// A thin bar connecting two adjacent pegs — half of all such candidate
+// pairs get one (PEG_LINK_FRACTION), walling off that particular gap
+// while its neighbors stay open for a ball to fall through.
+type PegLink = {
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
 };
 
-// A small rotating cross (two perpendicular bars sharing a pivot) — the
-// "Spinner" obstacle. Arms are short relative to the corridor, so a ball
-// always has room to route around it.
-type Spinner = {
-  id: number;
-  cx: number;
-  cy: number;
-  armLen: number; // reach from center to a tip
-  thickness: number;
-  angle0: number;
-  rotationSpeed: number; // rad/s, sign is spin direction
-};
-
-// One wall segment of a vortex ring's geometry, in the ring's own local
-// (unrotated) coordinates — pre-built once and rotated per-frame rather
-// than regenerated, since the shape itself never changes, only its angle.
-type MazeSegment = { ax: number; ay: number; bx: number; by: number };
-
-// A large rotating ring with a single wide opening — the "Vortex"
-// obstacle. `localSegments` is shared by every ring of the same size,
-// since the geometry is identical; only cx/cy/angle differ per instance.
-type VortexRing = {
-  id: number;
-  cx: number;
-  cy: number;
-  outerR: number;
-  wallThickness: number;
-  angle0: number;
-  rotationSpeed: number; // rad/s, sign is spin direction
-  localSegments: MazeSegment[];
-};
+// A candidate connection between two adjacent pegs — the peg field's
+// geometry never changes over a race, only which of these end up walled
+// (re-rolled every PEG_LINK_SWAP_SECS), so the candidate list itself is
+// built once and reused for every re-roll.
+type PegEdge = { a: Peg; b: Peg };
 
 type PlatformHalf = { x: number; y: number; w: number; h: number };
 type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
@@ -154,11 +104,15 @@ type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
 type Course = {
   platform: StartPlatform;
   pegs: Peg[];
-  gates: Gate[];
-  spinners: Spinner[];
-  vortexRings: VortexRing[];
-  level2Y0: number;
-  level3Y0: number;
+  pegEdges: PegEdge[];
+  // Indices into pegEdges of each peg's own down-left/down-right edges —
+  // the only two that let a ball fall past it — kept separate so a
+  // re-roll can still guarantee at least one stays open per peg.
+  pegDownEdges: number[][];
+  pegFirstRow: Peg[];
+  pegLastRow: Peg[];
+  pegLinks: PegLink[]; // the currently-active walled subset of pegEdges — re-rolled periodically
+  pegLinkThickness: number;
   finishY: number;
 };
 
@@ -240,260 +194,202 @@ function buildStartPlatform(arena: Arena, ballR: number): StartPlatform {
   };
 }
 
-// Wraps an angle difference into [-π, π] — used to test whether an angle
-// falls within a gap centered elsewhere on the circle.
-function normalizeAngleDiff(a: number): number {
-  let d = ((a + Math.PI) % (Math.PI * 2)) - Math.PI;
-  if (d < -Math.PI) d += Math.PI * 2;
-  return d;
-}
-
-// Builds a vortex ring's wall geometry once, in local (unrotated)
-// coordinates centered on the ring's pivot: just the ring itself, broken
-// by a single wide opening (a "C", not a closed loop) — nothing else
-// attached, so there's no piece that could ever close into a pocket.
-function buildVortexSegments(
-  outerR: number,
-  gapAngle: number,
-): MazeSegment[] {
-  const segments: MazeSegment[] = [];
-  const gapCenter = -Math.PI / 2;
-
-  for (let i = 0; i < VORTEX_RING_STEPS; i++) {
-    const a0 = (i / VORTEX_RING_STEPS) * Math.PI * 2 - Math.PI;
-    const a1 = ((i + 1) / VORTEX_RING_STEPS) * Math.PI * 2 - Math.PI;
-    const mid = (a0 + a1) / 2;
-    if (Math.abs(normalizeAngleDiff(mid - gapCenter)) < gapAngle) continue;
-    segments.push({
-      ax: Math.cos(a0) * outerR,
-      ay: Math.sin(a0) * outerR,
-      bx: Math.cos(a1) * outerR,
-      by: Math.sin(a1) * outerR,
-    });
-  }
-
-  return segments;
-}
-
+// The whole course fits inside one static screen (arena.height) — no
+// camera movement. A single Plinko peg field spans the full screen, with
+// thin bars randomly connecting half of all adjacent peg pairs — walling
+// off some gaps while leaving the rest open for a ball to fall through.
 function generateCourse(arena: Arena, ballR: number): Course {
   const width = arena.width;
   const left = arena.x;
   const levelH = arena.height;
 
   const platform = buildStartPlatform(arena, ballR);
-  const level1Y0 = platform.left.y + platform.left.h + ballR * 3;
-
-  const pegs: Peg[] = [];
-  let pgid = 0;
+  const topY0 = platform.left.y + platform.left.h + ballR * 3;
 
   // A hex/brick peg pattern — full rows of pegs alternating with rows
   // offset by half a spacing (one peg shorter), nested in the gaps above
   // and below. Spacing between neighbors, row-to-row or peg-to-peg within
-  // a row, is 2x a ball's diameter.
+  // a row, is 2x a ball's diameter. Pegs are kept in a row/col grid (not
+  // just a flat list) so adjacent pairs can be found by index instead of
+  // a geometric nearest-neighbor search.
   //   *  *  *  *  *  *
   //     *  *  *  *  *
   //   *  *  *  *  *  *
   //     *  *  *  *  *
-  const addPegField = (topY: number, span: number) => {
-    const ballSize = ballR * 2;
-    const spacing = ballSize * 2;
-    const pegR = ballR * 0.55 * 0.85;
-    const usable = width - ballR * 2;
-    const cols = Math.max(2, Math.floor(usable / spacing) + 1);
-    const gridW = (cols - 1) * spacing;
-    const baseX = left + (width - gridW) / 2;
-    const rows = Math.max(2, Math.round(span / spacing) + 1);
-    for (let row = 0; row < rows; row++) {
-      const y = topY + row * spacing;
-      const offsetRow = row % 2 === 1;
-      const rowCols = offsetRow ? cols - 1 : cols;
-      const startX = offsetRow ? baseX + spacing / 2 : baseX;
-      for (let c = 0; c < rowCols; c++) {
-        const x = startX + c * spacing;
-        pegs.push({ id: pgid++, x, y, r: pegR });
+  const ballSize = ballR * 2;
+  const spacing = ballSize * 2;
+  const pegR = ballR * 0.55 * 0.85;
+  const usable = width - ballR * 2;
+  const cols = Math.max(2, Math.floor(usable / spacing) + 1);
+  const gridW = (cols - 1) * spacing;
+  const baseX = left + (width - gridW) / 2;
+  // Fill the whole screen, leaving room at the bottom for the finish line.
+  const span = levelH - topY0 - ballR * 8;
+  const rows = Math.max(2, Math.round(span / spacing) + 1);
+
+  const pegs: Peg[] = [];
+  const grid: (Peg | undefined)[][] = [];
+  let pgid = 0;
+  for (let row = 0; row < rows; row++) {
+    const y = topY0 + row * spacing;
+    const offsetRow = row % 2 === 1;
+    const rowCols = offsetRow ? cols - 1 : cols;
+    const startX = offsetRow ? baseX + spacing / 2 : baseX;
+    const gridRow: (Peg | undefined)[] = [];
+    for (let c = 0; c < rowCols; c++) {
+      const x = startX + c * spacing;
+      const peg = { id: pgid++, x, y, r: pegR };
+      pegs.push(peg);
+      gridRow.push(peg);
+    }
+    grid.push(gridRow);
+  }
+  const lastRowY = topY0 + (rows - 1) * spacing;
+
+  // Every adjacent pair — same-row neighbors, plus the two diagonal
+  // neighbors each peg has in the row below (the standard triangular
+  // lattice) — is a candidate link.
+  const downNeighborCols = (row: number, c: number) => {
+    const offsetRow = row % 2 === 1;
+    // Full row (even) -> offset row below: down-left is (c-1), down-right is (c).
+    // Offset row (odd) -> full row below: down-left is (c), down-right is (c+1).
+    return offsetRow ? [c, c + 1] : [c - 1, c];
+  };
+
+  const pegEdges: PegEdge[] = [];
+  // For each peg, the indices (into `pegEdges`) of its own down-left/down-right
+  // edges specifically — tracked separately from same-row/upward edges,
+  // since those are the only two that let a ball actually fall past it.
+  const pegDownEdges: number[][] = Array.from({ length: pegs.length }, () => []);
+  for (let row = 0; row < rows; row++) {
+    const gridRow = grid[row];
+    for (let c = 0; c < gridRow.length; c++) {
+      const peg = gridRow[c];
+      if (!peg) continue;
+      const right = gridRow[c + 1];
+      if (right) pegEdges.push({ a: peg, b: right });
+
+      const nextRow = grid[row + 1];
+      if (!nextRow) continue;
+      const [dlCol, drCol] = downNeighborCols(row, c);
+      const downLeft = nextRow[dlCol];
+      const downRight = nextRow[drCol];
+      if (downLeft) {
+        pegDownEdges[peg.id].push(pegEdges.length);
+        pegEdges.push({ a: peg, b: downLeft });
+      }
+      if (downRight) {
+        pegDownEdges[peg.id].push(pegEdges.length);
+        pegEdges.push({ a: peg, b: downRight });
       }
     }
-  };
-
-  // Level 1 — pure Plinko pegs, edge-to-edge.
-  addPegField(level1Y0, levelH * 0.96);
-  const level1EndY = pegs.reduce((maxY, p) => Math.max(maxY, p.y), level1Y0);
-
-  // Level 2 — "The Rhythmic Pulse": a sequence of gates whose gap swings
-  // left/right on a sine wave. Consecutive gates alternate phaseOffset
-  // (0, PI), so timing that clears one gate's gap runs out of sync for the
-  // next, forcing a slalom rhythm rather than a straight run down the middle.
-  const gates: Gate[] = [];
-  let gateId = 0;
-  const addGate = (
-    trackY: number,
-    phaseOffset: number,
-    frequency: number,
-    amplitude: number,
-    gapW: number,
-    barH: number,
-  ) => {
-    gates.push({
-      id: gateId++,
-      trackY,
-      baseX: left + width / 2,
-      amplitude,
-      frequency,
-      phaseOffset,
-      gapW,
-      barH,
-      left,
-      right: left + width,
-    });
-  };
-
-  // Dynamic bounds: gap width, bar thickness, swing amplitude and row
-  // spacing are all derived from the corridor width and ball size (never a
-  // hardcoded pixel value), so the pattern scales cleanly across mobile
-  // aspect ratios and never lets a bar clip past the walls.
-  const gateGapW = ballR * 2 * GATE_GAP_BALL_FACTOR;
-  const gateBarH = ballR * GATE_BAR_THICKNESS_FACTOR;
-  const gateAmplitude = Math.max(
-    0,
-    width / 2 - gateGapW / 2 - ballR * GATE_WALL_MARGIN_FACTOR,
-  );
-
-  // Gates keep a fixed spacing and never drop below GATE_MIN_COUNT — on
-  // short screens the level lengthens (rather than the gates compressing
-  // together) to fit them all in.
-  const gateSpacing = ballR * 2 * GATE_SPACING_BALL_FACTOR;
-  const gateSpanFit = levelH * 0.9;
-  const gateCount = Math.max(
-    GATE_MIN_COUNT,
-    Math.round(gateSpanFit / gateSpacing) + 1,
-  );
-  const gateSpan = (gateCount - 1) * gateSpacing;
-
-  // At least 4 ball-diameters of clear corridor between the last Level 1
-  // peg row and the first Level 2 bar, so they never visually/physically
-  // run into each other.
-  const level2Y0 = level1EndY + ballR * 8;
-  const gateTopY = level2Y0 + Math.max(0, levelH - gateSpan) / 2;
-  for (let i = 0; i < gateCount; i++) {
-    addGate(
-      gateTopY + i * gateSpacing,
-      i % 2 === 0 ? 0 : Math.PI,
-      GATE_MOVEMENT_SPEED,
-      gateAmplitude,
-      gateGapW,
-      gateBarH,
-    );
   }
+  const pegFirstRow = grid[0].filter((p): p is Peg => !!p);
+  const pegLastRow = grid[rows - 1].filter((p): p is Peg => !!p);
 
-  const level3Y0 = gateTopY + gateSpan + ballR * 6;
-
-  // Level 3, part A — Spinners: rows across the corridor, alternating row
-  // size per SPINNER_ROW_PATTERN (3 across, then 2 across).
-  const spinnerArmLen = width * SPINNER_ARM_LEN_FACTOR;
-  const spinnerThickness = ballR * SPINNER_THICKNESS_FACTOR;
-  const spinnerSpacing = ballR * 2 * SPINNER_SPACING_BALL_FACTOR;
-  const spinnerTopY = level3Y0 + spinnerSpacing / 2;
-
-  const spinners: Spinner[] = [];
-  let spinnerId = 0;
-  let spinnerRowY = spinnerTopY;
-  // Keep the outermost spinner's reach at least this far from a wall, so
-  // widening a row's gap can never push an arm past the physics walls.
-  const spinnerRowWallMargin = spinnerArmLen + ballR * 1.5;
-  for (const rowCount of SPINNER_ROW_PATTERN) {
-    const baseGap = width / (rowCount + 1);
-    // The row of 3 gets a 2x gap per the level design; other row sizes
-    // keep their original spacing.
-    const desiredGap = rowCount === 3 ? baseGap * 2 : baseGap;
-    const maxSpan = Math.max(0, width - spinnerRowWallMargin * 2);
-    const gap =
-      rowCount > 1
-        ? Math.min(desiredGap, maxSpan / (rowCount - 1))
-        : desiredGap;
-    const totalSpan = gap * (rowCount - 1);
-    const startX = left + width / 2 - totalSpan / 2;
-    for (let i = 0; i < rowCount; i++) {
-      spinners.push({
-        id: spinnerId,
-        cx: startX + i * gap,
-        cy: spinnerRowY,
-        armLen: spinnerArmLen,
-        thickness: spinnerThickness,
-        angle0: Math.random() * Math.PI * 2,
-        rotationSpeed: (spinnerId % 2 === 0 ? 1 : -1) * SPINNER_ROTATE_SPEED,
-      });
-      spinnerId++;
-    }
-    spinnerRowY += spinnerSpacing;
-  }
-  const spinnersEndY = spinnerRowY - spinnerSpacing;
-
-  // Level 3, part B — Vortex rings, arranged as a diamond instead of a
-  // single vertical line: two smaller rings side-by-side, then one big
-  // centered ring, then two more smaller rings side-by-side. A ring's own
-  // diameter dwarfs the ball, so spacing has to clear that diameter first
-  // and only then add reaction room — a ball-diameter multiple alone (as
-  // gates use) would let consecutive rows overlap.
-  const vortexR = width * VORTEX_RADIUS_FACTOR;
-  const vortexWallH = ballR * VORTEX_WALL_THICKNESS_FACTOR;
-  const vortexRowWallMargin = ballR * 2; // clearance kept from the corridor wall
-  const vortexSmallR = Math.min(
-    vortexR * VORTEX_SMALL_RADIUS_FACTOR,
-    Math.max(ballR * 4, width * 0.25 - vortexRowWallMargin),
-  );
-  const gapAngleFor = (r: number, gapFactor = 1) =>
-    (ballR * 2 * VORTEX_GAP_BALL_FACTOR * gapFactor) / (2 * r);
-  const bigSegments = buildVortexSegments(vortexR, gapAngleFor(vortexR));
-  const smallSegments = buildVortexSegments(
-    vortexSmallR,
-    gapAngleFor(vortexSmallR, VORTEX_SMALL_GAP_FACTOR),
-  );
-
-  type VortexRow = { radius: number; segments: MazeSegment[]; cxFractions: number[] };
-  const vortexRows: VortexRow[] = [
-    { radius: vortexSmallR, segments: smallSegments, cxFractions: [0.25, 0.75] },
-    { radius: vortexR, segments: bigSegments, cxFractions: [0.5] },
-    { radius: vortexSmallR, segments: smallSegments, cxFractions: [0.25, 0.75] },
-  ];
-
-  const vortexRings: VortexRing[] = [];
-  let vortexId = 0;
-  let rowCy = spinnersEndY + spinnerSpacing * 1.5 + vortexRows[0].radius;
-  let prevRadius = 0;
-  for (let rowI = 0; rowI < vortexRows.length; rowI++) {
-    const row = vortexRows[rowI];
-    if (rowI > 0) {
-      rowCy += prevRadius + row.radius + ballR * 2 * VORTEX_SPACING_BALL_FACTOR;
-    }
-    for (const frac of row.cxFractions) {
-      vortexRings.push({
-        id: vortexId,
-        cx: left + width * frac,
-        cy: rowCy,
-        outerR: row.radius,
-        wallThickness: vortexWallH,
-        angle0: Math.random() * Math.PI * 2,
-        rotationSpeed: (vortexId % 2 === 0 ? 1 : -1) * VORTEX_ROTATE_SPEED,
-        localSegments: row.segments,
-      });
-      vortexId++;
-    }
-    prevRadius = row.radius;
-  }
-  const vortexEndY = rowCy;
-
-  const finishY = vortexEndY + prevRadius + ballR * 8;
+  const finishY = lastRowY + ballR * 8;
 
   return {
     platform,
     pegs,
-    gates,
-    spinners,
-    vortexRings,
-    level2Y0,
-    level3Y0,
+    pegEdges,
+    pegDownEdges,
+    pegFirstRow,
+    pegLastRow,
+    pegLinks: selectPegLinks(pegs, pegEdges, pegDownEdges, pegFirstRow, pegLastRow),
+    pegLinkThickness: ballR * PEG_LINK_THICKNESS_FACTOR,
     finishY,
   };
+}
+
+// Chooses which candidate peg-to-peg edges are walled this round. A ball
+// can only get permanently trapped if some pocket of the field is fully
+// sealed off by connected edges on every side. Independent per-edge coin
+// flips would produce plenty of those (a single sealed triangle alone is
+// ~1-in-8), so instead this uses a randomized spanning tree (Kruskal's,
+// via union-find): every peg — plus a virtual TOP node standing in for
+// "the open space above row 0" and a virtual BOTTOM node for "past the
+// last row, on to the finish" — ends up connected to every other through
+// some chain of *open* gaps before any edge is allowed to become a wall.
+// Only after that guarantee is secured do additional random edges get
+// walled off up to the target PEG_LINK_FRACTION.
+function selectPegLinks(
+  pegs: Peg[],
+  pegEdges: PegEdge[],
+  pegDownEdges: number[][],
+  firstRow: Peg[],
+  lastRow: Peg[],
+): PegLink[] {
+  const TOP = pegs.length;
+  const BOTTOM = pegs.length + 1;
+  const parent = Array.from({ length: pegs.length + 2 }, (_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  const union = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+    return ra !== rb;
+  };
+  for (const peg of firstRow) union(peg.id, TOP);
+  for (const peg of lastRow) union(peg.id, BOTTOM);
+
+  const order = pegEdges.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+
+  const open = new Array(pegEdges.length).fill(false);
+  let openCount = 0;
+  for (const i of order) {
+    if (union(pegEdges[i].a.id, pegEdges[i].b.id)) {
+      open[i] = true;
+      openCount++;
+    }
+  }
+
+  // A global spanning tree only guarantees *some* route exists somewhere —
+  // it says nothing about how far a ball might have to travel sideways to
+  // find it. The failure mode that actually matters is a peg whose two
+  // *downward* edges are both walls: a ball resting on it has no way to
+  // fall past on either side, regardless of how open the board is
+  // elsewhere. So every peg is guaranteed at least one open down-edge
+  // directly, rather than relying on generic connectivity or an
+  // undirected local quota that could be satisfied entirely by same-row
+  // or upward edges instead.
+  for (const downEdges of pegDownEdges) {
+    if (downEdges.length === 0) continue;
+    if (downEdges.some((i) => open[i])) continue;
+    const i = downEdges[Math.floor(Math.random() * downEdges.length)];
+    open[i] = true;
+    openCount++;
+  }
+
+  // Finally, open more of any remaining still-connected edges at random
+  // until the overall board-wide fraction reaches the target too.
+  const targetOpen = Math.max(openCount, Math.round(pegEdges.length * (1 - PEG_LINK_FRACTION)));
+  if (openCount < targetOpen) {
+    for (let i = 0; i < pegEdges.length && openCount < targetOpen; i++) {
+      if (!open[i]) {
+        open[i] = true;
+        openCount++;
+      }
+    }
+  }
+
+  const pegLinks: PegLink[] = [];
+  for (let i = 0; i < pegEdges.length; i++) {
+    if (open[i]) continue;
+    const { a, b } = pegEdges[i];
+    pegLinks.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
+  }
+  return pegLinks;
 }
 
 function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
@@ -505,6 +401,20 @@ function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
   );
   const xs = [...leftXs, ...rightXs];
   const y = platform.left.y - ballR * 1.3;
+  // Staggered (not simultaneous) drop order — 8 balls all released on the
+  // same frame converge on the same first few gaps in the peg field at
+  // once and jam each other there, since a gap is rarely wider than a
+  // single ball. Shuffled so it's not always the same country going first.
+  const dropOrder = BALL_DEFS.map((_, i) => i);
+  for (let i = dropOrder.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [dropOrder[i], dropOrder[j]] = [dropOrder[j], dropOrder[i]];
+  }
+  const dropDelays = new Array(BALL_DEFS.length);
+  dropOrder.forEach((ballIndex, slot) => {
+    dropDelays[ballIndex] = slot * DROP_STAGGER_SECS;
+  });
+
   return BALL_DEFS.map((def, i) => ({
     id: i,
     name: def.name,
@@ -519,6 +429,9 @@ function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
     rank: null,
     stuckTimer: 0,
     maxY: y,
+    dropDelay: dropDelays[i],
+    antiStallStrikes: 0,
+    phaseUntil: 0,
   }));
 }
 
@@ -602,152 +515,8 @@ function resolveSegment(
   audio.hit(ball.hue);
 }
 
-// Gap center follows a sine wave driven by absolute elapsed time (not a
-// per-frame accumulator), so its position is exact regardless of frame
-// drops — no dt-accumulation drift to compensate for.
-function gateGapCenterX(gate: Gate, elapsed: number): number {
-  return (
-    gate.baseX +
-    gate.amplitude * Math.sin(gate.frequency * elapsed + gate.phaseOffset)
-  );
-}
-
-function resolveGate(
-  ball: Ball,
-  gate: Gate,
-  elapsed: number,
-  audio: RaceAudio,
-) {
-  const gapCenter = gateGapCenterX(gate, elapsed);
-  const gapHalf = gate.gapW / 2;
-  const gapLeftX = gapCenter - gapHalf;
-  const gapRightX = gapCenter + gapHalf;
-  if (gapLeftX > gate.left) {
-    resolveSegment(
-      ball,
-      gate.left,
-      gate.trackY,
-      gapLeftX,
-      gate.trackY,
-      gate.barH,
-      audio,
-    );
-  }
-  if (gapRightX < gate.right) {
-    resolveSegment(
-      ball,
-      gapRightX,
-      gate.trackY,
-      gate.right,
-      gate.trackY,
-      gate.barH,
-      audio,
-    );
-  }
-}
-
-// Circle-to-Rotated-Line collision: rotate a bar's two endpoints by its
-// current angle (two cos/sin calls) and hand off to the same
-// closest-point segment test every other obstacle in this file uses.
-function resolveRotatedBar(
-  ball: Ball,
-  cx: number,
-  cy: number,
-  angle: number,
-  length: number,
-  thickness: number,
-  audio: RaceAudio,
-) {
-  const halfLen = length / 2;
-  const cosA = Math.cos(angle);
-  const sinA = Math.sin(angle);
-  const x1 = cx - cosA * halfLen;
-  const y1 = cy - sinA * halfLen;
-  const x2 = cx + cosA * halfLen;
-  const y2 = cy + sinA * halfLen;
-  resolveSegment(ball, x1, y1, x2, y2, thickness, audio);
-}
-
-// A Spinner is a cross: two perpendicular bars sharing a pivot. angle is
-// driven by absolute elapsed time, so — like the Level 2 gates — it can't
-// drift under frame-rate variance.
-function resolveSpinner(
-  ball: Ball,
-  spinner: Spinner,
-  elapsed: number,
-  audio: RaceAudio,
-) {
-  const angle = spinner.angle0 + spinner.rotationSpeed * elapsed;
-  const fullLen = spinner.armLen * 2;
-  resolveRotatedBar(
-    ball,
-    spinner.cx,
-    spinner.cy,
-    angle,
-    fullLen,
-    spinner.thickness,
-    audio,
-  );
-  resolveRotatedBar(
-    ball,
-    spinner.cx,
-    spinner.cy,
-    angle + Math.PI / 2,
-    fullLen,
-    spinner.thickness,
-    audio,
-  );
-}
-
-// The vortex ring's wall geometry is precomputed once in local
-// coordinates (buildVortexSegments); each frame we just rotate that fixed
-// shape by its current angle — one cos/sin pair for the whole ring,
-// reused for every segment — and hand each rotated segment to the same
-// closest-point-on-segment test used everywhere else in this file.
-function resolveVortexRing(
-  ball: Ball,
-  ring: VortexRing,
-  elapsed: number,
-  audio: RaceAudio,
-) {
-  if (Math.abs(ball.y - ring.cy) > ring.outerR + ball.r) return;
-
-  resolvePeg(
-    ball,
-    { x: ring.cx, y: ring.cy, r: ring.wallThickness * VORTEX_HUB_RADIUS_FACTOR },
-    audio,
-  );
-
-  const angle = ring.angle0 + ring.rotationSpeed * elapsed;
-  const cosA = Math.cos(angle);
-  const sinA = Math.sin(angle);
-  for (const seg of ring.localSegments) {
-    const ax = ring.cx + seg.ax * cosA - seg.ay * sinA;
-    const ay = ring.cy + seg.ax * sinA + seg.ay * cosA;
-    const bx = ring.cx + seg.bx * cosA - seg.by * sinA;
-    const by = ring.cy + seg.bx * sinA + seg.by * cosA;
-    resolveSegment(ball, ax, ay, bx, by, ring.wallThickness, audio);
-  }
-
-  // The rotating spoke through the hub (drawVortexRings) spins the
-  // opposite direction from the ring wall, and VORTEX_SPOKE_SPEED_MULT
-  // times faster — an independent angle, so it needs its own cos/sin
-  // rather than reusing cosA/sinA above.
-  const hubR = ring.wallThickness * VORTEX_HUB_RADIUS_FACTOR;
-  const spokeLen = ring.outerR * 0.5;
-  const spokeAngle =
-    -(ring.angle0 + ring.rotationSpeed * VORTEX_SPOKE_SPEED_MULT * elapsed);
-  const spokeTipX = ring.cx + spokeLen * Math.sin(spokeAngle);
-  const spokeTipY = ring.cy - spokeLen * Math.cos(spokeAngle);
-  resolveSegment(
-    ball,
-    ring.cx,
-    ring.cy,
-    spokeTipX,
-    spokeTipY,
-    hubR * 2,
-    audio,
-  );
+function resolvePegLink(ball: Ball, link: PegLink, thickness: number, audio: RaceAudio) {
+  resolveSegment(ball, link.ax, link.ay, link.bx, link.by, thickness, audio);
 }
 
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
@@ -1155,67 +924,25 @@ const LEVEL_THEMES = [
   },
 ] as const;
 
-function hexToRgb(hex: string): [number, number, number] {
+function withAlpha(hex: string, alpha: number): string {
   const n = parseInt(hex.slice(1), 16);
-  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-}
-
-function lerpColor(a: string, b: string, t: number): string {
-  const [ar, ag, ab] = hexToRgb(a);
-  const [br, bg, bb] = hexToRgb(b);
-  const r = Math.round(ar + (br - ar) * t);
-  const g = Math.round(ag + (bg - ag) * t);
-  const bl = Math.round(ab + (bb - ab) * t);
-  return `rgb(${r}, ${g}, ${bl})`;
-}
-
-function withAlpha(rgb: string, alpha: number): string {
-  return rgb.replace("rgb(", "rgba(").replace(")", `, ${alpha})`);
-}
-
-// How far through the level sequence camY currently is: 0 = deep in level
-// 1, 1 = deep in level 2, 2 = deep in level 3 — linearly blended across
-// `span` on either side of each boundary, so the background eases between
-// themes instead of cutting sharply at the exact transition line.
-function levelZone(
-  camY: number,
-  level2Y0: number,
-  level3Y0: number,
-  span: number,
-): number {
-  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
-  const z1 = clamp01((camY - (level2Y0 - span)) / (span * 2));
-  const z2 = clamp01((camY - (level3Y0 - span)) / (span * 2));
-  return z1 + z2;
-}
-
-function blendedLevelTheme(zone: number) {
-  const z = Math.max(0, Math.min(2, zone));
-  const i = Math.min(1, Math.floor(z));
-  const t = z - i;
-  const a = LEVEL_THEMES[i];
-  const b = LEVEL_THEMES[Math.min(2, i + 1)];
-  return {
-    bgTop: lerpColor(a.bgTop, b.bgTop, t),
-    bgMid: lerpColor(a.bgMid, b.bgMid, t),
-    bgBottom: lerpColor(a.bgBottom, b.bgBottom, t),
-    ambient: lerpColor(a.ambient, b.ambient, t),
-  };
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 // ─── Drawing ──────────────────────────────────────────────────────────────────
 
-function drawBackground(
-  ctx: CanvasRenderingContext2D,
-  W: number,
-  H: number,
-  theme: { bgTop: string; bgMid: string; bgBottom: string; ambient: string },
-) {
+// The whole course sits on one static screen, so the background is a fixed
+// gradient blending the three bands' theme colors top to bottom instead of
+// a camera-driven transition.
+function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
   ctx.clearRect(0, 0, W, H);
   const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, theme.bgTop);
-  grad.addColorStop(0.55, theme.bgMid);
-  grad.addColorStop(1, theme.bgBottom);
+  grad.addColorStop(0, LEVEL_THEMES[0].bgTop);
+  grad.addColorStop(0.5, LEVEL_THEMES[1].bgMid);
+  grad.addColorStop(1, LEVEL_THEMES[2].bgBottom);
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, W, H);
 
@@ -1227,7 +954,7 @@ function drawBackground(
     H * 0.12,
     Math.max(W, H) * 0.65,
   );
-  glow.addColorStop(0, withAlpha(theme.ambient, 0.07));
+  glow.addColorStop(0, withAlpha(LEVEL_THEMES[1].ambient, 0.07));
   glow.addColorStop(1, "rgba(0, 0, 0, 0)");
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, W, H);
@@ -1293,145 +1020,37 @@ function drawPegs(
   ctx.restore();
 }
 
-function drawGates(
+// The connecting bars between linked pegs, in Level 2's pink accent —
+// drawn as a single path so the whole network is one fill/stroke call
+// rather than one per link.
+function drawPegLinks(
   ctx: CanvasRenderingContext2D,
-  gates: Gate[],
+  links: PegLink[],
+  thickness: number,
   camY: number,
   arenaY: number,
   viewH: number,
-  elapsed: number,
+  flashT: number, // 0 = just swapped (brightest), 1 = fully settled
 ) {
   const top = camY - 80;
   const bottom = camY + viewH + 80;
+  const flash = Math.max(0, 1 - flashT);
 
   ctx.save();
-  ctx.fillStyle = LEVEL_THEMES[1].obstacle;
+  ctx.strokeStyle = flash > 0 ? "#ffffff" : LEVEL_THEMES[1].obstacle;
   ctx.shadowColor = LEVEL_THEMES[1].obstacleGlow;
-  ctx.shadowBlur = 10;
-  for (const g of gates) {
-    if (g.trackY < top || g.trackY > bottom) continue;
-    const sy = g.trackY - camY + arenaY;
-    const gapCenter = gateGapCenterX(g, elapsed);
-    const gapHalf = g.gapW / 2;
-    const gapLeftX = gapCenter - gapHalf;
-    const gapRightX = gapCenter + gapHalf;
-    const halfH = g.barH / 2;
-    if (gapLeftX > g.left) {
-      ctx.fillRect(g.left, sy - halfH, gapLeftX - g.left, g.barH);
-    }
-    if (gapRightX < g.right) {
-      ctx.fillRect(gapRightX, sy - halfH, g.right - gapRightX, g.barH);
-    }
-  }
-  ctx.restore();
-}
-
-// Spinners — a rotating "+" cross, in Level 3's gold accent.
-function drawSpinners(
-  ctx: CanvasRenderingContext2D,
-  spinners: Spinner[],
-  camY: number,
-  arenaY: number,
-  viewH: number,
-  elapsed: number,
-) {
-  const top = camY - 60;
-  const bottom = camY + viewH + 60;
-
-  ctx.save();
-  ctx.strokeStyle = LEVEL_THEMES[2].obstacle;
-  ctx.fillStyle = LEVEL_THEMES[2].obstacle;
-  ctx.shadowColor = LEVEL_THEMES[2].obstacleGlow;
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = 3 + flash * 14;
+  ctx.lineWidth = thickness;
   ctx.lineCap = "round";
-  for (const s of spinners) {
-    if (s.cy < top || s.cy > bottom) continue;
-    const sy = s.cy - camY + arenaY;
-    const angle = s.angle0 + s.rotationSpeed * elapsed;
-
-    ctx.save();
-    ctx.translate(s.cx, sy);
-    ctx.rotate(angle);
-    ctx.lineWidth = s.thickness;
-    ctx.beginPath();
-    ctx.moveTo(-s.armLen, 0);
-    ctx.lineTo(s.armLen, 0);
-    ctx.moveTo(0, -s.armLen);
-    ctx.lineTo(0, s.armLen);
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(0, 0, s.thickness * 0.8, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.restore();
+  ctx.beginPath();
+  for (const link of links) {
+    if (link.ay < top || link.ay > bottom) continue;
+    const say = link.ay - camY + arenaY;
+    const sby = link.by - camY + arenaY;
+    ctx.moveTo(link.ax, say);
+    ctx.lineTo(link.bx, sby);
   }
-  ctx.restore();
-}
-
-// Vortex rings — drawn by rotating the same local-space geometry used for
-// collision (as a bundle of short lines rather than arcs, so the visible
-// boundary can never drift out of sync with the physics boundary).
-function drawVortexRings(
-  ctx: CanvasRenderingContext2D,
-  rings: VortexRing[],
-  camY: number,
-  arenaY: number,
-  viewH: number,
-  elapsed: number,
-) {
-  const top = camY - 120;
-  const bottom = camY + viewH + 120;
-
-  ctx.save();
-  ctx.strokeStyle = LEVEL_THEMES[2].obstacle;
-  ctx.fillStyle = LEVEL_THEMES[2].obstacle;
-  ctx.shadowColor = LEVEL_THEMES[2].obstacleGlow;
-  ctx.shadowBlur = 10;
-  ctx.lineCap = "round";
-  for (const r of rings) {
-    if (r.cy < top || r.cy > bottom) continue;
-    const sy = r.cy - camY + arenaY;
-    const angle = r.angle0 + r.rotationSpeed * elapsed;
-
-    const hubR = r.wallThickness * VORTEX_HUB_RADIUS_FACTOR;
-
-    ctx.save();
-    ctx.translate(r.cx, sy);
-
-    ctx.save();
-    ctx.rotate(angle);
-    ctx.lineWidth = r.wallThickness;
-    ctx.beginPath();
-    for (const seg of r.localSegments) {
-      ctx.moveTo(seg.ax, seg.ay);
-      ctx.lineTo(seg.bx, seg.by);
-    }
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(0, 0, hubR, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-
-    // A rotating spoke through the hub dot — as thick as the dot itself
-    // and reaching out to half the ring's own radius. Spins the opposite
-    // direction from the ring itself (its own save/restore, separate from
-    // the ring's +angle transform above), and VORTEX_SPOKE_SPEED_MULT
-    // times faster.
-    const spokeAngle =
-      -(r.angle0 + r.rotationSpeed * VORTEX_SPOKE_SPEED_MULT * elapsed);
-    ctx.save();
-    ctx.rotate(spokeAngle);
-    ctx.lineWidth = hubR * 2;
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(0, -r.outerR * 0.5);
-    ctx.stroke();
-    ctx.restore();
-
-    ctx.restore();
-  }
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -1671,7 +1290,6 @@ function drawHud(
   mobile: boolean,
   phase: Phase,
   balls: Ball[],
-  finishY: number,
   leaderName: string,
   finishedCount: number,
 ) {
@@ -1718,11 +1336,8 @@ function drawHud(
   const topPad = ballDiameter > 0 ? ballDiameter * 5 : HUD_TOP_PAD;
   const topOfTextY = (fontSize: number) => topPad + fontSize * 0.75;
 
-  // The progress track line (drawn below, once racing/finished) sits at
-  // trackY. On larger ball sizes the 5-diameter gap above can push past
-  // it, so the status line's baseline is clamped to stay clear of the
-  // line instead of overlapping it.
-  const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
+  // The HUD text's baseline is clamped to stay clear of the arena below
+  // it (where pegs now start right away, with no progress line between).
   const LINE_CLEARANCE = 14;
 
   if (showTitle) {
@@ -1765,35 +1380,10 @@ function drawHud(
     ctx.fillStyle = "#fde9b8";
     ctx.shadowColor = "rgba(247, 201, 72, 0.45)";
     ctx.shadowBlur = 12;
-    const statusY = Math.min(topOfTextY(fontSize), trackY - LINE_CLEARANCE);
+    const statusY = Math.min(topOfTextY(fontSize), arena.y - LINE_CLEARANCE);
     ctx.fillText(statusText, cx, statusY);
   }
   ctx.restore();
-
-  if (phase === "racing" || phase === "finished") {
-    const trackW = width - (mobile ? 24 : 12);
-    const trackX = cx - trackW / 2;
-    ctx.save();
-    ctx.strokeStyle = "rgba(247, 201, 72, 0.28)";
-    ctx.lineWidth = 3;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(trackX, trackY);
-    ctx.lineTo(trackX + trackW, trackY);
-    ctx.stroke();
-
-    for (const b of balls) {
-      const frac = Math.max(0, Math.min(1, b.y / finishY));
-      const px = trackX + frac * trackW;
-      ctx.beginPath();
-      ctx.arc(px, trackY, mobile ? 4 : 5, 0, Math.PI * 2);
-      ctx.fillStyle = `hsl(${b.hue}, 88%, 58%)`;
-      ctx.shadowColor = `hsl(${b.hue}, 100%, 68%)`;
-      ctx.shadowBlur = 6;
-      ctx.fill();
-    }
-    ctx.restore();
-  }
 }
 
 function drawCountdown(
@@ -1834,15 +1424,19 @@ const BallRace = () => {
   const lastTRef = useRef<number>(0);
   const audioRef = useRef(createAudio());
   const phaseRef = useRef<Phase>("menu");
-  const cameraRef = useRef(0);
   // The ball currently in the lead. Updated every frame to whichever ball
-  // still racing is furthest along; the camera tweens toward its
-  // position. A finished ball is dropped from consideration and the next
-  // furthest-along ball becomes the new leader.
+  // still racing is furthest along — used only for the HUD's "X is
+  // leading!" text. A finished ball is dropped from consideration and the
+  // next furthest-along ball becomes the new leader.
   const leadingBallRef = useRef<Ball | null>(null);
   const countdownEndAtRef = useRef<number | null>(null);
   const raceStartAtRef = useRef<number | null>(null);
   const finishOrderRef = useRef<Ball[]>([]);
+  // Which PEG_LINK_SWAP_SECS window the peg-link combination was last
+  // rolled for, and the race-elapsed time it happened — the latter drives
+  // a brief flash on the fresh combination.
+  const lastLinkSwapWindowRef = useRef(-1);
+  const lastLinkSwapAtRef = useRef(-Infinity);
 
   const [phase, setPhase] = useState<Phase>("menu");
   const [standings, setStandings] = useState<Ball[]>([]);
@@ -1864,14 +1458,11 @@ const BallRace = () => {
     courseRef.current = course;
     ballsRef.current = spawnBalls(course.platform, ballR);
     particlesRef.current = [];
-    // Put the start platform at START_SCREEN_FRACTION of the way down the
-    // full screen (HUD included) instead of wherever camera = 0 lands it.
-    const platformY = course.platform.left.y;
-    const targetScreenY = arena.H * START_SCREEN_FRACTION;
-    cameraRef.current = platformY + arena.y - targetScreenY;
     leadingBallRef.current = null;
     finishOrderRef.current = [];
     raceStartAtRef.current = null;
+    lastLinkSwapWindowRef.current = 0;
+    lastLinkSwapAtRef.current = -Infinity;
   }, []);
 
   const resizeOnly = useCallback(() => {
@@ -1932,16 +1523,10 @@ const BallRace = () => {
       const course = courseRef.current;
       const balls = ballsRef.current;
       const raceStartAt = raceStartAtRef.current;
+      const elapsedRaceForDraw =
+        phaseNow === "racing" && raceStartAt !== null ? (now - raceStartAt) / 1000 : -1;
 
-      const bgZone = course
-        ? levelZone(
-            cameraRef.current,
-            course.level2Y0,
-            course.level3Y0,
-            arena.height * 0.5,
-          )
-        : 0;
-      drawBackground(ctx, W, H, blendedLevelTheme(bgZone));
+      drawBackground(ctx, W, H);
       drawPaddingFrame(ctx, W, H);
       drawCanvasWatermark(ctx, W, H);
 
@@ -1956,36 +1541,55 @@ const BallRace = () => {
         const gravity = arena.width * GRAVITY_K;
         const maxFall = arena.width * MAX_FALL_K;
         const subDt = dt / SUBSTEPS;
+        const elapsedRace = raceStartAt !== null ? (now - raceStartAt) / 1000 : 0;
+
+        // Every PEG_LINK_SWAP_SECS, re-roll which candidate peg edges are
+        // walled — the field's geometry (pegs, edges) stays put, only the
+        // open/walled combination changes, so balls already resting
+        // against a link may suddenly find it gone (or a new one appear).
+        const linkSwapWindow = Math.floor(elapsedRace / PEG_LINK_SWAP_SECS);
+        if (linkSwapWindow !== lastLinkSwapWindowRef.current) {
+          lastLinkSwapWindowRef.current = linkSwapWindow;
+          lastLinkSwapAtRef.current = elapsedRace;
+          course.pegLinks = selectPegLinks(
+            course.pegs,
+            course.pegEdges,
+            course.pegDownEdges,
+            course.pegFirstRow,
+            course.pegLastRow,
+          );
+        }
 
         for (let s = 0; s < SUBSTEPS; s++) {
           for (const ball of balls) {
-            if (ball.finished) continue;
+            if (ball.finished || elapsedRace < ball.dropDelay) continue;
             ball.vy = Math.min(ball.vy + gravity * subDt, maxFall);
             ball.x += ball.vx * subDt;
             ball.y += ball.vy * subDt;
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
             for (const peg of course.pegs) resolvePeg(ball, peg, audio);
-            for (const gate of course.gates) {
-              resolveGate(ball, gate, now / 1000, audio);
-            }
-            for (const spinner of course.spinners) {
-              resolveSpinner(ball, spinner, now / 1000, audio);
-            }
-            for (const ring of course.vortexRings) {
-              resolveVortexRing(ball, ring, now / 1000, audio);
+            for (const link of course.pegLinks) {
+              resolvePegLink(ball, link, course.pegLinkThickness, audio);
             }
           }
           for (let i = 0; i < balls.length; i++) {
             for (let j = i + 1; j < balls.length; j++) {
-              if (balls[i].finished || balls[j].finished) continue;
+              if (
+                balls[i].finished ||
+                balls[j].finished ||
+                elapsedRace < balls[i].dropDelay ||
+                elapsedRace < balls[j].dropDelay
+              ) {
+                continue;
+              }
               bounceBalls(balls[i], balls[j], audio);
             }
           }
         }
 
         for (const ball of balls) {
-          if (ball.finished) continue;
+          if (ball.finished || elapsedRace < ball.dropDelay) continue;
           applyAntiStall(ball, dt);
         }
 
@@ -2010,17 +1614,6 @@ const BallRace = () => {
           null,
         );
 
-        const leadingBall = leadingBallRef.current;
-        const leadingBallPosition = leadingBall
-          ? Math.min(leadingBall.y, course.finishY)
-          : course.finishY;
-        const anchor = arena.height * 0.34;
-        const target = leadingBallPosition - anchor;
-        // Tween smoothly toward the leader's position every frame — no
-        // one-way clamp, so the camera can ease both down (falling) and
-        // up (a bounce, or handing off to a ball that's behind).
-        cameraRef.current += (target - cameraRef.current) * Math.min(1, dt * 6);
-
         // The race only ends once every ball has reached the finish line
         // on its own — no time-based cutoff.
         const allDone = finishOrderRef.current.length === balls.length;
@@ -2035,41 +1628,38 @@ const BallRace = () => {
         updateParticles(particlesRef.current, dt);
       }
 
-      const camY = cameraRef.current;
+      // No camera movement — the whole course fits on one static screen,
+      // so world Y coordinates map directly onto the arena.
+      const camY = 0;
 
       // Everything below is actual race content (corridor, obstacles,
       // balls, particles). None of it should ever be able to paint above
-      // the HUD's track line, regardless of phase or camera position, so
-      // it's all drawn inside a single clip covering trackY..bottom. Only
-      // the full-bleed background/watermark above and the HUD/countdown
-      // overlay below fall outside this clip.
-      const trackY = mobile ? TRACK_Y_MOBILE : TRACK_Y_DESKTOP;
+      // the HUD text, regardless of phase, so it's all drawn inside a
+      // single clip covering the arena box. Only the full-bleed
+      // background/watermark above and the HUD/countdown overlay below
+      // fall outside this clip.
       ctx.save();
       ctx.beginPath();
-      ctx.rect(arena.x, trackY, arena.width, arena.H - trackY - ARENA_PAD);
+      ctx.rect(arena.x, arena.y, arena.width, arena.height);
       ctx.clip();
 
       drawCorridor(ctx, arena, camY);
 
       if (phaseNow !== "menu") {
+        const linkFlashT = Math.min(
+          1,
+          (elapsedRaceForDraw - lastLinkSwapAtRef.current) / PEG_LINK_FLASH_SECS,
+        );
+        drawPegLinks(
+          ctx,
+          course.pegLinks,
+          course.pegLinkThickness,
+          camY,
+          arena.y,
+          arena.height,
+          linkFlashT,
+        );
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
-        drawGates(ctx, course.gates, camY, arena.y, arena.height, now / 1000);
-        drawSpinners(
-          ctx,
-          course.spinners,
-          camY,
-          arena.y,
-          arena.height,
-          now / 1000,
-        );
-        drawVortexRings(
-          ctx,
-          course.vortexRings,
-          camY,
-          arena.y,
-          arena.height,
-          now / 1000,
-        );
         drawFinishLine(ctx, course, arena, camY);
       }
 
@@ -2108,7 +1698,6 @@ const BallRace = () => {
         mobile,
         phaseNow,
         balls,
-        course.finishY,
         leader ? leader.name : "",
         finishOrderRef.current.length,
       );
