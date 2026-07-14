@@ -12,7 +12,10 @@ const SUBSTEPS = 5;
 const SOUND_GAP_MS = 55;
 const BG_MUSIC_VOLUME = 0.075;
 const ARENA_PAD = 10; // clearance kept from every screen edge
-const HUD_TOP_PAD = 25; // fallback gap from the screen's top edge to the HUD text, if ball size isn't known yet
+// The HUD heading (title+subtitle, or just the racing status line) is
+// bottom-anchored this far above the arena's top edge, growing upward —
+// so it can never overlap the peg field regardless of how many lines it has.
+const HUD_LINE_CLEARANCE = 14;
 
 const GRAVITY_K = 0.45; // px/s² per px of corridor width
 const MAX_FALL_K = 1.85; // px/s cap per px of corridor width
@@ -21,38 +24,67 @@ const BALL_RESTITUTION = 0.82;
 const PEG_RESTITUTION = 0.78;
 const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
 
-// The peg field spans the entire screen (top to bottom) in a hex/brick
-// lattice. Every adjacent pair of pegs is a candidate "link" — a thin
-// connecting bar, solid to balls — but only PEG_LINK_FRACTION of those
-// candidates actually get one at any moment, so most gaps between pegs
-// stay open for a ball to fall through while some are walled off, forcing
-// it to route around. Which candidates are walled is re-rolled from
-// scratch every PEG_LINK_SWAP_SECS, so the layout keeps shifting under
-// the balls throughout the race.
-const PEG_LINK_FRACTION = 0.5;
-const PEG_LINK_THICKNESS_FACTOR = 0.45; // connecting bar thickness, in ball-radii — thin enough that unconnected gaps clearly read as open
-const PEG_LINK_SWAP_SECS = 5; // how often the open/walled combination re-rolls
-const PEG_LINK_FLASH_SECS = 0.35; // brief extra glow on a fresh combination right after it swaps
+// The course is three stacked bands below the start platform:
+//   1. a hex/brick peg field (plain pegs, open gaps)
+//   2. a funnel narrowing the corridor into the cauldron's mouth
+//   3. THE CAULDRON — a near-closed circular bowl with a big spinner
+//      inside. The only way in is the mouth up top; the only way out is a
+//      one-ball gap at the very bottom that the spinner's arms keep
+//      sweeping across. Arm hits transfer the arm's real swing velocity,
+//      so a ball caught by a rising arm gets flung — sideways, around the
+//      bowl, or clean back up out of the mouth — purely on timing luck.
+const OBSTACLE_SECTION_GAP_FACTOR = 3; // empty corridor kept between bands, in ball-radii
+const PEG_SECTION_FRACTION = 0.34;
+const FUNNEL_SECTION_FRACTION = 0.14; // the cauldron gets whatever height remains
+const WALL_THICKNESS_FACTOR = 0.6; // funnel + cauldron wall thickness, in ball-radii
 
-const DROP_STAGGER_SECS = 0.25; // gap between each ball's release, so 8 balls don't hit the same first gap at once
+const CAULDRON_MOUTH_HALF_ANGLE = (30 * Math.PI) / 180; // top opening, either side of straight-up
+const CAULDRON_EXIT_GAP_FACTOR = 5.4; // bottom exit chord, in ball-radii — ~2.7 ball widths, so escapes actually happen
+const CAULDRON_ARC_STEP = (8 * Math.PI) / 180; // polyline resolution of the bowl wall used for collisions
+
+const ROTOR_ARM_THICKNESS_FACTOR = 0.85; // spinner arm thickness, in ball-radii
+const ROTOR_HUB_FACTOR = 0.9; // spinner center hub radius, in ball-radii
+const ROTOR_ANGULAR_SPEED = 0.9; // rad/s — slow enough that balls get windows to settle toward the gap
+// The arm tips run this close to the bowl wall — the leftover slot is
+// narrower than a ball, so nothing can rest under a passing arm; every
+// ball in the bowl gets swept, batted, or bulldozed toward the gap.
+const ROTOR_TIP_CLEARANCE_FACTOR = 0.5; // in ball-radii
+const ROTOR_FLING_MAX_K = 1.5; // post-hit ball speed cap, px/s per px of corridor width — enough to reach the pegs, not orbit
+// Arm hits use a lower restitution than pegs/walls: the arm's surface
+// velocity already injects plenty of energy, so a bouncier coefficient
+// keeps balls airborne forever and the race never drains out the gap.
+const ROTOR_RESTITUTION = 0.55;
+
+// The start platform sits between the HUD heading and the peg field, inside
+// a total heading-to-peg gap of exactly HEADING_TO_PEGS_DIAMETERS ball
+// diameters (see generateCourse) — a small margin above the platform, the
+// platform itself, then a small margin below it before the pegs start.
+const HEADING_TO_PEGS_DIAMETERS = 3;
+// Balls rest 1.3 ball-radii above the platform and bob up to another 0.5r
+// during the pre-race idle (see spawnBalls / drawBalls). The ball's top is
+// then platformY - 2.8r, so the platform has to sit at least ~2.8r below
+// the arena's top clip edge or the idling balls get sliced off. 3.2 leaves
+// ~0.4r of headroom past that floor.
+const PLATFORM_TOP_GAP_FACTOR = 3.2; // margin above the platform, in ball-radii
 
 const COUNTDOWN_MS = 3000;
 const PLATFORM_OPEN_MS = 450;
 
-// hue is only used for the glow/particle-trail/HUD-dot effects — evenly
-// spaced around the wheel so those small flat-color contexts stay
-// distinguishable. The ball itself is rendered as that country's actual
-// flag (see drawCountryFlag), which is the real identity signal.
+// Four countries in two starting lanes: France + Spain drop through the
+// LEFT peg field, Argentina + England through the RIGHT one — kept apart by
+// a central divider wall until both lanes merge into the funnel (see
+// generateCourse). hue drives only the glow/particle-trail/HUD-dot effects;
+// it's spread around the wheel so those small flat-color contexts stay
+// distinguishable. The ball itself renders as the country's actual flag
+// (drawCountryFlag), which is the real identity signal.
 const BALL_DEFS = [
-  { name: "Switzerland", hue: 0 },
-  { name: "Argentina", hue: 45 },
-  { name: "England", hue: 90 },
-  { name: "Norway", hue: 135 },
-  { name: "Spain", hue: 180 },
-  { name: "Belgium", hue: 225 },
-  { name: "France", hue: 270 },
-  { name: "Morocco", hue: 315 },
-];
+  { name: "France", hue: 260, side: "left" },
+  { name: "Spain", hue: 45, side: "left" },
+  { name: "Argentina", hue: 195, side: "right" },
+  { name: "England", hue: 350, side: "right" },
+] as const;
+
+type BallSide = (typeof BALL_DEFS)[number]["side"];
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -82,21 +114,47 @@ type Peg = {
   r: number;
 };
 
-// A thin bar connecting two adjacent pegs — half of all such candidate
-// pairs get one (PEG_LINK_FRACTION), walling off that particular gap
-// while its neighbors stay open for a ball to fall through.
-type PegLink = {
-  ax: number;
-  ay: number;
-  bx: number;
-  by: number;
+// A straight wall segment, solid to balls on both sides.
+type Seg = { x1: number; y1: number; x2: number; y2: number };
+
+// The funnel's two walls, each a single straight segment from a corridor
+// edge down to an endpoint on the cauldron's rim, so funnel and bowl form
+// one sealed hopper — the mouth is the only way in.
+type Funnel = {
+  left: Seg;
+  right: Seg;
+  thickness: number;
 };
 
-// A candidate connection between two adjacent pegs — the peg field's
-// geometry never changes over a race, only which of these end up walled
-// (re-rolled every PEG_LINK_SWAP_SECS), so the candidate list itself is
-// built once and reused for every re-roll.
-type PegEdge = { a: Peg; b: Peg };
+// The spinner: a plus sign of two perpendicular bars crossing at (cx, cy),
+// spinning continuously. The current angle is derived from wall-clock time
+// (angularSpeed * t + phase) rather than stored, so it's always in sync
+// between the physics step and the draw call. angularSpeed is signed —
+// direction is rolled per race.
+type Rotor = {
+  cx: number;
+  cy: number;
+  armLen: number;
+  thickness: number;
+  hubR: number;
+  angularSpeed: number;
+  phase: number;
+};
+
+// The cauldron: a circular bowl open at the top (the mouth, where the
+// funnel feeds in) with a one-ball exit gap at the very bottom, and the
+// spinner pivoting at its center. The wall is collided as a polyline of
+// short segments but drawn as true arcs.
+type Cauldron = {
+  cx: number;
+  cy: number;
+  r: number;
+  segs: Seg[];
+  thickness: number;
+  mouthHalf: number; // top-opening half-angle, either side of straight-up
+  gapHalf: number; // bottom exit-gap half-angle, either side of straight-down
+  rotor: Rotor;
+};
 
 type PlatformHalf = { x: number; y: number; w: number; h: number };
 type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
@@ -104,15 +162,11 @@ type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
 type Course = {
   platform: StartPlatform;
   pegs: Peg[];
-  pegEdges: PegEdge[];
-  // Indices into pegEdges of each peg's own down-left/down-right edges —
-  // the only two that let a ball fall past it — kept separate so a
-  // re-roll can still guarantee at least one stays open per peg.
-  pegDownEdges: number[][];
-  pegFirstRow: Peg[];
-  pegLastRow: Peg[];
-  pegLinks: PegLink[]; // the currently-active walled subset of pegEdges — re-rolled periodically
-  pegLinkThickness: number;
+  // Central wall separating the two peg lanes; ends at the funnel mouth
+  // where the lanes merge. Its thickness matches the funnel/cauldron walls.
+  divider: Seg;
+  funnel: Funnel;
+  cauldron: Cauldron;
   finishY: number;
 };
 
@@ -177,14 +231,10 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
 }
 
 // ─── Course generation ────────────────────────────────────────────────────────
-//
-// No obstacles yet — just the start platform and an empty corridor down to
-// the finish line. Obstacles are being redesigned from scratch.
 
-function buildStartPlatform(arena: Arena, ballR: number): StartPlatform {
+function buildStartPlatform(arena: Arena, ballR: number, y: number): StartPlatform {
   const width = arena.width;
   const left = arena.x;
-  const y = ballR * 7.4;
   const h = ballR * 1.6;
   const gap = width * 0.14;
   const halfW = (width - gap) / 2;
@@ -194,232 +244,199 @@ function buildStartPlatform(arena: Arena, ballR: number): StartPlatform {
   };
 }
 
-// The whole course fits inside one static screen (arena.height) — no
-// camera movement. A single Plinko peg field spans the full screen, with
-// thin bars randomly connecting half of all adjacent peg pairs — walling
-// off some gaps while leaving the rest open for a ball to fall through.
-function generateCourse(arena: Arena, ballR: number): Course {
-  const width = arena.width;
-  const left = arena.x;
-  const levelH = arena.height;
-
-  const platform = buildStartPlatform(arena, ballR);
-  const topY0 = platform.left.y + platform.left.h + ballR * 3;
-
-  // A hex/brick peg pattern — full rows of pegs alternating with rows
-  // offset by half a spacing (one peg shorter), nested in the gaps above
-  // and below. Spacing between neighbors, row-to-row or peg-to-peg within
-  // a row, is 2x a ball's diameter. Pegs are kept in a row/col grid (not
-  // just a flat list) so adjacent pairs can be found by index instead of
-  // a geometric nearest-neighbor search.
-  //   *  *  *  *  *  *
-  //     *  *  *  *  *
-  //   *  *  *  *  *  *
-  //     *  *  *  *  *
-  const ballSize = ballR * 2;
-  const spacing = ballSize * 2;
+// A hex/brick peg lattice filling one horizontal lane [x0, x1]. Full rows
+// alternate with rows offset by half a spacing (one peg shorter), nested in
+// the gaps above/below. No connecting bars — every gap between neighbors
+// stays open. Returns a running peg id so two lanes can share one id space.
+//   *  *  *  *
+//     *  *  *
+//   *  *  *  *
+function buildPegField(
+  x0: number,
+  x1: number,
+  top: number,
+  height: number,
+  ballR: number,
+  startId: number,
+): { pegs: Peg[]; lastRowY: number } {
+  const spacing = ballR * 4; // 2x ball diameter, row-to-row and within a row
   const pegR = ballR * 0.55 * 0.85;
-  const usable = width - ballR * 2;
+  const usable = x1 - x0;
   const cols = Math.max(2, Math.floor(usable / spacing) + 1);
   const gridW = (cols - 1) * spacing;
-  const baseX = left + (width - gridW) / 2;
-  // Fill the whole screen, leaving room at the bottom for the finish line.
-  const span = levelH - topY0 - ballR * 8;
-  const rows = Math.max(2, Math.round(span / spacing) + 1);
+  const baseX = x0 + (usable - gridW) / 2;
+  const rows = Math.max(2, Math.round(height / spacing) + 1);
 
   const pegs: Peg[] = [];
-  const grid: (Peg | undefined)[][] = [];
-  let pgid = 0;
+  let id = startId;
   for (let row = 0; row < rows; row++) {
-    const y = topY0 + row * spacing;
+    const y = top + row * spacing;
     const offsetRow = row % 2 === 1;
     const rowCols = offsetRow ? cols - 1 : cols;
     const startX = offsetRow ? baseX + spacing / 2 : baseX;
-    const gridRow: (Peg | undefined)[] = [];
     for (let c = 0; c < rowCols; c++) {
-      const x = startX + c * spacing;
-      const peg = { id: pgid++, x, y, r: pegR };
-      pegs.push(peg);
-      gridRow.push(peg);
-    }
-    grid.push(gridRow);
-  }
-  const lastRowY = topY0 + (rows - 1) * spacing;
-
-  // Every adjacent pair — same-row neighbors, plus the two diagonal
-  // neighbors each peg has in the row below (the standard triangular
-  // lattice) — is a candidate link.
-  const downNeighborCols = (row: number, c: number) => {
-    const offsetRow = row % 2 === 1;
-    // Full row (even) -> offset row below: down-left is (c-1), down-right is (c).
-    // Offset row (odd) -> full row below: down-left is (c), down-right is (c+1).
-    return offsetRow ? [c, c + 1] : [c - 1, c];
-  };
-
-  const pegEdges: PegEdge[] = [];
-  // For each peg, the indices (into `pegEdges`) of its own down-left/down-right
-  // edges specifically — tracked separately from same-row/upward edges,
-  // since those are the only two that let a ball actually fall past it.
-  const pegDownEdges: number[][] = Array.from({ length: pegs.length }, () => []);
-  for (let row = 0; row < rows; row++) {
-    const gridRow = grid[row];
-    for (let c = 0; c < gridRow.length; c++) {
-      const peg = gridRow[c];
-      if (!peg) continue;
-      const right = gridRow[c + 1];
-      if (right) pegEdges.push({ a: peg, b: right });
-
-      const nextRow = grid[row + 1];
-      if (!nextRow) continue;
-      const [dlCol, drCol] = downNeighborCols(row, c);
-      const downLeft = nextRow[dlCol];
-      const downRight = nextRow[drCol];
-      if (downLeft) {
-        pegDownEdges[peg.id].push(pegEdges.length);
-        pegEdges.push({ a: peg, b: downLeft });
-      }
-      if (downRight) {
-        pegDownEdges[peg.id].push(pegEdges.length);
-        pegEdges.push({ a: peg, b: downRight });
-      }
+      pegs.push({ id: id++, x: startX + c * spacing, y, r: pegR });
     }
   }
-  const pegFirstRow = grid[0].filter((p): p is Peg => !!p);
-  const pegLastRow = grid[rows - 1].filter((p): p is Peg => !!p);
-
-  const finishY = lastRowY + ballR * 8;
-
-  return {
-    platform,
-    pegs,
-    pegEdges,
-    pegDownEdges,
-    pegFirstRow,
-    pegLastRow,
-    pegLinks: selectPegLinks(pegs, pegEdges, pegDownEdges, pegFirstRow, pegLastRow),
-    pegLinkThickness: ballR * PEG_LINK_THICKNESS_FACTOR,
-    finishY,
-  };
+  return { pegs, lastRowY: top + (rows - 1) * spacing };
 }
 
-// Chooses which candidate peg-to-peg edges are walled this round. A ball
-// can only get permanently trapped if some pocket of the field is fully
-// sealed off by connected edges on every side. Independent per-edge coin
-// flips would produce plenty of those (a single sealed triangle alone is
-// ~1-in-8), so instead this uses a randomized spanning tree (Kruskal's,
-// via union-find): every peg — plus a virtual TOP node standing in for
-// "the open space above row 0" and a virtual BOTTOM node for "past the
-// last row, on to the finish" — ends up connected to every other through
-// some chain of *open* gaps before any edge is allowed to become a wall.
-// Only after that guarantee is secured do additional random edges get
-// walled off up to the target PEG_LINK_FRACTION.
-function selectPegLinks(
-  pegs: Peg[],
-  pegEdges: PegEdge[],
-  pegDownEdges: number[][],
-  firstRow: Peg[],
-  lastRow: Peg[],
-): PegLink[] {
-  const TOP = pegs.length;
-  const BOTTOM = pegs.length + 1;
-  const parent = Array.from({ length: pegs.length + 2 }, (_, i) => i);
-  const find = (i: number): number => {
-    while (parent[i] !== i) {
-      parent[i] = parent[parent[i]];
-      i = parent[i];
-    }
-    return i;
+// The whole course fits inside one static screen (arena.height) — no
+// camera movement. Below the start platform, three bands stack top to
+// bottom: two side-by-side peg fields split by a central divider, a funnel,
+// and the cauldron — a near-closed bowl with a big spinner inside whose
+// only exit is a one-ball gap at the very bottom.
+function generateCourse(arena: Arena, ballR: number): Course {
+  const width = arena.width;
+  const left = arena.x;
+  const right = arena.x + width;
+  const cx = left + width / 2;
+  const levelH = arena.height;
+
+  const platformY = ballR * PLATFORM_TOP_GAP_FACTOR;
+  const platformH = ballR * 1.6;
+  const platform = buildStartPlatform(arena, ballR, platformY);
+  // The heading (see drawHud) is bottom-anchored HUD_LINE_CLEARANCE above
+  // the arena's top edge, so that anchor point plus this many ball-radii
+  // gives the total heading-to-peg gap. Never let it collapse the platform.
+  const topY0 = Math.max(
+    platformY + platformH + ballR, // platform, plus a minimal margin before the pegs
+    ballR * 2 * HEADING_TO_PEGS_DIAMETERS - HUD_LINE_CLEARANCE,
+  );
+
+  const bottomMargin = ballR * 6; // empty corridor kept above the finish line
+  const sectionGap = ballR * OBSTACLE_SECTION_GAP_FACTOR;
+  const obstacleBottom = levelH - bottomMargin;
+  const obstacleSpan = Math.max(0, obstacleBottom - topY0 - sectionGap * 2);
+
+  const pegH = obstacleSpan * PEG_SECTION_FRACTION;
+  const funnelH = obstacleSpan * FUNNEL_SECTION_FRACTION;
+  const wallT = ballR * WALL_THICKNESS_FACTOR;
+
+  const pegTop = topY0;
+
+  // 1. Top band — TWO peg fields side by side, split by a central divider
+  // wall so the two starting groups (France+Spain left, Argentina+England
+  // right) each run their own lane before both merge into the funnel below.
+  // Each lane is inset by one ball-radius from the outer wall and the
+  // divider so a ball never spawns jammed against either.
+  const laneInset = ballR;
+  const leftLane = buildPegField(
+    left + laneInset,
+    cx - wallT / 2 - laneInset,
+    pegTop,
+    pegH,
+    ballR,
+    0,
+  );
+  const rightLane = buildPegField(
+    cx + wallT / 2 + laneInset,
+    right - laneInset,
+    pegTop,
+    pegH,
+    ballR,
+    leftLane.pegs.length,
+  );
+  const pegs = [...leftLane.pegs, ...rightLane.pegs];
+  const lastRowY = Math.max(leftLane.lastRowY, rightLane.lastRowY);
+
+  // 2. Middle band — the funnel. Its walls run from the corridor edges
+  // straight to the cauldron's rim endpoints, so funnel and bowl seal into
+  // one hopper: the mouth is the only way in (and, for lucky flung balls,
+  // back out).
+  const mouthHalf = CAULDRON_MOUTH_HALF_ANGLE;
+  const funnelTop = Math.max(pegTop + pegH, lastRowY) + sectionGap;
+  const rimY = funnelTop + funnelH;
+
+  // The central divider runs from just under the platform down to the
+  // funnel mouth, where the two lanes finally merge.
+  const divider: Seg = {
+    x1: cx,
+    y1: platformY + platformH,
+    x2: cx,
+    y2: funnelTop,
   };
-  const union = (a: number, b: number) => {
-    const ra = find(a);
-    const rb = find(b);
-    if (ra !== rb) parent[ra] = rb;
-    return ra !== rb;
+
+  // 3. Bottom band — the cauldron bowl, as big as the leftover height (or
+  // the corridor width) allows. Its rim-top sits at the funnel's bottom.
+  const r = Math.max(
+    ballR * 5, // floor for absurdly short screens — better to crowd the finish than degenerate
+    Math.min(width * 0.47, (obstacleBottom - rimY) / (1 + Math.cos(mouthHalf))),
+  );
+  const ccy = rimY + r * Math.cos(mouthHalf);
+  const mouthHalfW = r * Math.sin(mouthHalf);
+
+  const funnel: Funnel = {
+    left: { x1: left, y1: funnelTop, x2: cx - mouthHalfW, y2: rimY },
+    right: { x1: right, y1: funnelTop, x2: cx + mouthHalfW, y2: rimY },
+    thickness: wallT,
   };
-  for (const peg of firstRow) union(peg.id, TOP);
-  for (const peg of lastRow) union(peg.id, BOTTOM);
 
-  const order = pegEdges.map((_, i) => i);
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [order[i], order[j]] = [order[j], order[i]];
-  }
-
-  const open = new Array(pegEdges.length).fill(false);
-  let openCount = 0;
-  for (const i of order) {
-    if (union(pegEdges[i].a.id, pegEdges[i].b.id)) {
-      open[i] = true;
-      openCount++;
+  // The bowl wall, as a polyline. Angles are canvas-style (0 = right,
+  // +π/2 = straight down); the mouth straddles -π/2 (up) and the exit gap
+  // straddles +π/2 (down).
+  const gapHalf = Math.asin((ballR * CAULDRON_EXIT_GAP_FACTOR) / 2 / r);
+  const segs: Seg[] = [];
+  const addArc = (from: number, to: number) => {
+    const steps = Math.max(2, Math.ceil((to - from) / CAULDRON_ARC_STEP));
+    for (let i = 0; i < steps; i++) {
+      const a1 = from + ((to - from) * i) / steps;
+      const a2 = from + ((to - from) * (i + 1)) / steps;
+      segs.push({
+        x1: cx + Math.cos(a1) * r,
+        y1: ccy + Math.sin(a1) * r,
+        x2: cx + Math.cos(a2) * r,
+        y2: ccy + Math.sin(a2) * r,
+      });
     }
-  }
+  };
+  // Right side: mouth's right edge, down past 3 o'clock, to the gap.
+  addArc(-Math.PI / 2 + mouthHalf, Math.PI / 2 - gapHalf);
+  // Left side: gap's left edge, up past 9 o'clock, to the mouth.
+  addArc(Math.PI / 2 + gapHalf, (3 * Math.PI) / 2 - mouthHalf);
 
-  // A global spanning tree only guarantees *some* route exists somewhere —
-  // it says nothing about how far a ball might have to travel sideways to
-  // find it. The failure mode that actually matters is a peg whose two
-  // *downward* edges are both walls: a ball resting on it has no way to
-  // fall past on either side, regardless of how open the board is
-  // elsewhere. So every peg is guaranteed at least one open down-edge
-  // directly, rather than relying on generic connectivity or an
-  // undirected local quota that could be satisfied entirely by same-row
-  // or upward edges instead.
-  for (const downEdges of pegDownEdges) {
-    if (downEdges.length === 0) continue;
-    if (downEdges.some((i) => open[i])) continue;
-    const i = downEdges[Math.floor(Math.random() * downEdges.length)];
-    open[i] = true;
-    openCount++;
-  }
+  const cauldron: Cauldron = {
+    cx,
+    cy: ccy,
+    r,
+    segs,
+    thickness: wallT,
+    mouthHalf,
+    gapHalf,
+    rotor: {
+      cx,
+      cy: ccy,
+      // Tips sweep to within less than a ball of the wall (accounting for
+      // both half-thicknesses), so no ball can rest under a passing arm.
+      armLen: r - wallT / 2 - (ballR * ROTOR_ARM_THICKNESS_FACTOR) / 2 - ballR * ROTOR_TIP_CLEARANCE_FACTOR,
+      thickness: ballR * ROTOR_ARM_THICKNESS_FACTOR,
+      hubR: ballR * ROTOR_HUB_FACTOR,
+      angularSpeed: ROTOR_ANGULAR_SPEED * (Math.random() < 0.5 ? 1 : -1),
+      phase: Math.random() * Math.PI * 2,
+    },
+  };
 
-  // Finally, open more of any remaining still-connected edges at random
-  // until the overall board-wide fraction reaches the target too.
-  const targetOpen = Math.max(openCount, Math.round(pegEdges.length * (1 - PEG_LINK_FRACTION)));
-  if (openCount < targetOpen) {
-    for (let i = 0; i < pegEdges.length && openCount < targetOpen; i++) {
-      if (!open[i]) {
-        open[i] = true;
-        openCount++;
-      }
-    }
-  }
+  const finishY = levelH - ballR * 2;
 
-  const pegLinks: PegLink[] = [];
-  for (let i = 0; i < pegEdges.length; i++) {
-    if (open[i]) continue;
-    const { a, b } = pegEdges[i];
-    pegLinks.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y });
-  }
-  return pegLinks;
+  return { platform, pegs, divider, funnel, cauldron, finishY };
 }
 
 function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
-  const leftXs = [0.14, 0.38, 0.62, 0.86].map(
-    (f) => platform.left.x + platform.left.w * f,
-  );
-  const rightXs = [0.14, 0.38, 0.62, 0.86].map(
-    (f) => platform.right.x + platform.right.w * f,
-  );
-  const xs = [...leftXs, ...rightXs];
+  // Two balls per platform half, one per lane's country group. All released
+  // on the same frame (dropDelay 0) — with only two balls per lane there's
+  // room for them to fall without jamming, so no stagger is needed.
+  const laneX: Record<BallSide, number[]> = {
+    left: [0.3, 0.7].map((f) => platform.left.x + platform.left.w * f),
+    right: [0.3, 0.7].map((f) => platform.right.x + platform.right.w * f),
+  };
+  const next: Record<BallSide, number> = { left: 0, right: 0 };
   const y = platform.left.y - ballR * 1.3;
-  // Staggered (not simultaneous) drop order — 8 balls all released on the
-  // same frame converge on the same first few gaps in the peg field at
-  // once and jam each other there, since a gap is rarely wider than a
-  // single ball. Shuffled so it's not always the same country going first.
-  const dropOrder = BALL_DEFS.map((_, i) => i);
-  for (let i = dropOrder.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [dropOrder[i], dropOrder[j]] = [dropOrder[j], dropOrder[i]];
-  }
-  const dropDelays = new Array(BALL_DEFS.length);
-  dropOrder.forEach((ballIndex, slot) => {
-    dropDelays[ballIndex] = slot * DROP_STAGGER_SECS;
-  });
 
   return BALL_DEFS.map((def, i) => ({
     id: i,
     name: def.name,
     hue: def.hue,
-    x: xs[i],
+    x: laneX[def.side][next[def.side]++],
     y,
     vx: 0,
     vy: 0,
@@ -429,9 +446,7 @@ function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
     rank: null,
     stuckTimer: 0,
     maxY: y,
-    dropDelay: dropDelays[i],
-    antiStallStrikes: 0,
-    phaseUntil: 0,
+    dropDelay: 0,
   }));
 }
 
@@ -456,7 +471,7 @@ function resolveWalls(
 }
 
 // Circle-vs-circle collision against any peg-like point — reused for the
-// vortex ring's center hub, which is exactly a peg sitting at its pivot.
+// rotor's center hub, which is exactly a peg sitting at its pivot.
 function resolvePeg(
   ball: Ball,
   peg: { x: number; y: number; r: number },
@@ -515,8 +530,89 @@ function resolveSegment(
   audio.hit(ball.hue);
 }
 
-function resolvePegLink(ball: Ball, link: PegLink, thickness: number, audio: RaceAudio) {
-  resolveSegment(ball, link.ax, link.ay, link.bx, link.by, thickness, audio);
+function resolveFunnel(ball: Ball, funnel: Funnel, audio: RaceAudio) {
+  const { left, right, thickness } = funnel;
+  resolveSegment(ball, left.x1, left.y1, left.x2, left.y2, thickness, audio);
+  resolveSegment(ball, right.x1, right.y1, right.x2, right.y2, thickness, audio);
+}
+
+// Circle-vs-segment collision where the segment itself is a spinning bar.
+// Same shape math as resolveSegment, but the bounce is computed relative
+// to the bar surface's own velocity at the contact point (ω × r), so a
+// rising arm genuinely flings the ball — the whole point of the cauldron:
+// a ball caught at the wrong (or right) moment gets launched sideways or
+// straight back up, purely on timing luck.
+function resolveSpinningBar(
+  ball: Ball,
+  cx: number,
+  cy: number,
+  ux: number, // bar direction (unit vector)
+  uy: number,
+  halfLen: number,
+  thickness: number,
+  omega: number, // signed angular velocity, rad/s
+  maxSpeed: number, // post-hit speed cap, keeps flings from going ballistic
+  audio: RaceAudio,
+) {
+  let t = (ball.x - cx) * ux + (ball.y - cy) * uy;
+  t = Math.max(-halfLen, Math.min(halfLen, t));
+  const px = cx + ux * t;
+  const py = cy + uy * t;
+  const ddx = ball.x - px;
+  const ddy = ball.y - py;
+  const dist = Math.hypot(ddx, ddy);
+  const min = ball.r + thickness / 2;
+  if (dist >= min || dist === 0) return;
+  const nx = ddx / dist;
+  const ny = ddy / dist;
+  ball.x += nx * (min - dist);
+  ball.y += ny * (min - dist);
+  // ω × r gives the arm surface's velocity at the contact point.
+  const svx = -omega * (py - cy);
+  const svy = omega * (px - cx);
+  const vn = (ball.vx - svx) * nx + (ball.vy - svy) * ny;
+  if (vn < 0) {
+    ball.vx -= (1 + ROTOR_RESTITUTION) * vn * nx;
+    ball.vy -= (1 + ROTOR_RESTITUTION) * vn * ny;
+    const speed = Math.hypot(ball.vx, ball.vy);
+    if (speed > maxSpeed) {
+      ball.vx *= maxSpeed / speed;
+      ball.vy *= maxSpeed / speed;
+    }
+  }
+  ball.glow = 0.35;
+  audio.hit(ball.hue);
+}
+
+// The rotor's two bars are derived fresh from wall-clock angle every call
+// rather than stored, so physics and drawing can never drift out of sync
+// with each other.
+function resolveRotor(
+  ball: Ball,
+  rotor: Rotor,
+  angle: number,
+  maxSpeed: number,
+  audio: RaceAudio,
+) {
+  const { cx, cy, armLen, thickness, hubR, angularSpeed } = rotor;
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  resolveSpinningBar(ball, cx, cy, c, s, armLen, thickness, angularSpeed, maxSpeed, audio);
+  resolveSpinningBar(ball, cx, cy, -s, c, armLen, thickness, angularSpeed, maxSpeed, audio);
+  resolvePeg(ball, { x: cx, y: cy, r: hubR }, audio);
+}
+
+function resolveCauldron(
+  ball: Ball,
+  cauldron: Cauldron,
+  angle: number,
+  maxSpeed: number,
+  audio: RaceAudio,
+) {
+  for (const seg of cauldron.segs) {
+    resolveSegment(ball, seg.x1, seg.y1, seg.x2, seg.y2, cauldron.thickness, audio);
+  }
+  resolveRotor(ball, cauldron.rotor, angle, maxSpeed, audio);
 }
 
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
@@ -1020,37 +1116,112 @@ function drawPegs(
   ctx.restore();
 }
 
-// The connecting bars between linked pegs, in Level 2's pink accent —
-// drawn as a single path so the whole network is one fill/stroke call
-// rather than one per link.
-function drawPegLinks(
+// The funnel's two walls, in Level 2's pink accent.
+function drawFunnel(
   ctx: CanvasRenderingContext2D,
-  links: PegLink[],
+  funnel: Funnel,
+  camY: number,
+  arenaY: number,
+) {
+  ctx.save();
+  ctx.strokeStyle = LEVEL_THEMES[1].obstacle;
+  ctx.shadowColor = LEVEL_THEMES[1].obstacleGlow;
+  ctx.shadowBlur = 10;
+  ctx.lineWidth = funnel.thickness;
+  ctx.lineCap = "round";
+  for (const wall of [funnel.left, funnel.right]) {
+    ctx.beginPath();
+    ctx.moveTo(wall.x1, wall.y1 - camY + arenaY);
+    ctx.lineTo(wall.x2, wall.y2 - camY + arenaY);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// The central divider between the two peg lanes, in the pegs' blue accent
+// so it reads as part of that section.
+function drawDivider(
+  ctx: CanvasRenderingContext2D,
+  divider: Seg,
   thickness: number,
   camY: number,
   arenaY: number,
-  viewH: number,
-  flashT: number, // 0 = just swapped (brightest), 1 = fully settled
 ) {
-  const top = camY - 80;
-  const bottom = camY + viewH + 80;
-  const flash = Math.max(0, 1 - flashT);
-
   ctx.save();
-  ctx.strokeStyle = flash > 0 ? "#ffffff" : LEVEL_THEMES[1].obstacle;
-  ctx.shadowColor = LEVEL_THEMES[1].obstacleGlow;
-  ctx.shadowBlur = 3 + flash * 14;
+  ctx.strokeStyle = LEVEL_THEMES[0].obstacle;
+  ctx.shadowColor = LEVEL_THEMES[0].obstacleGlow;
+  ctx.shadowBlur = 10;
   ctx.lineWidth = thickness;
   ctx.lineCap = "round";
   ctx.beginPath();
-  for (const link of links) {
-    if (link.ay < top || link.ay > bottom) continue;
-    const say = link.ay - camY + arenaY;
-    const sby = link.by - camY + arenaY;
-    ctx.moveTo(link.ax, say);
-    ctx.lineTo(link.bx, sby);
-  }
+  ctx.moveTo(divider.x1, divider.y1 - camY + arenaY);
+  ctx.lineTo(divider.x2, divider.y2 - camY + arenaY);
   ctx.stroke();
+  ctx.restore();
+}
+
+// The cauldron bowl, in the same pink accent as the funnel it seals
+// against — drawn as two true arcs (the collision polyline is an invisible
+// physics detail), leaving the mouth open at the top and the exit gap at
+// the bottom.
+function drawCauldron(
+  ctx: CanvasRenderingContext2D,
+  cauldron: Cauldron,
+  camY: number,
+  arenaY: number,
+) {
+  const { cx, cy, r, thickness, mouthHalf, gapHalf } = cauldron;
+  const sy = cy - camY + arenaY;
+  ctx.save();
+  ctx.strokeStyle = LEVEL_THEMES[1].obstacle;
+  ctx.shadowColor = LEVEL_THEMES[1].obstacleGlow;
+  ctx.shadowBlur = 10;
+  ctx.lineWidth = thickness;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.arc(cx, sy, r, -Math.PI / 2 + mouthHalf, Math.PI / 2 - gapHalf);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(cx, sy, r, Math.PI / 2 + gapHalf, (3 * Math.PI) / 2 - mouthHalf);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// The spinner, in Level 3's gold accent — its two bars and hub are derived
+// from the same wall-clock angle used by resolveRotor, so the drawing
+// always matches where the ball actually collides.
+function drawRotor(
+  ctx: CanvasRenderingContext2D,
+  rotor: Rotor,
+  angle: number,
+  camY: number,
+  arenaY: number,
+) {
+  const { cx, cy, armLen, thickness, hubR } = rotor;
+  const toScreenY = (y: number) => y - camY + arenaY;
+  const ax = Math.cos(angle);
+  const ay = Math.sin(angle);
+  const bx = Math.cos(angle + Math.PI / 2);
+  const by = Math.sin(angle + Math.PI / 2);
+
+  ctx.save();
+  ctx.strokeStyle = LEVEL_THEMES[2].obstacle;
+  ctx.shadowColor = LEVEL_THEMES[2].obstacleGlow;
+  ctx.shadowBlur = 12;
+  ctx.lineWidth = thickness;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(cx - ax * armLen, toScreenY(cy - ay * armLen));
+  ctx.lineTo(cx + ax * armLen, toScreenY(cy + ay * armLen));
+  ctx.moveTo(cx - bx * armLen, toScreenY(cy - by * armLen));
+  ctx.lineTo(cx + bx * armLen, toScreenY(cy + by * armLen));
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, toScreenY(cy), hubR, 0, Math.PI * 2);
+  ctx.fillStyle = LEVEL_THEMES[2].obstacle;
+  ctx.shadowBlur = 8;
+  ctx.fill();
   ctx.restore();
 }
 
@@ -1314,7 +1485,7 @@ function drawHud(
       ? "Get ready…"
       : phase === "finished"
         ? "Race complete!"
-        : "8 balls enter. Only 1 wins the maze.";
+        : "4 balls enter. Only 1 wins the maze.";
 
   ctx.save();
   ctx.textAlign = "center";
@@ -1328,19 +1499,16 @@ function drawHud(
   const HOME_BTN_CLEARANCE = mobile ? 64 : 54;
   const maxTopW = (cx - HOME_BTN_CLEARANCE) * 2;
 
-  // Keep a gap of 5 ball-diameters between the screen's top edge and the
-  // visible top of whichever text occupies the top slot (title or, once
-  // racing starts, the promoted status line) — cap-height for this bold
-  // sans-serif runs roughly 0.75x the font size above the baseline.
-  const ballDiameter = balls.length > 0 ? balls[0].r * 2 : 0;
-  const topPad = ballDiameter > 0 ? ballDiameter * 5 : HUD_TOP_PAD;
-  const topOfTextY = (fontSize: number) => topPad + fontSize * 0.75;
-
-  // The HUD text's baseline is clamped to stay clear of the arena below
-  // it (where pegs now start right away, with no progress line between).
-  const LINE_CLEARANCE = 14;
+  // Whichever content occupies the top slot is bottom-anchored this far
+  // above the arena's top edge and grows upward from there, so it can
+  // never overlap the peg field below regardless of whether it's one line
+  // (racing status) or two (title + subtitle).
+  const headingBottomY = arena.y - HUD_LINE_CLEARANCE;
 
   if (showTitle) {
+    const subtitleFontSize = mobile ? 12 : 14;
+    const titleSubtitleGap = mobile ? 22 : 24;
+
     let titleFontSize = mobile ? 26 : 38;
     ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
     let titleW = ctx.measureText("COUNTRY BALL RACE").width;
@@ -1349,6 +1517,8 @@ function drawHud(
       ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
       titleW = ctx.measureText("COUNTRY BALL RACE").width;
     }
+    const titleY = headingBottomY - titleSubtitleGap;
+
     const titleGrad = ctx.createLinearGradient(
       cx - titleW / 2,
       0,
@@ -1361,14 +1531,12 @@ function drawHud(
     ctx.fillStyle = titleGrad;
     ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
     ctx.shadowBlur = 18;
-    const titleY = topOfTextY(titleFontSize);
     ctx.fillText("COUNTRY BALL RACE", cx, titleY);
 
-    const subtitleFontSize = mobile ? 12 : 14;
     ctx.font = `700 ${subtitleFontSize}px Arial, Helvetica, sans-serif`;
     ctx.fillStyle = "rgba(254, 247, 233, 0.78)";
     ctx.shadowBlur = 0;
-    ctx.fillText(statusText, cx, titleY + (mobile ? 22 : 24));
+    ctx.fillText(statusText, cx, headingBottomY);
   } else {
     let fontSize = mobile ? 20 : 26;
     ctx.font = `800 ${fontSize}px Arial, Helvetica, sans-serif`;
@@ -1380,8 +1548,7 @@ function drawHud(
     ctx.fillStyle = "#fde9b8";
     ctx.shadowColor = "rgba(247, 201, 72, 0.45)";
     ctx.shadowBlur = 12;
-    const statusY = Math.min(topOfTextY(fontSize), arena.y - LINE_CLEARANCE);
-    ctx.fillText(statusText, cx, statusY);
+    ctx.fillText(statusText, cx, headingBottomY);
   }
   ctx.restore();
 }
@@ -1432,11 +1599,6 @@ const BallRace = () => {
   const countdownEndAtRef = useRef<number | null>(null);
   const raceStartAtRef = useRef<number | null>(null);
   const finishOrderRef = useRef<Ball[]>([]);
-  // Which PEG_LINK_SWAP_SECS window the peg-link combination was last
-  // rolled for, and the race-elapsed time it happened — the latter drives
-  // a brief flash on the fresh combination.
-  const lastLinkSwapWindowRef = useRef(-1);
-  const lastLinkSwapAtRef = useRef(-Infinity);
 
   const [phase, setPhase] = useState<Phase>("menu");
   const [standings, setStandings] = useState<Ball[]>([]);
@@ -1461,8 +1623,6 @@ const BallRace = () => {
     leadingBallRef.current = null;
     finishOrderRef.current = [];
     raceStartAtRef.current = null;
-    lastLinkSwapWindowRef.current = 0;
-    lastLinkSwapAtRef.current = -Infinity;
   }, []);
 
   const resizeOnly = useCallback(() => {
@@ -1523,8 +1683,6 @@ const BallRace = () => {
       const course = courseRef.current;
       const balls = ballsRef.current;
       const raceStartAt = raceStartAtRef.current;
-      const elapsedRaceForDraw =
-        phaseNow === "racing" && raceStartAt !== null ? (now - raceStartAt) / 1000 : -1;
 
       drawBackground(ctx, W, H);
       drawPaddingFrame(ctx, W, H);
@@ -1542,23 +1700,12 @@ const BallRace = () => {
         const maxFall = arena.width * MAX_FALL_K;
         const subDt = dt / SUBSTEPS;
         const elapsedRace = raceStartAt !== null ? (now - raceStartAt) / 1000 : 0;
-
-        // Every PEG_LINK_SWAP_SECS, re-roll which candidate peg edges are
-        // walled — the field's geometry (pegs, edges) stays put, only the
-        // open/walled combination changes, so balls already resting
-        // against a link may suddenly find it gone (or a new one appear).
-        const linkSwapWindow = Math.floor(elapsedRace / PEG_LINK_SWAP_SECS);
-        if (linkSwapWindow !== lastLinkSwapWindowRef.current) {
-          lastLinkSwapWindowRef.current = linkSwapWindow;
-          lastLinkSwapAtRef.current = elapsedRace;
-          course.pegLinks = selectPegLinks(
-            course.pegs,
-            course.pegEdges,
-            course.pegDownEdges,
-            course.pegFirstRow,
-            course.pegLastRow,
-          );
-        }
+        // The rotor spins on wall-clock time (not race-elapsed), so it's
+        // already moving during the countdown and stays in sync between
+        // this physics step and the draw call below.
+        const rotorAngle =
+          (now / 1000) * course.cauldron.rotor.angularSpeed + course.cauldron.rotor.phase;
+        const maxFling = arena.width * ROTOR_FLING_MAX_K;
 
         for (let s = 0; s < SUBSTEPS; s++) {
           for (const ball of balls) {
@@ -1569,9 +1716,10 @@ const BallRace = () => {
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
             for (const peg of course.pegs) resolvePeg(ball, peg, audio);
-            for (const link of course.pegLinks) {
-              resolvePegLink(ball, link, course.pegLinkThickness, audio);
-            }
+            const dv = course.divider;
+            resolveSegment(ball, dv.x1, dv.y1, dv.x2, dv.y2, course.funnel.thickness, audio);
+            resolveFunnel(ball, course.funnel, audio);
+            resolveCauldron(ball, course.cauldron, rotorAngle, maxFling, audio);
           }
           for (let i = 0; i < balls.length; i++) {
             for (let j = i + 1; j < balls.length; j++) {
@@ -1646,20 +1794,13 @@ const BallRace = () => {
       drawCorridor(ctx, arena, camY);
 
       if (phaseNow !== "menu") {
-        const linkFlashT = Math.min(
-          1,
-          (elapsedRaceForDraw - lastLinkSwapAtRef.current) / PEG_LINK_FLASH_SECS,
-        );
-        drawPegLinks(
-          ctx,
-          course.pegLinks,
-          course.pegLinkThickness,
-          camY,
-          arena.y,
-          arena.height,
-          linkFlashT,
-        );
+        const rotorAngle =
+          (now / 1000) * course.cauldron.rotor.angularSpeed + course.cauldron.rotor.phase;
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
+        drawDivider(ctx, course.divider, course.funnel.thickness, camY, arena.y);
+        drawFunnel(ctx, course.funnel, camY, arena.y);
+        drawCauldron(ctx, course.cauldron, camY, arena.y);
+        drawRotor(ctx, course.cauldron.rotor, rotorAngle, camY, arena.y);
         drawFinishLine(ctx, course, arena, camY);
       }
 
