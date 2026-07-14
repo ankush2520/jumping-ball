@@ -11,6 +11,7 @@ const MAX_DT = 1 / 30;
 const SUBSTEPS = 5;
 const SOUND_GAP_MS = 55;
 const BG_MUSIC_VOLUME = 0.075;
+const BG_MUSIC_SRC = `${process.env.NEXT_PUBLIC_BASE_PATH || ""}/audio/champions.mp3`;
 const ARENA_PAD = 10; // clearance kept from every screen edge
 // The HUD heading (title+subtitle, or just the racing status line) is
 // bottom-anchored this far above the arena's top edge, growing upward —
@@ -33,7 +34,7 @@ const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
 //      sweeping across. Arm hits transfer the arm's real swing velocity,
 //      so a ball caught by a rising arm gets flung — sideways, around the
 //      bowl, or clean back up out of the mouth — purely on timing luck.
-const OBSTACLE_SECTION_GAP_FACTOR = 3; // empty corridor kept between bands, in ball-radii
+const OBSTACLE_SECTION_GAP_FACTOR = 2; // empty corridor kept between bands, in ball-radii
 const PEG_SECTION_FRACTION = 0.12; // kept small — the big starting drums and the cauldron are the main event
 const FUNNEL_SECTION_FRACTION = 0.14; // the cauldron gets whatever height remains
 const WALL_THICKNESS_FACTOR = 0.6; // funnel + cauldron wall thickness, in ball-radii
@@ -63,6 +64,16 @@ const HEADING_TO_PEGS_DIAMETERS = 3;
 
 const COUNTDOWN_MS = 3000;
 const START_BOUNCE_SPEED_K = 0.72; // px/s per px of corridor width while trapped in a start circle
+
+// The stage gate: a locked, X-marked bar between the start drums and the
+// rest of the course. Stage 2 (pegs → funnel → cauldron) only opens once
+// BOTH finalists have actually landed on the gate — until then every
+// escapee waits on it, and once both are down it holds for GATE_WAIT_MS
+// (a beat of suspense) before breaking open, so the final starts as a
+// fair, simultaneous drop.
+const GATE_WAIT_MS = 2000; // held once both finalists have landed, before it breaks
+const GATE_OPEN_MS = 450; // slide-apart animation once the wait elapses
+const GATE_FLASH_MS = 900; // "THE FINAL!" banner lifetime after the gate opens
 
 // The two rotating starting drums: closed circular walls, each with a
 // single gap that sweeps around as the drum spins. Balls start trapped
@@ -112,6 +123,7 @@ type Ball = {
   dropDelay: number; // seconds after the start before gravity kicks in for this ball
   side: BallSide;
   startEscaped: boolean;
+  landedOnGate: boolean;
 };
 
 type Peg = {
@@ -181,6 +193,9 @@ type StartDrum = {
 
 type Course = {
   drums: Record<BallSide, StartDrum>;
+  // The stage gate's y — a full-width horizontal bar between the drums and
+  // the peg field, solid until both drums have released their finalist.
+  gateY: number;
   pegs: Peg[];
   funnel: Funnel;
   cauldron: Cauldron;
@@ -312,6 +327,33 @@ function buildPegField(
   return { pegs, lastRowY: top + (rows - 1) * spacing };
 }
 
+function buildCenteredPegRows(
+  cx: number,
+  top: number,
+  ballR: number,
+  counts: number[],
+  startId: number,
+): { pegs: Peg[]; lastRowY: number } {
+  const spacing = ballR * 4;
+  const pegR = ballR * 0.55 * 0.85;
+  const pegs: Peg[] = [];
+  let id = startId;
+
+  counts.forEach((count, row) => {
+    const rowW = (count - 1) * spacing;
+    const startX = cx - rowW / 2;
+    const y = top + row * spacing;
+    for (let c = 0; c < count; c++) {
+      pegs.push({ id: id++, x: startX + c * spacing, y, r: pegR });
+    }
+  });
+
+  return {
+    pegs,
+    lastRowY: top + Math.max(0, counts.length - 1) * spacing,
+  };
+}
+
 // The whole course fits inside one static screen (arena.height) — no
 // camera movement. Three bands stack top to bottom: the two rotating start
 // drums, a single shared peg field, a funnel, and the cauldron — a
@@ -354,11 +396,15 @@ function generateCourse(arena: Arena, ballR: number): Course {
     right: makeDrum(left + drumHalfW + drumGapBetween + drumHalfW / 2),
   };
 
+  // The stage gate sits just under the drums with room for a waiting
+  // finalist to rest on it; the peg field starts a little below that.
+  const gateY = drumTopMargin + drumR * 2 + ballR * 2.2;
+
   // The heading (see drawHud) is bottom-anchored HUD_LINE_CLEARANCE above
   // the arena's top edge, so that anchor point plus this many ball-radii
   // gives the total heading-to-peg gap. Never let it collapse the drums.
   const topY0 = Math.max(
-    drumTopMargin + drumR * 2 + ballR, // both drums, plus a minimal margin before the pegs
+    gateY + ballR * 2.5, // gate, plus a minimal margin before the pegs
     ballR * 2 * HEADING_TO_PEGS_DIAMETERS - HUD_LINE_CLEARANCE,
   );
 
@@ -374,7 +420,16 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   // 1. A single peg field spanning the full width — both drums feed into
   // the same field once a ball's lucky moment comes.
-  const { pegs, lastRowY } = buildPegField(left, right, pegTop, pegH, ballR, 0);
+  const pegField = buildPegField(left, right, pegTop, pegH, ballR, 0);
+  const bottomRows = buildCenteredPegRows(
+    cx,
+    pegField.lastRowY + ballR * 4,
+    ballR,
+    [9, 7],
+    pegField.pegs.length,
+  );
+  const pegs = [...pegField.pegs, ...bottomRows.pegs];
+  const lastRowY = bottomRows.lastRowY;
 
   // 2. Middle band — the funnel. Its walls run from the corridor edges
   // straight to the cauldron's rim endpoints, so funnel and bowl seal into
@@ -459,7 +514,7 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   const finishY = levelH - ballR * 2;
 
-  return { drums, pegs, funnel, cauldron, finishY };
+  return { drums, gateY, pegs, funnel, cauldron, finishY };
 }
 
 function spawnBalls(drums: Record<BallSide, StartDrum>, ballR: number): Ball[] {
@@ -491,6 +546,7 @@ function spawnBalls(drums: Record<BallSide, StartDrum>, ballR: number): Ball[] {
       dropDelay: 0,
       side: def.side,
       startEscaped: false,
+      landedOnGate: false,
     };
   });
 }
@@ -1025,6 +1081,7 @@ function createAudio(): RaceAudio {
 
   let musicGain: GainNode | null = null;
   let musicTimeoutId: number | null = null;
+  let musicElement: HTMLAudioElement | null = null;
   let musicPlaying = false;
 
   const scheduleMelody = (startTime: number) => {
@@ -1067,6 +1124,15 @@ function createAudio(): RaceAudio {
     }, LOOP_LEN * 1000);
   };
 
+  const startGeneratedMusic = (volume: number) => {
+    const ctx = ensure();
+    if (!ctx || musicGain) return;
+    musicGain = ctx.createGain();
+    musicGain.gain.value = volume;
+    musicGain.connect(ctx.destination);
+    loopMusic();
+  };
+
   return {
     unlock: () => {
       ensure();
@@ -1079,16 +1145,37 @@ function createAudio(): RaceAudio {
       timeouts.push(window.setTimeout(() => ping(880, 0.18, false), 260));
     },
     startMusic: (volume: number) => {
-      const ctx = ensure();
-      if (!ctx || musicPlaying) return;
+      ensure();
+      if (musicPlaying) return;
       musicPlaying = true;
-      musicGain = ctx.createGain();
-      musicGain.gain.value = volume;
-      musicGain.connect(ctx.destination);
-      loopMusic();
+      const track = new Audio(BG_MUSIC_SRC);
+      musicElement = track;
+      track.loop = true;
+      track.volume = Math.min(1, volume * 5);
+      track.addEventListener(
+        "error",
+        () => {
+          if (musicPlaying && musicElement === track) {
+            musicElement = null;
+            startGeneratedMusic(volume);
+          }
+        },
+        { once: true },
+      );
+      void track.play().catch(() => {
+        if (musicPlaying && musicElement === track) {
+          musicElement = null;
+          startGeneratedMusic(volume);
+        }
+      });
     },
     stopMusic: () => {
       musicPlaying = false;
+      if (musicElement) {
+        musicElement.pause();
+        musicElement.currentTime = 0;
+        musicElement = null;
+      }
       if (musicTimeoutId !== null) {
         window.clearTimeout(musicTimeoutId);
         musicTimeoutId = null;
@@ -1107,6 +1194,10 @@ function createAudio(): RaceAudio {
       timeouts.forEach((id) => window.clearTimeout(id));
       timeouts.length = 0;
       musicPlaying = false;
+      if (musicElement) {
+        musicElement.pause();
+        musicElement = null;
+      }
       if (musicTimeoutId !== null) window.clearTimeout(musicTimeoutId);
       void ac?.close();
       ac = null;
@@ -1364,6 +1455,79 @@ function drawDrum(
   ctx.restore();
 }
 
+// The stage gate. Locked (t = 0): a red bar spanning the corridor, marked
+// with X glyphs — stage 2 is "crossed out" until both finalists escape
+// their drums. Opening (0 < t < 1): the two halves slide apart toward the
+// walls and fade. Fully open (t >= 1): not drawn at all.
+function drawGate(
+  ctx: CanvasRenderingContext2D,
+  arena: Arena,
+  gateY: number,
+  thickness: number,
+  t: number,
+  camY: number,
+) {
+  if (t >= 1) return;
+  const sy = gateY - camY + arena.y;
+  const x1 = arena.x;
+  const x2 = arena.x + arena.width;
+  const cx = (x1 + x2) / 2;
+  const slide = t * (arena.width / 2) * 1.15;
+
+  ctx.save();
+  ctx.globalAlpha = 1 - t;
+  ctx.strokeStyle = "#f87171";
+  ctx.shadowColor = "rgba(248, 113, 113, 0.8)";
+  ctx.shadowBlur = 12;
+  ctx.lineWidth = thickness;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(x1 - slide, sy);
+  ctx.lineTo(cx - slide, sy);
+  ctx.moveTo(cx + slide, sy);
+  ctx.lineTo(x2 + slide, sy);
+  ctx.stroke();
+
+  // The "crossed" marks along the bar, riding their half as it slides.
+  const step = 36;
+  const xr = thickness * 1.9;
+  ctx.lineWidth = Math.max(1.5, thickness * 0.55);
+  ctx.beginPath();
+  for (let px = x1 + step / 2; px < x2; px += step) {
+    const ox = px < cx ? px - slide : px + slide;
+    ctx.moveTo(ox - xr, sy - xr);
+    ctx.lineTo(ox + xr, sy + xr);
+    ctx.moveTo(ox - xr, sy + xr);
+    ctx.lineTo(ox + xr, sy - xr);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+// One-shot "THE FINAL!" banner flashed just below the gate the moment it
+// opens, fading out over GATE_FLASH_MS.
+function drawFinalFlash(
+  ctx: CanvasRenderingContext2D,
+  arena: Arena,
+  gateY: number,
+  alpha: number,
+  camY: number,
+  mobile: boolean,
+) {
+  const cx = arena.x + arena.width / 2;
+  const sy = gateY - camY + arena.y + (mobile ? 54 : 70);
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, alpha);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `900 ${mobile ? 34 : 46}px Arial, Helvetica, sans-serif`;
+  ctx.fillStyle = "#f7c948";
+  ctx.shadowColor = "rgba(247, 201, 72, 0.6)";
+  ctx.shadowBlur = 20;
+  ctx.fillText("THE FINAL!", cx, sy);
+  ctx.restore();
+}
+
 function drawFinishLine(
   ctx: CanvasRenderingContext2D,
   course: Course,
@@ -1384,7 +1548,7 @@ function drawFinishLine(
   ctx.font = "900 14px Arial, Helvetica, sans-serif";
   ctx.fillStyle = "#fde9b8";
   ctx.textAlign = "center";
-  ctx.fillText("FINISH", arena.x + arena.width / 2, sy - 8);
+  ctx.fillText("FINAL", arena.x + arena.width / 2, sy - 8);
   ctx.restore();
 }
 
@@ -1632,6 +1796,14 @@ const BallRace = () => {
   const countdownEndAtRef = useRef<number | null>(null);
   const raceStartAtRef = useRef<number | null>(null);
   const finishOrderRef = useRef<Ball[]>([]);
+  // Wall-clock time the stage gate unlocked — null while stage 1 is still
+  // in progress. Drives the gate's collision (solid while null), its
+  // slide-open animation, and the one-shot "THE FINAL!" banner.
+  const gateOpenAtRef = useRef<number | null>(null);
+  // Wall-clock time both finalists were first simultaneously resting on
+  // the gate — null until then. The gate actually opens GATE_WAIT_MS after
+  // this fires, giving a held beat before it breaks.
+  const bothLandedAtRef = useRef<number | null>(null);
 
   const [phase, setPhase] = useState<Phase>("menu");
   const [standings, setStandings] = useState<Ball[]>([]);
@@ -1655,6 +1827,8 @@ const BallRace = () => {
     particlesRef.current = [];
     finishOrderRef.current = [];
     raceStartAtRef.current = null;
+    gateOpenAtRef.current = null;
+    bothLandedAtRef.current = null;
   }, []);
 
   const resizeOnly = useCallback(() => {
@@ -1749,29 +1923,30 @@ const BallRace = () => {
           course.drums.right.phase;
 
         for (let s = 0; s < SUBSTEPS; s++) {
+          const leftEscaped = balls.some(
+            (b) => b.side === "left" && b.startEscaped,
+          );
+          const rightEscaped = balls.some(
+            (b) => b.side === "right" && b.startEscaped,
+          );
+          const gateLocked = gateOpenAtRef.current === null;
+          const drumSegs: Record<BallSide, Seg[]> = {
+            left: buildDrumSegs(course.drums.left, leftDrumAngle, leftEscaped),
+            right: buildDrumSegs(
+              course.drums.right,
+              rightDrumAngle,
+              rightEscaped,
+            ),
+          };
           for (const ball of balls) {
             if (ball.finished || elapsedRace < ball.dropDelay) continue;
-            const leftEscaped = balls.some(
-              (b) => b.side === "left" && b.startEscaped,
-            );
-            const rightEscaped = balls.some(
-              (b) => b.side === "right" && b.startEscaped,
-            );
-            const bottomExitOpen = leftEscaped && rightEscaped;
-            const drumSegs: Record<BallSide, Seg[]> = {
-              left: buildDrumSegs(
-                course.drums.left,
-                leftDrumAngle,
-                leftEscaped,
-              ),
-              right: buildDrumSegs(
-                course.drums.right,
-                rightDrumAngle,
-                rightEscaped,
-              ),
-            };
             const ownDrum = course.drums[ball.side];
-            keepStartBounce(ball, ownDrum, startBounceSpeed);
+            // The energetic lottery-bounce only runs while the ball's own
+            // drum is still open; once it closes, the trapped loser just
+            // settles at the bottom and stops bouncing.
+            const ownDrumOpen =
+              ball.side === "left" ? !leftEscaped : !rightEscaped;
+            if (ownDrumOpen) keepStartBounce(ball, ownDrum, startBounceSpeed);
             ball.vy = Math.min(ball.vy + gravity * subDt, maxFall);
             ball.x += ball.vx * subDt;
             ball.y += ball.vy * subDt;
@@ -1790,6 +1965,29 @@ const BallRace = () => {
               course.drums.right.thickness,
               audio,
             );
+            // Stage 2 is sealed behind the gate until both finalists are
+            // out — early escapees rest on it, waiting for the other drum.
+            if (gateLocked) {
+              resolveSegment(
+                ball,
+                left,
+                course.gateY,
+                right,
+                course.gateY,
+                course.funnel.thickness,
+                audio,
+              );
+              // "Landed" = actually resting on the gate's surface, not
+              // just past the drum — checked by proximity since that's
+              // exactly where resolveSegment pins a ball touching it.
+              if (!ball.landedOnGate) {
+                const restY =
+                  course.gateY - course.funnel.thickness / 2 - ball.r;
+                if (Math.abs(ball.y - restY) < ball.r * 0.35) {
+                  ball.landedOnGate = true;
+                }
+              }
+            }
             resolveFunnel(ball, course.funnel, audio);
             resolveCauldron(
               ball,
@@ -1797,7 +1995,7 @@ const BallRace = () => {
               rotorAngle,
               maxFling,
               audio,
-              bottomExitOpen,
+              true,
             );
             const sideAlreadyEscaped = balls.some(
               (b) => b !== ball && b.side === ball.side && b.startEscaped,
@@ -1825,14 +2023,51 @@ const BallRace = () => {
           }
         }
 
+        // Once both finalists have actually landed on the gate, hold for
+        // GATE_WAIT_MS (a beat of suspense) before breaking it open: one
+        // burst of gold on each side of the split, a fanfare, and the
+        // final begins as a fair, simultaneous drop.
+        if (gateOpenAtRef.current === null) {
+          const bothLanded =
+            balls.some((b) => b.side === "left" && b.landedOnGate) &&
+            balls.some((b) => b.side === "right" && b.landedOnGate);
+          if (bothLanded && bothLandedAtRef.current === null) {
+            bothLandedAtRef.current = now;
+          }
+          if (
+            bothLandedAtRef.current !== null &&
+            now - bothLandedAtRef.current >= GATE_WAIT_MS
+          ) {
+            gateOpenAtRef.current = now;
+            const cxMid = arena.x + arena.width / 2;
+            spawnBurst(
+              particlesRef.current,
+              cxMid - arena.width * 0.2,
+              course.gateY,
+              50,
+              18,
+            );
+            spawnBurst(
+              particlesRef.current,
+              cxMid + arena.width * 0.2,
+              course.gateY,
+              50,
+              18,
+            );
+            audio.win();
+          }
+        }
+
         for (const ball of balls) {
           if (ball.finished || elapsedRace < ball.dropDelay) continue;
-          // A ball waiting out its drum's rotation for a lucky gap
-          // alignment isn't "stuck" in the anti-stall sense. The start
-          // bounce keeps it lively until it escapes naturally.
+          // Stage 1 is all deliberate waiting: balls ride out their drum's
+          // rotation, and early escapees rest on the locked gate until the
+          // other finalist is out. None of that is "stuck" in the
+          // anti-stall sense, so the timer only runs once the gate opens
+          // (and never for balls still inside a drum).
           const inDrum =
             !ball.startEscaped && isInsideDrum(ball, course.drums[ball.side]);
-          if (inDrum) {
+          if (inDrum || gateOpenAtRef.current === null) {
             ball.stuckTimer = 0;
             ball.maxY = ball.y;
             continue;
@@ -1898,7 +2133,6 @@ const BallRace = () => {
         const rightClosed = balls.some(
           (ball) => ball.side === "right" && ball.startEscaped,
         );
-        const bottomExitOpen = leftClosed && rightClosed;
         drawDrum(
           ctx,
           course.drums.left,
@@ -1915,11 +2149,29 @@ const BallRace = () => {
           arena.y,
           rightClosed,
         );
+        const gateT =
+          gateOpenAtRef.current === null
+            ? 0
+            : Math.min(1, (now - gateOpenAtRef.current) / GATE_OPEN_MS);
+        drawGate(
+          ctx,
+          arena,
+          course.gateY,
+          course.funnel.thickness,
+          gateT,
+          camY,
+        );
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
         drawFunnel(ctx, course.funnel, camY, arena.y);
-        drawCauldron(ctx, course.cauldron, camY, arena.y, bottomExitOpen);
+        drawCauldron(ctx, course.cauldron, camY, arena.y, true);
         drawRotor(ctx, course.cauldron.rotor, rotorAngle, camY, arena.y);
         drawFinishLine(ctx, course, arena, camY);
+        if (gateOpenAtRef.current !== null) {
+          const flashT = (now - gateOpenAtRef.current) / GATE_FLASH_MS;
+          if (flashT < 1) {
+            drawFinalFlash(ctx, arena, course.gateY, 1 - flashT, camY, mobile);
+          }
+        }
       }
 
       const bob =
@@ -1998,7 +2250,7 @@ const BallRace = () => {
               🏁 {standings[0]?.name ?? "Winner"} Won
             </h2>
             <button type="button" className="cr-play-btn" onClick={startRace}>
-              RACE AGAIN
+              PLAY AGAIN
             </button>
           </div>
         </div>
