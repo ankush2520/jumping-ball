@@ -1529,8 +1529,7 @@ function drawFinalFlash(
   ctx.textBaseline = "middle";
   ctx.font = `900 ${mobile ? 34 : 46}px Arial, Helvetica, sans-serif`;
   ctx.fillStyle = "#f7c948";
-  ctx.shadowColor = "rgba(247, 201, 72, 0.6)";
-  ctx.shadowBlur = 20;
+  // No text shadow — see drawHud for the WebKit ghosting bug.
   ctx.fillText("THE FINAL!", cx, sy);
   ctx.restore();
 }
@@ -1551,7 +1550,7 @@ function drawFinishLine(
     ctx.fillStyle = i % 2 === 0 ? "#f7c948" : "#161225";
     ctx.fillRect(arena.x + i * tile, sy, tile, tile * 0.7);
   }
-  ctx.shadowBlur = 10;
+  ctx.shadowBlur = 0; // no text shadow — see drawHud for the WebKit ghosting bug
   ctx.font = "900 14px Arial, Helvetica, sans-serif";
   ctx.fillStyle = "#fde9b8";
   ctx.textAlign = "center";
@@ -1756,8 +1755,9 @@ function drawHud(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean) {
   titleGrad.addColorStop(0.5, "#f7c948");
   titleGrad.addColorStop(1, "#d4a017");
   ctx.fillStyle = titleGrad;
-  ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
-  ctx.shadowBlur = 18;
+  // No canvas shadow on text: WebKit (iPhone Safari) misrenders shadowBlur
+  // under a dpr-scaled context, painting a blurred displaced ghost copy of
+  // the glyphs. The gradient fill alone reads fine.
   ctx.fillText(headingText, cx, headingBottomY);
   ctx.restore();
 }
@@ -1782,8 +1782,7 @@ function drawCountdown(
   grad.addColorStop(0.5, "#f7c948");
   grad.addColorStop(1, "#d4a017");
   ctx.fillStyle = grad;
-  ctx.shadowColor = "rgba(247, 201, 72, 0.6)";
-  ctx.shadowBlur = 26;
+  // No text shadow — see drawHud for the WebKit ghosting bug.
   ctx.fillText(label, cx, cy);
   ctx.restore();
 }
