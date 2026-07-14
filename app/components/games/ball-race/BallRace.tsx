@@ -72,7 +72,7 @@ const START_BOUNCE_SPEED_K = 0.72; // px/s per px of corridor width while trappe
 // spinner arm).
 const DRUM_RADIUS_FACTOR = 10.2; // in ball-radii — 3x the original size; clamped to fit the corridor in generateCourse
 const DRUM_TOP_MARGIN_FACTOR = 1.5; // gap above the drums, in ball-radii
-const DRUM_GAP_FACTOR = 3.6; // exit chord width, in ball-radii — ~1.8 ball diameters
+const DRUM_GAP_FACTOR = 4; // exit chord width, in ball-radii — ~2.7 ball diameters
 const DRUM_ANGULAR_SPEED = 0.8; // rad/s
 
 // Four countries in two starting drums: France + Spain in the LEFT drum,
@@ -157,6 +157,7 @@ type Cauldron = {
   cy: number;
   r: number;
   segs: Seg[];
+  closedSegs: Seg[];
   thickness: number;
   mouthHalf: number; // top-opening half-angle, either side of straight-up
   gapHalf: number; // bottom exit-gap half-angle, either side of straight-down
@@ -329,7 +330,10 @@ function generateCourse(arena: Arena, ballR: number): Course {
   // clearance) while staying at least big enough to hold 2 balls.
   const drumGapBetween = width * 0.1;
   const drumHalfW = (width - drumGapBetween) / 2;
-  const drumR = Math.min(ballR * DRUM_RADIUS_FACTOR, drumHalfW / 2 - ballR * 0.6);
+  const drumR = Math.min(
+    ballR * DRUM_RADIUS_FACTOR,
+    drumHalfW / 2 - ballR * 0.6,
+  );
   const drumTopMargin = ballR * DRUM_TOP_MARGIN_FACTOR;
   const drumCy = drumTopMargin + drumR;
   // Exit-gap half-angle derived from a target chord width, same
@@ -399,30 +403,40 @@ function generateCourse(arena: Arena, ballR: number): Course {
   // +π/2 = straight down); the mouth straddles -π/2 (up) and the exit gap
   // straddles +π/2 (down).
   const gapHalf = Math.asin((ballR * CAULDRON_EXIT_GAP_FACTOR) / 2 / r);
-  const segs: Seg[] = [];
-  const addArc = (from: number, to: number) => {
-    const steps = Math.max(2, Math.ceil((to - from) / CAULDRON_ARC_STEP));
-    for (let i = 0; i < steps; i++) {
-      const a1 = from + ((to - from) * i) / steps;
-      const a2 = from + ((to - from) * (i + 1)) / steps;
-      segs.push({
-        x1: cx + Math.cos(a1) * r,
-        y1: ccy + Math.sin(a1) * r,
-        x2: cx + Math.cos(a2) * r,
-        y2: ccy + Math.sin(a2) * r,
-      });
+  const makeCauldronSegs = (exitOpen: boolean): Seg[] => {
+    const segs: Seg[] = [];
+    const addArc = (from: number, to: number) => {
+      const steps = Math.max(2, Math.ceil((to - from) / CAULDRON_ARC_STEP));
+      for (let i = 0; i < steps; i++) {
+        const a1 = from + ((to - from) * i) / steps;
+        const a2 = from + ((to - from) * (i + 1)) / steps;
+        segs.push({
+          x1: cx + Math.cos(a1) * r,
+          y1: ccy + Math.sin(a1) * r,
+          x2: cx + Math.cos(a2) * r,
+          y2: ccy + Math.sin(a2) * r,
+        });
+      }
+    };
+    if (!exitOpen) {
+      addArc(-Math.PI / 2 + mouthHalf, (3 * Math.PI) / 2 - mouthHalf);
+      return segs;
     }
+    // Right side: mouth's right edge, down past 3 o'clock, to the gap.
+    addArc(-Math.PI / 2 + mouthHalf, Math.PI / 2 - gapHalf);
+    // Left side: gap's left edge, up past 9 o'clock, to the mouth.
+    addArc(Math.PI / 2 + gapHalf, (3 * Math.PI) / 2 - mouthHalf);
+    return segs;
   };
-  // Right side: mouth's right edge, down past 3 o'clock, to the gap.
-  addArc(-Math.PI / 2 + mouthHalf, Math.PI / 2 - gapHalf);
-  // Left side: gap's left edge, up past 9 o'clock, to the mouth.
-  addArc(Math.PI / 2 + gapHalf, (3 * Math.PI) / 2 - mouthHalf);
+  const segs = makeCauldronSegs(true);
+  const closedSegs = makeCauldronSegs(false);
 
   const cauldron: Cauldron = {
     cx,
     cy: ccy,
     r,
     segs,
+    closedSegs,
     thickness: wallT,
     mouthHalf,
     gapHalf,
@@ -431,7 +445,11 @@ function generateCourse(arena: Arena, ballR: number): Course {
       cy: ccy,
       // Tips sweep to within less than a ball of the wall (accounting for
       // both half-thicknesses), so no ball can rest under a passing arm.
-      armLen: r - wallT / 2 - (ballR * ROTOR_ARM_THICKNESS_FACTOR) / 2 - ballR * ROTOR_TIP_CLEARANCE_FACTOR,
+      armLen:
+        r -
+        wallT / 2 -
+        (ballR * ROTOR_ARM_THICKNESS_FACTOR) / 2 -
+        ballR * ROTOR_TIP_CLEARANCE_FACTOR,
       thickness: ballR * ROTOR_ARM_THICKNESS_FACTOR,
       hubR: ballR * ROTOR_HUB_FACTOR,
       angularSpeed: ROTOR_ANGULAR_SPEED * (Math.random() < 0.5 ? 1 : -1),
@@ -560,7 +578,15 @@ function resolveSegment(
 function resolveFunnel(ball: Ball, funnel: Funnel, audio: RaceAudio) {
   const { left, right, thickness } = funnel;
   resolveSegment(ball, left.x1, left.y1, left.x2, left.y2, thickness, audio);
-  resolveSegment(ball, right.x1, right.y1, right.x2, right.y2, thickness, audio);
+  resolveSegment(
+    ball,
+    right.x1,
+    right.y1,
+    right.x2,
+    right.y2,
+    thickness,
+    audio,
+  );
 }
 
 // Circle-vs-segment collision where the segment itself is a spinning bar.
@@ -624,8 +650,30 @@ function resolveRotor(
   const { cx, cy, armLen, thickness, hubR, angularSpeed } = rotor;
   const c = Math.cos(angle);
   const s = Math.sin(angle);
-  resolveSpinningBar(ball, cx, cy, c, s, armLen, thickness, angularSpeed, maxSpeed, audio);
-  resolveSpinningBar(ball, cx, cy, -s, c, armLen, thickness, angularSpeed, maxSpeed, audio);
+  resolveSpinningBar(
+    ball,
+    cx,
+    cy,
+    c,
+    s,
+    armLen,
+    thickness,
+    angularSpeed,
+    maxSpeed,
+    audio,
+  );
+  resolveSpinningBar(
+    ball,
+    cx,
+    cy,
+    -s,
+    c,
+    armLen,
+    thickness,
+    angularSpeed,
+    maxSpeed,
+    audio,
+  );
   resolvePeg(ball, { x: cx, y: cy, r: hubR }, audio);
 }
 
@@ -635,9 +683,19 @@ function resolveCauldron(
   angle: number,
   maxSpeed: number,
   audio: RaceAudio,
+  exitOpen: boolean,
 ) {
-  for (const seg of cauldron.segs) {
-    resolveSegment(ball, seg.x1, seg.y1, seg.x2, seg.y2, cauldron.thickness, audio);
+  const segs = exitOpen ? cauldron.segs : cauldron.closedSegs;
+  for (const seg of segs) {
+    resolveSegment(
+      ball,
+      seg.x1,
+      seg.y1,
+      seg.x2,
+      seg.y2,
+      cauldron.thickness,
+      audio,
+    );
   }
   resolveRotor(ball, cauldron.rotor, angle, maxSpeed, audio);
 }
@@ -646,14 +704,21 @@ function resolveCauldron(
 // segments already encode the current rotation (see buildDrumSegs), so no
 // surface-velocity fling is needed here the way the cauldron's spinner
 // needs one; the wall just holds the ball until the gap swings under it.
-function resolveDrum(ball: Ball, segs: Seg[], thickness: number, audio: RaceAudio) {
+function resolveDrum(
+  ball: Ball,
+  segs: Seg[],
+  thickness: number,
+  audio: RaceAudio,
+) {
   for (const seg of segs) {
     resolveSegment(ball, seg.x1, seg.y1, seg.x2, seg.y2, thickness, audio);
   }
 }
 
 function isInsideDrum(ball: Ball, drum: StartDrum): boolean {
-  return Math.hypot(ball.x - drum.cx, ball.y - drum.cy) < drum.r + ball.r * 0.25;
+  return (
+    Math.hypot(ball.x - drum.cx, ball.y - drum.cy) < drum.r + ball.r * 0.25
+  );
 }
 
 function hasEscapedDrum(ball: Ball, drum: StartDrum): boolean {
@@ -940,11 +1005,13 @@ function createAudio(): RaceAudio {
   ];
   const BASS: BassNote[] = [
     ...BASS_PHRASE,
-    ...BASS_PHRASE.map((n) => ({ ...n, startBeat: n.startBeat + PHRASE_BEATS })),
+    ...BASS_PHRASE.map((n) => ({
+      ...n,
+      startBeat: n.startBeat + PHRASE_BEATS,
+    })),
   ];
 
-  const LOOP_LEN =
-    MELODY.reduce((sum, n) => sum + n.beats, 0) * EIGHTH;
+  const LOOP_LEN = MELODY.reduce((sum, n) => sum + n.beats, 0) * EIGHTH;
 
   const MELODY_PARTIALS: [number, number][] = [
     [1, 1],
@@ -1207,6 +1274,7 @@ function drawCauldron(
   cauldron: Cauldron,
   camY: number,
   arenaY: number,
+  exitOpen: boolean,
 ) {
   const { cx, cy, r, thickness, mouthHalf, gapHalf } = cauldron;
   const sy = cy - camY + arenaY;
@@ -1216,12 +1284,18 @@ function drawCauldron(
   ctx.shadowBlur = 10;
   ctx.lineWidth = thickness;
   ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.arc(cx, sy, r, -Math.PI / 2 + mouthHalf, Math.PI / 2 - gapHalf);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(cx, sy, r, Math.PI / 2 + gapHalf, (3 * Math.PI) / 2 - mouthHalf);
-  ctx.stroke();
+  if (exitOpen) {
+    ctx.beginPath();
+    ctx.arc(cx, sy, r, -Math.PI / 2 + mouthHalf, Math.PI / 2 - gapHalf);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, sy, r, Math.PI / 2 + gapHalf, (3 * Math.PI) / 2 - mouthHalf);
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.arc(cx, sy, r, -Math.PI / 2 + mouthHalf, (3 * Math.PI) / 2 - mouthHalf);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -1472,11 +1546,7 @@ function drawBalls(
   });
 }
 
-function drawHud(
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  mobile: boolean,
-) {
+function drawHud(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean) {
   const { x, width } = arena;
   const cx = x + width / 2;
   const headingText = "WHO WILL WIN THE CUP?";
@@ -1661,41 +1731,45 @@ const BallRace = () => {
         const gravity = arena.width * GRAVITY_K;
         const maxFall = arena.width * MAX_FALL_K;
         const subDt = dt / SUBSTEPS;
-        const elapsedRace = raceStartAt !== null ? (now - raceStartAt) / 1000 : 0;
+        const elapsedRace =
+          raceStartAt !== null ? (now - raceStartAt) / 1000 : 0;
         // The rotor spins on wall-clock time (not race-elapsed), so it's
         // already moving during the countdown and stays in sync between
         // this physics step and the draw call below.
         const rotorAngle =
-          (now / 1000) * course.cauldron.rotor.angularSpeed + course.cauldron.rotor.phase;
+          (now / 1000) * course.cauldron.rotor.angularSpeed +
+          course.cauldron.rotor.phase;
         const maxFling = arena.width * ROTOR_FLING_MAX_K;
         const startBounceSpeed = arena.width * START_BOUNCE_SPEED_K;
-        const drumClosed = {
-          left: balls
-            .filter((ball) => ball.side === "left")
-            .every((ball) => ball.startEscaped),
-          right: balls
-            .filter((ball) => ball.side === "right")
-            .every((ball) => ball.startEscaped),
-        };
-        // Each drum's wall segments (its gap position) are recomputed once
-        // per frame from wall-clock time — same cadence as rotorAngle —
-        // and reused across every substep and ball this frame.
-        const drumSegs: Record<BallSide, Seg[]> = {
-          left: buildDrumSegs(
-            course.drums.left,
-            (now / 1000) * course.drums.left.angularSpeed + course.drums.left.phase,
-            drumClosed.left,
-          ),
-          right: buildDrumSegs(
-            course.drums.right,
-            (now / 1000) * course.drums.right.angularSpeed + course.drums.right.phase,
-            drumClosed.right,
-          ),
-        };
+        const leftDrumAngle =
+          (now / 1000) * course.drums.left.angularSpeed +
+          course.drums.left.phase;
+        const rightDrumAngle =
+          (now / 1000) * course.drums.right.angularSpeed +
+          course.drums.right.phase;
 
         for (let s = 0; s < SUBSTEPS; s++) {
           for (const ball of balls) {
             if (ball.finished || elapsedRace < ball.dropDelay) continue;
+            const leftEscaped = balls.some(
+              (b) => b.side === "left" && b.startEscaped,
+            );
+            const rightEscaped = balls.some(
+              (b) => b.side === "right" && b.startEscaped,
+            );
+            const bottomExitOpen = leftEscaped && rightEscaped;
+            const drumSegs: Record<BallSide, Seg[]> = {
+              left: buildDrumSegs(
+                course.drums.left,
+                leftDrumAngle,
+                leftEscaped,
+              ),
+              right: buildDrumSegs(
+                course.drums.right,
+                rightDrumAngle,
+                rightEscaped,
+              ),
+            };
             const ownDrum = course.drums[ball.side];
             keepStartBounce(ball, ownDrum, startBounceSpeed);
             ball.vy = Math.min(ball.vy + gravity * subDt, maxFall);
@@ -1704,11 +1778,35 @@ const BallRace = () => {
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
             for (const peg of course.pegs) resolvePeg(ball, peg, audio);
-            resolveDrum(ball, drumSegs.left, course.drums.left.thickness, audio);
-            resolveDrum(ball, drumSegs.right, course.drums.right.thickness, audio);
+            resolveDrum(
+              ball,
+              drumSegs.left,
+              course.drums.left.thickness,
+              audio,
+            );
+            resolveDrum(
+              ball,
+              drumSegs.right,
+              course.drums.right.thickness,
+              audio,
+            );
             resolveFunnel(ball, course.funnel, audio);
-            resolveCauldron(ball, course.cauldron, rotorAngle, maxFling, audio);
-            if (!ball.startEscaped && hasEscapedDrum(ball, ownDrum)) {
+            resolveCauldron(
+              ball,
+              course.cauldron,
+              rotorAngle,
+              maxFling,
+              audio,
+              bottomExitOpen,
+            );
+            const sideAlreadyEscaped = balls.some(
+              (b) => b !== ball && b.side === ball.side && b.startEscaped,
+            );
+            if (
+              !ball.startEscaped &&
+              !sideAlreadyEscaped &&
+              hasEscapedDrum(ball, ownDrum)
+            ) {
               ball.startEscaped = true;
             }
           }
@@ -1732,7 +1830,8 @@ const BallRace = () => {
           // A ball waiting out its drum's rotation for a lucky gap
           // alignment isn't "stuck" in the anti-stall sense. The start
           // bounce keeps it lively until it escapes naturally.
-          const inDrum = !ball.startEscaped && isInsideDrum(ball, course.drums[ball.side]);
+          const inDrum =
+            !ball.startEscaped && isInsideDrum(ball, course.drums[ball.side]);
           if (inDrum) {
             ball.stuckTimer = 0;
             ball.maxY = ball.y;
@@ -1751,9 +1850,10 @@ const BallRace = () => {
           }
         }
 
-        // The race only ends once every ball has reached the finish line
-        // on its own — no time-based cutoff.
-        const allDone = finishOrderRef.current.length === balls.length;
+        // One ball from each start circle is allowed into the race. The
+        // other two stay trapped after their circle closes, so the round
+        // completes once the released pair reaches the finish.
+        const allDone = finishOrderRef.current.length === 2;
         if (allDone) {
           phaseRef.current = "finished";
           setStandings(finishOrderRef.current.slice());
@@ -1784,22 +1884,40 @@ const BallRace = () => {
 
       if (phaseNow !== "menu") {
         const rotorAngle =
-          (now / 1000) * course.cauldron.rotor.angularSpeed + course.cauldron.rotor.phase;
+          (now / 1000) * course.cauldron.rotor.angularSpeed +
+          course.cauldron.rotor.phase;
         const leftDrumAngle =
-          (now / 1000) * course.drums.left.angularSpeed + course.drums.left.phase;
+          (now / 1000) * course.drums.left.angularSpeed +
+          course.drums.left.phase;
         const rightDrumAngle =
-          (now / 1000) * course.drums.right.angularSpeed + course.drums.right.phase;
-        const leftClosed = balls
-          .filter((ball) => ball.side === "left")
-          .every((ball) => ball.startEscaped);
-        const rightClosed = balls
-          .filter((ball) => ball.side === "right")
-          .every((ball) => ball.startEscaped);
-        drawDrum(ctx, course.drums.left, leftDrumAngle, camY, arena.y, leftClosed);
-        drawDrum(ctx, course.drums.right, rightDrumAngle, camY, arena.y, rightClosed);
+          (now / 1000) * course.drums.right.angularSpeed +
+          course.drums.right.phase;
+        const leftClosed = balls.some(
+          (ball) => ball.side === "left" && ball.startEscaped,
+        );
+        const rightClosed = balls.some(
+          (ball) => ball.side === "right" && ball.startEscaped,
+        );
+        const bottomExitOpen = leftClosed && rightClosed;
+        drawDrum(
+          ctx,
+          course.drums.left,
+          leftDrumAngle,
+          camY,
+          arena.y,
+          leftClosed,
+        );
+        drawDrum(
+          ctx,
+          course.drums.right,
+          rightDrumAngle,
+          camY,
+          arena.y,
+          rightClosed,
+        );
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
         drawFunnel(ctx, course.funnel, camY, arena.y);
-        drawCauldron(ctx, course.cauldron, camY, arena.y);
+        drawCauldron(ctx, course.cauldron, camY, arena.y, bottomExitOpen);
         drawRotor(ctx, course.cauldron.rotor, rotorAngle, camY, arena.y);
         drawFinishLine(ctx, course, arena, camY);
       }
@@ -1876,27 +1994,9 @@ const BallRace = () => {
       {phase === "finished" && (
         <div className="cr-finished">
           <div className="cr-panel">
-            <h2 className="cr-panel-title">🏁 Race Complete!</h2>
-            <div className="cr-standings">
-              {standings.map((b, i) => (
-                <div className="cr-standing-row" key={b.id}>
-                  <span className="cr-standing-medal">
-                    {i === 0
-                      ? "🥇"
-                      : i === 1
-                        ? "🥈"
-                        : i === 2
-                          ? "🥉"
-                          : `${i + 1}.`}
-                  </span>
-                  <span
-                    className="cr-standing-dot"
-                    style={{ background: `hsl(${b.hue}, 88%, 58%)` }}
-                  />
-                  <span className="cr-standing-name">{b.name}</span>
-                </div>
-              ))}
-            </div>
+            <h2 className="cr-panel-title">
+              🏁 {standings[0]?.name ?? "Winner"} Won
+            </h2>
             <button type="button" className="cr-play-btn" onClick={startRace}>
               RACE AGAIN
             </button>
