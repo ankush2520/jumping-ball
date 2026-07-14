@@ -62,6 +62,7 @@ const ROTOR_RESTITUTION = 0.55;
 const HEADING_TO_PEGS_DIAMETERS = 3;
 
 const COUNTDOWN_MS = 3000;
+const START_BOUNCE_SPEED_K = 0.72; // px/s per px of corridor width while trapped in a start circle
 
 // The two rotating starting drums: closed circular walls, each with a
 // single gap that sweeps around as the drum spins. Balls start trapped
@@ -109,6 +110,8 @@ type Ball = {
   stuckTimer: number;
   maxY: number;
   dropDelay: number; // seconds after the start before gravity kicks in for this ball
+  side: BallSide;
+  startEscaped: boolean;
 };
 
 type Peg = {
@@ -251,10 +254,11 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
 // though drawDrum uses ctx.arc() directly since canvas can stroke a true
 // arc natively; this polyline exists only because collision math needs
 // straight segments.
-function buildDrumSegs(drum: StartDrum, angle: number): Seg[] {
+function buildDrumSegs(drum: StartDrum, angle: number, closed = false): Seg[] {
   const { cx, cy, r, gapHalf } = drum;
-  const from = angle + gapHalf;
-  const to = angle - gapHalf + Math.PI * 2;
+  const openHalf = closed ? 0 : gapHalf;
+  const from = angle + openHalf;
+  const to = angle - openHalf + Math.PI * 2;
   const steps = Math.max(2, Math.ceil((to - from) / CAULDRON_ARC_STEP));
   const segs: Seg[] = [];
   for (let i = 0; i < steps; i++) {
@@ -467,6 +471,8 @@ function spawnBalls(drums: Record<BallSide, StartDrum>, ballR: number): Ball[] {
       stuckTimer: 0,
       maxY: y,
       dropDelay: 0,
+      side: def.side,
+      startEscaped: false,
     };
   });
 }
@@ -644,6 +650,29 @@ function resolveDrum(ball: Ball, segs: Seg[], thickness: number, audio: RaceAudi
   for (const seg of segs) {
     resolveSegment(ball, seg.x1, seg.y1, seg.x2, seg.y2, thickness, audio);
   }
+}
+
+function isInsideDrum(ball: Ball, drum: StartDrum): boolean {
+  return Math.hypot(ball.x - drum.cx, ball.y - drum.cy) < drum.r + ball.r * 0.25;
+}
+
+function hasEscapedDrum(ball: Ball, drum: StartDrum): boolean {
+  return Math.hypot(ball.x - drum.cx, ball.y - drum.cy) > drum.r + ball.r * 1.4;
+}
+
+function keepStartBounce(ball: Ball, drum: StartDrum, targetSpeed: number) {
+  if (ball.startEscaped || !isInsideDrum(ball, drum)) return;
+
+  const speed = Math.hypot(ball.vx, ball.vy);
+  if (speed >= targetSpeed * 0.86) return;
+
+  const outward = Math.atan2(ball.y - drum.cy, ball.x - drum.cx);
+  const tangent = outward + (Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
+  const angle = tangent + (Math.random() - 0.5) * 0.9;
+  const nextSpeed = targetSpeed * (0.95 + Math.random() * 0.16);
+  ball.vx = Math.cos(angle) * nextSpeed;
+  ball.vy = Math.sin(angle) * nextSpeed;
+  ball.glow = Math.max(ball.glow, 0.28);
 }
 
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
@@ -1244,8 +1273,10 @@ function drawDrum(
   angle: number,
   camY: number,
   arenaY: number,
+  closed = false,
 ) {
   const { cx, cy, r, thickness, gapHalf } = drum;
+  const openHalf = closed ? 0 : gapHalf;
   const sy = cy - camY + arenaY;
   ctx.save();
   ctx.strokeStyle = LEVEL_THEMES[0].obstacle;
@@ -1254,7 +1285,7 @@ function drawDrum(
   ctx.lineWidth = thickness;
   ctx.lineCap = "round";
   ctx.beginPath();
-  ctx.arc(cx, sy, r, angle + gapHalf, angle - gapHalf + Math.PI * 2);
+  ctx.arc(cx, sy, r, angle + openHalf, angle - openHalf + Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 }
@@ -1441,52 +1472,14 @@ function drawBalls(
   });
 }
 
-function ordinal(n: number): string {
-  const v = n % 100;
-  if (v >= 11 && v <= 13) return `${n}th`;
-  switch (n % 10) {
-    case 1:
-      return `${n}st`;
-    case 2:
-      return `${n}nd`;
-    case 3:
-      return `${n}rd`;
-    default:
-      return `${n}th`;
-  }
-}
-
 function drawHud(
   ctx: CanvasRenderingContext2D,
   arena: Arena,
   mobile: boolean,
-  phase: Phase,
-  balls: Ball[],
-  leaderName: string,
-  finishedCount: number,
 ) {
   const { x, width } = arena;
   const cx = x + width / 2;
-
-  // The big "COUNTRY BALL RACE" title only shows for the pre-race beat
-  // (menu + countdown). Once racing starts it's replaced by just the
-  // leading-country status line, promoted up into the title's slot —
-  // no heading sitting at the top during the race itself.
-  const showTitle = phase === "menu" || phase === "countdown";
-
-  const racingSubtitle = () => {
-    const remaining = balls.length - finishedCount;
-    if (finishedCount === 0) return `${leaderName} is leading!`;
-    if (remaining === 1) return `${leaderName} is last`;
-    return `${leaderName} is ${ordinal(finishedCount + 1)}`;
-  };
-  const statusText = phase === "racing"
-    ? racingSubtitle()
-    : phase === "countdown"
-      ? "Get ready…"
-      : phase === "finished"
-        ? "Race complete!"
-        : "4 balls enter. Only 1 wins the maze.";
+  const headingText = "WHO WILL WIN THE CUP?";
 
   ctx.save();
   ctx.textAlign = "center";
@@ -1501,56 +1494,30 @@ function drawHud(
   const maxTopW = (cx - HOME_BTN_CLEARANCE) * 2;
 
   // Whichever content occupies the top slot is bottom-anchored this far
-  // above the arena's top edge and grows upward from there, so it can
-  // never overlap the peg field below regardless of whether it's one line
-  // (racing status) or two (title + subtitle).
+  // above the arena's top edge, so it can never overlap the peg field.
   const headingBottomY = arena.y - HUD_LINE_CLEARANCE;
 
-  if (showTitle) {
-    const subtitleFontSize = mobile ? 12 : 14;
-    const titleSubtitleGap = mobile ? 22 : 24;
-
-    let titleFontSize = mobile ? 26 : 38;
-    ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
-    let titleW = ctx.measureText("COUNTRY BALL RACE").width;
-    if (maxTopW > 0 && titleW > maxTopW) {
-      titleFontSize = Math.max(18, titleFontSize * (maxTopW / titleW));
-      ctx.font = `900 ${titleFontSize}px Arial, Helvetica, sans-serif`;
-      titleW = ctx.measureText("COUNTRY BALL RACE").width;
-    }
-    const titleY = headingBottomY - titleSubtitleGap;
-
-    const titleGrad = ctx.createLinearGradient(
-      cx - titleW / 2,
-      0,
-      cx + titleW / 2,
-      0,
-    );
-    titleGrad.addColorStop(0, "#fde9b8");
-    titleGrad.addColorStop(0.5, "#f7c948");
-    titleGrad.addColorStop(1, "#d4a017");
-    ctx.fillStyle = titleGrad;
-    ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
-    ctx.shadowBlur = 18;
-    ctx.fillText("COUNTRY BALL RACE", cx, titleY);
-
-    ctx.font = `700 ${subtitleFontSize}px Arial, Helvetica, sans-serif`;
-    ctx.fillStyle = "rgba(254, 247, 233, 0.78)";
-    ctx.shadowBlur = 0;
-    ctx.fillText(statusText, cx, headingBottomY);
-  } else {
-    let fontSize = mobile ? 20 : 26;
-    ctx.font = `800 ${fontSize}px Arial, Helvetica, sans-serif`;
-    let textW = ctx.measureText(statusText).width;
-    if (maxTopW > 0 && textW > maxTopW) {
-      fontSize = Math.max(14, fontSize * (maxTopW / textW));
-      ctx.font = `800 ${fontSize}px Arial, Helvetica, sans-serif`;
-    }
-    ctx.fillStyle = "#fde9b8";
-    ctx.shadowColor = "rgba(247, 201, 72, 0.45)";
-    ctx.shadowBlur = 12;
-    ctx.fillText(statusText, cx, headingBottomY);
+  let fontSize = mobile ? 22 : 34;
+  ctx.font = `900 ${fontSize}px Arial, Helvetica, sans-serif`;
+  let textW = ctx.measureText(headingText).width;
+  if (maxTopW > 0 && textW > maxTopW) {
+    fontSize = Math.max(16, fontSize * (maxTopW / textW));
+    ctx.font = `900 ${fontSize}px Arial, Helvetica, sans-serif`;
+    textW = ctx.measureText(headingText).width;
   }
+  const titleGrad = ctx.createLinearGradient(
+    cx - textW / 2,
+    0,
+    cx + textW / 2,
+    0,
+  );
+  titleGrad.addColorStop(0, "#fde9b8");
+  titleGrad.addColorStop(0.5, "#f7c948");
+  titleGrad.addColorStop(1, "#d4a017");
+  ctx.fillStyle = titleGrad;
+  ctx.shadowColor = "rgba(247, 201, 72, 0.5)";
+  ctx.shadowBlur = 18;
+  ctx.fillText(headingText, cx, headingBottomY);
   ctx.restore();
 }
 
@@ -1592,11 +1559,6 @@ const BallRace = () => {
   const lastTRef = useRef<number>(0);
   const audioRef = useRef(createAudio());
   const phaseRef = useRef<Phase>("menu");
-  // The ball currently in the lead. Updated every frame to whichever ball
-  // still racing is furthest along — used only for the HUD's "X is
-  // leading!" text. A finished ball is dropped from consideration and the
-  // next furthest-along ball becomes the new leader.
-  const leadingBallRef = useRef<Ball | null>(null);
   const countdownEndAtRef = useRef<number | null>(null);
   const raceStartAtRef = useRef<number | null>(null);
   const finishOrderRef = useRef<Ball[]>([]);
@@ -1621,7 +1583,6 @@ const BallRace = () => {
     courseRef.current = course;
     ballsRef.current = spawnBalls(course.drums, ballR);
     particlesRef.current = [];
-    leadingBallRef.current = null;
     finishOrderRef.current = [];
     raceStartAtRef.current = null;
   }, []);
@@ -1707,6 +1668,15 @@ const BallRace = () => {
         const rotorAngle =
           (now / 1000) * course.cauldron.rotor.angularSpeed + course.cauldron.rotor.phase;
         const maxFling = arena.width * ROTOR_FLING_MAX_K;
+        const startBounceSpeed = arena.width * START_BOUNCE_SPEED_K;
+        const drumClosed = {
+          left: balls
+            .filter((ball) => ball.side === "left")
+            .every((ball) => ball.startEscaped),
+          right: balls
+            .filter((ball) => ball.side === "right")
+            .every((ball) => ball.startEscaped),
+        };
         // Each drum's wall segments (its gap position) are recomputed once
         // per frame from wall-clock time — same cadence as rotorAngle —
         // and reused across every substep and ball this frame.
@@ -1714,16 +1684,20 @@ const BallRace = () => {
           left: buildDrumSegs(
             course.drums.left,
             (now / 1000) * course.drums.left.angularSpeed + course.drums.left.phase,
+            drumClosed.left,
           ),
           right: buildDrumSegs(
             course.drums.right,
             (now / 1000) * course.drums.right.angularSpeed + course.drums.right.phase,
+            drumClosed.right,
           ),
         };
 
         for (let s = 0; s < SUBSTEPS; s++) {
           for (const ball of balls) {
             if (ball.finished || elapsedRace < ball.dropDelay) continue;
+            const ownDrum = course.drums[ball.side];
+            keepStartBounce(ball, ownDrum, startBounceSpeed);
             ball.vy = Math.min(ball.vy + gravity * subDt, maxFall);
             ball.x += ball.vx * subDt;
             ball.y += ball.vy * subDt;
@@ -1734,6 +1708,9 @@ const BallRace = () => {
             resolveDrum(ball, drumSegs.right, course.drums.right.thickness, audio);
             resolveFunnel(ball, course.funnel, audio);
             resolveCauldron(ball, course.cauldron, rotorAngle, maxFling, audio);
+            if (!ball.startEscaped && hasEscapedDrum(ball, ownDrum)) {
+              ball.startEscaped = true;
+            }
           }
           for (let i = 0; i < balls.length; i++) {
             for (let j = i + 1; j < balls.length; j++) {
@@ -1753,14 +1730,9 @@ const BallRace = () => {
         for (const ball of balls) {
           if (ball.finished || elapsedRace < ball.dropDelay) continue;
           // A ball waiting out its drum's rotation for a lucky gap
-          // alignment isn't "stuck" in the anti-stall sense — it's meant
-          // to sit there, possibly for several seconds. Reset its timer
-          // instead of letting anti-stall yank it out early.
-          const inDrum =
-            Math.hypot(ball.x - course.drums.left.cx, ball.y - course.drums.left.cy) <
-              course.drums.left.r ||
-            Math.hypot(ball.x - course.drums.right.cx, ball.y - course.drums.right.cy) <
-              course.drums.right.r;
+          // alignment isn't "stuck" in the anti-stall sense. The start
+          // bounce keeps it lively until it escapes naturally.
+          const inDrum = !ball.startEscaped && isInsideDrum(ball, course.drums[ball.side]);
           if (inDrum) {
             ball.stuckTimer = 0;
             ball.maxY = ball.y;
@@ -1778,17 +1750,6 @@ const BallRace = () => {
             audio.win();
           }
         }
-
-        // leadingBallRef always points at whichever ball still racing is
-        // furthest along, recomputed fresh every frame. A finished ball is
-        // excluded by the !b.finished check, so the instant the leader
-        // crosses the line it drops out and the next furthest-along ball
-        // takes over automatically.
-        leadingBallRef.current = balls.reduce(
-          (best: Ball | null, b) =>
-            !b.finished && (!best || b.y > best.y) ? b : best,
-          null,
-        );
 
         // The race only ends once every ball has reached the finish line
         // on its own — no time-based cutoff.
@@ -1828,8 +1789,14 @@ const BallRace = () => {
           (now / 1000) * course.drums.left.angularSpeed + course.drums.left.phase;
         const rightDrumAngle =
           (now / 1000) * course.drums.right.angularSpeed + course.drums.right.phase;
-        drawDrum(ctx, course.drums.left, leftDrumAngle, camY, arena.y);
-        drawDrum(ctx, course.drums.right, rightDrumAngle, camY, arena.y);
+        const leftClosed = balls
+          .filter((ball) => ball.side === "left")
+          .every((ball) => ball.startEscaped);
+        const rightClosed = balls
+          .filter((ball) => ball.side === "right")
+          .every((ball) => ball.startEscaped);
+        drawDrum(ctx, course.drums.left, leftDrumAngle, camY, arena.y, leftClosed);
+        drawDrum(ctx, course.drums.right, rightDrumAngle, camY, arena.y, rightClosed);
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
         drawFunnel(ctx, course.funnel, camY, arena.y);
         drawCauldron(ctx, course.cauldron, camY, arena.y);
@@ -1850,22 +1817,7 @@ const BallRace = () => {
 
       ctx.restore();
 
-      // Reuse leadingBallRef so the HUD's "X is leading!" text always
-      // names the same ball the camera is following.
-      const leader =
-        phaseNow === "racing" || phaseNow === "finished"
-          ? leadingBallRef.current
-          : null;
-
-      drawHud(
-        ctx,
-        arena,
-        mobile,
-        phaseNow,
-        balls,
-        leader ? leader.name : "",
-        finishOrderRef.current.length,
-      );
+      drawHud(ctx, arena, mobile);
 
       if (phaseNow === "countdown") {
         const remaining = (countdownEndAtRef.current ?? now) - now;
