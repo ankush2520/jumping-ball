@@ -34,7 +34,7 @@ const ANTI_STALL_SECS = 1.3; // tolerant enough to let a ball wait stuck
 //      so a ball caught by a rising arm gets flung — sideways, around the
 //      bowl, or clean back up out of the mouth — purely on timing luck.
 const OBSTACLE_SECTION_GAP_FACTOR = 3; // empty corridor kept between bands, in ball-radii
-const PEG_SECTION_FRACTION = 0.34;
+const PEG_SECTION_FRACTION = 0.12; // kept small — the big starting drums and the cauldron are the main event
 const FUNNEL_SECTION_FRACTION = 0.14; // the cauldron gets whatever height remains
 const WALL_THICKNESS_FACTOR = 0.6; // funnel + cauldron wall thickness, in ball-radii
 
@@ -55,28 +55,32 @@ const ROTOR_FLING_MAX_K = 1.5; // post-hit ball speed cap, px/s per px of corrid
 // keeps balls airborne forever and the race never drains out the gap.
 const ROTOR_RESTITUTION = 0.55;
 
-// The start platform sits between the HUD heading and the peg field, inside
-// a total heading-to-peg gap of exactly HEADING_TO_PEGS_DIAMETERS ball
-// diameters (see generateCourse) — a small margin above the platform, the
-// platform itself, then a small margin below it before the pegs start.
+// Both starting drums (see below) sit between the HUD heading and the peg
+// field, inside a total heading-to-peg gap of at least HEADING_TO_PEGS_DIAMETERS
+// ball diameters — whichever is bigger, that minimum or the drums' own
+// footprint, wins (see generateCourse).
 const HEADING_TO_PEGS_DIAMETERS = 3;
-// Balls rest 1.3 ball-radii above the platform and bob up to another 0.5r
-// during the pre-race idle (see spawnBalls / drawBalls). The ball's top is
-// then platformY - 2.8r, so the platform has to sit at least ~2.8r below
-// the arena's top clip edge or the idling balls get sliced off. 3.2 leaves
-// ~0.4r of headroom past that floor.
-const PLATFORM_TOP_GAP_FACTOR = 3.2; // margin above the platform, in ball-radii
 
 const COUNTDOWN_MS = 3000;
-const PLATFORM_OPEN_MS = 450;
 
-// Four countries in two starting lanes: France + Spain drop through the
-// LEFT peg field, Argentina + England through the RIGHT one — kept apart by
-// a central divider wall until both lanes merge into the funnel (see
-// generateCourse). hue drives only the glow/particle-trail/HUD-dot effects;
-// it's spread around the wheel so those small flat-color contexts stay
-// distinguishable. The ball itself renders as the country's actual flag
-// (drawCountryFlag), which is the real identity signal.
+// The two rotating starting drums: closed circular walls, each with a
+// single gap that sweeps around as the drum spins. Balls start trapped
+// inside; gravity alone carries one out once the gap rotates underneath
+// it — the same timing-luck idea as the cauldron below, right at the
+// start line, but simpler (the whole wall rotates; there's no internal
+// spinner arm).
+const DRUM_RADIUS_FACTOR = 10.2; // in ball-radii — 3x the original size; clamped to fit the corridor in generateCourse
+const DRUM_TOP_MARGIN_FACTOR = 1.5; // gap above the drums, in ball-radii
+const DRUM_GAP_FACTOR = 3.6; // exit chord width, in ball-radii — ~1.8 ball diameters
+const DRUM_ANGULAR_SPEED = 0.8; // rad/s
+
+// Four countries in two starting drums: France + Spain in the LEFT drum,
+// Argentina + England in the RIGHT one — both drums feed the same shared
+// peg field once a ball's lucky moment comes (see generateCourse). hue
+// drives only the glow/particle-trail/HUD-dot effects; it's spread around
+// the wheel so those small flat-color contexts stay distinguishable. The
+// ball itself renders as the country's actual flag (drawCountryFlag),
+// which is the real identity signal.
 const BALL_DEFS = [
   { name: "France", hue: 260, side: "left" },
   { name: "Spain", hue: 45, side: "left" },
@@ -156,15 +160,24 @@ type Cauldron = {
   rotor: Rotor;
 };
 
-type PlatformHalf = { x: number; y: number; w: number; h: number };
-type StartPlatform = { left: PlatformHalf; right: PlatformHalf };
+// One of the two rotating starting drums: a closed circular wall with a
+// single gap that continuously sweeps around as the whole ring spins. The
+// wall polyline (for collisions) and the drawn arc are both derived fresh
+// from wall-clock angle every call rather than stored, exactly like the
+// cauldron's spinner — so physics and drawing can never drift apart.
+type StartDrum = {
+  cx: number;
+  cy: number;
+  r: number;
+  thickness: number;
+  gapHalf: number; // exit-gap half-angle, either side of the gap's center
+  angularSpeed: number;
+  phase: number;
+};
 
 type Course = {
-  platform: StartPlatform;
+  drums: Record<BallSide, StartDrum>;
   pegs: Peg[];
-  // Central wall separating the two peg lanes; ends at the funnel mouth
-  // where the lanes merge. Its thickness matches the funnel/cauldron walls.
-  divider: Seg;
   funnel: Funnel;
   cauldron: Cauldron;
   finishY: number;
@@ -232,22 +245,35 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
 
 // ─── Course generation ────────────────────────────────────────────────────────
 
-function buildStartPlatform(arena: Arena, ballR: number, y: number): StartPlatform {
-  const width = arena.width;
-  const left = arena.x;
-  const h = ballR * 1.6;
-  const gap = width * 0.14;
-  const halfW = (width - gap) / 2;
-  return {
-    left: { x: left, y, w: halfW, h },
-    right: { x: left + halfW + gap, y, w: halfW, h },
-  };
+// A start drum's wall as a polyline covering the full circle except its
+// gap, which is centered on `angle` — the ring's current rotation. Used
+// both for physics (resolveSegment per piece) and, in principle, drawing —
+// though drawDrum uses ctx.arc() directly since canvas can stroke a true
+// arc natively; this polyline exists only because collision math needs
+// straight segments.
+function buildDrumSegs(drum: StartDrum, angle: number): Seg[] {
+  const { cx, cy, r, gapHalf } = drum;
+  const from = angle + gapHalf;
+  const to = angle - gapHalf + Math.PI * 2;
+  const steps = Math.max(2, Math.ceil((to - from) / CAULDRON_ARC_STEP));
+  const segs: Seg[] = [];
+  for (let i = 0; i < steps; i++) {
+    const a1 = from + ((to - from) * i) / steps;
+    const a2 = from + ((to - from) * (i + 1)) / steps;
+    segs.push({
+      x1: cx + Math.cos(a1) * r,
+      y1: cy + Math.sin(a1) * r,
+      x2: cx + Math.cos(a2) * r,
+      y2: cy + Math.sin(a2) * r,
+    });
+  }
+  return segs;
 }
 
-// A hex/brick peg lattice filling one horizontal lane [x0, x1]. Full rows
+// A hex/brick peg lattice filling the horizontal span [x0, x1]. Full rows
 // alternate with rows offset by half a spacing (one peg shorter), nested in
 // the gaps above/below. No connecting bars — every gap between neighbors
-// stays open. Returns a running peg id so two lanes can share one id space.
+// stays open.
 //   *  *  *  *
 //     *  *  *
 //   *  *  *  *
@@ -282,25 +308,49 @@ function buildPegField(
 }
 
 // The whole course fits inside one static screen (arena.height) — no
-// camera movement. Below the start platform, three bands stack top to
-// bottom: two side-by-side peg fields split by a central divider, a funnel,
-// and the cauldron — a near-closed bowl with a big spinner inside whose
-// only exit is a one-ball gap at the very bottom.
+// camera movement. Three bands stack top to bottom: the two rotating start
+// drums, a single shared peg field, a funnel, and the cauldron — a
+// near-closed bowl with a big spinner inside whose only exit is a one-ball
+// gap at the very bottom.
 function generateCourse(arena: Arena, ballR: number): Course {
   const width = arena.width;
   const left = arena.x;
   const right = arena.x + width;
   const cx = left + width / 2;
   const levelH = arena.height;
+  const wallT = ballR * WALL_THICKNESS_FACTOR;
 
-  const platformY = ballR * PLATFORM_TOP_GAP_FACTOR;
-  const platformH = ballR * 1.6;
-  const platform = buildStartPlatform(arena, ballR, platformY);
+  // 0. The two starting drums, side by side. Each is sized to fit within
+  // its half of the corridor (with a gap between them and a little side
+  // clearance) while staying at least big enough to hold 2 balls.
+  const drumGapBetween = width * 0.1;
+  const drumHalfW = (width - drumGapBetween) / 2;
+  const drumR = Math.min(ballR * DRUM_RADIUS_FACTOR, drumHalfW / 2 - ballR * 0.6);
+  const drumTopMargin = ballR * DRUM_TOP_MARGIN_FACTOR;
+  const drumCy = drumTopMargin + drumR;
+  // Exit-gap half-angle derived from a target chord width, same
+  // parametrization as the cauldron's own exit gap — stays proportional
+  // however drumR ends up sized.
+  const drumGapHalf = Math.asin((ballR * DRUM_GAP_FACTOR) / 2 / drumR);
+  const makeDrum = (dcx: number): StartDrum => ({
+    cx: dcx,
+    cy: drumCy,
+    r: drumR,
+    thickness: wallT,
+    gapHalf: drumGapHalf,
+    angularSpeed: DRUM_ANGULAR_SPEED * (Math.random() < 0.5 ? 1 : -1),
+    phase: Math.random() * Math.PI * 2,
+  });
+  const drums: Record<BallSide, StartDrum> = {
+    left: makeDrum(left + drumHalfW / 2),
+    right: makeDrum(left + drumHalfW + drumGapBetween + drumHalfW / 2),
+  };
+
   // The heading (see drawHud) is bottom-anchored HUD_LINE_CLEARANCE above
   // the arena's top edge, so that anchor point plus this many ball-radii
-  // gives the total heading-to-peg gap. Never let it collapse the platform.
+  // gives the total heading-to-peg gap. Never let it collapse the drums.
   const topY0 = Math.max(
-    platformY + platformH + ballR, // platform, plus a minimal margin before the pegs
+    drumTopMargin + drumR * 2 + ballR, // both drums, plus a minimal margin before the pegs
     ballR * 2 * HEADING_TO_PEGS_DIAMETERS - HUD_LINE_CLEARANCE,
   );
 
@@ -311,34 +361,12 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   const pegH = obstacleSpan * PEG_SECTION_FRACTION;
   const funnelH = obstacleSpan * FUNNEL_SECTION_FRACTION;
-  const wallT = ballR * WALL_THICKNESS_FACTOR;
 
   const pegTop = topY0;
 
-  // 1. Top band — TWO peg fields side by side, split by a central divider
-  // wall so the two starting groups (France+Spain left, Argentina+England
-  // right) each run their own lane before both merge into the funnel below.
-  // Each lane is inset by one ball-radius from the outer wall and the
-  // divider so a ball never spawns jammed against either.
-  const laneInset = ballR;
-  const leftLane = buildPegField(
-    left + laneInset,
-    cx - wallT / 2 - laneInset,
-    pegTop,
-    pegH,
-    ballR,
-    0,
-  );
-  const rightLane = buildPegField(
-    cx + wallT / 2 + laneInset,
-    right - laneInset,
-    pegTop,
-    pegH,
-    ballR,
-    leftLane.pegs.length,
-  );
-  const pegs = [...leftLane.pegs, ...rightLane.pegs];
-  const lastRowY = Math.max(leftLane.lastRowY, rightLane.lastRowY);
+  // 1. A single peg field spanning the full width — both drums feed into
+  // the same field once a ball's lucky moment comes.
+  const { pegs, lastRowY } = buildPegField(left, right, pegTop, pegH, ballR, 0);
 
   // 2. Middle band — the funnel. Its walls run from the corridor edges
   // straight to the cauldron's rim endpoints, so funnel and bowl seal into
@@ -347,15 +375,6 @@ function generateCourse(arena: Arena, ballR: number): Course {
   const mouthHalf = CAULDRON_MOUTH_HALF_ANGLE;
   const funnelTop = Math.max(pegTop + pegH, lastRowY) + sectionGap;
   const rimY = funnelTop + funnelH;
-
-  // The central divider runs from just under the platform down to the
-  // funnel mouth, where the two lanes finally merge.
-  const divider: Seg = {
-    x1: cx,
-    y1: platformY + platformH,
-    x2: cx,
-    y2: funnelTop,
-  };
 
   // 3. Bottom band — the cauldron bowl, as big as the leftover height (or
   // the corridor width) allows. Its rim-top sits at the funnel's bottom.
@@ -418,36 +437,38 @@ function generateCourse(arena: Arena, ballR: number): Course {
 
   const finishY = levelH - ballR * 2;
 
-  return { platform, pegs, divider, funnel, cauldron, finishY };
+  return { drums, pegs, funnel, cauldron, finishY };
 }
 
-function spawnBalls(platform: StartPlatform, ballR: number): Ball[] {
-  // Two balls per platform half, one per lane's country group. All released
-  // on the same frame (dropDelay 0) — with only two balls per lane there's
-  // room for them to fall without jamming, so no stagger is needed.
-  const laneX: Record<BallSide, number[]> = {
-    left: [0.3, 0.7].map((f) => platform.left.x + platform.left.w * f),
-    right: [0.3, 0.7].map((f) => platform.right.x + platform.right.w * f),
-  };
+function spawnBalls(drums: Record<BallSide, StartDrum>, ballR: number): Ball[] {
+  // Two balls per drum, side by side near its center — well clear of the
+  // walls, so gravity settles them naturally once racing starts. All
+  // released on the same frame (dropDelay 0); which one actually falls
+  // out first is down to the drum's rotation, not a scripted stagger.
   const next: Record<BallSide, number> = { left: 0, right: 0 };
-  const y = platform.left.y - ballR * 1.3;
+  const offsets = [-1.15, 1.15];
 
-  return BALL_DEFS.map((def, i) => ({
-    id: i,
-    name: def.name,
-    hue: def.hue,
-    x: laneX[def.side][next[def.side]++],
-    y,
-    vx: 0,
-    vy: 0,
-    r: ballR,
-    glow: 0,
-    finished: false,
-    rank: null,
-    stuckTimer: 0,
-    maxY: y,
-    dropDelay: 0,
-  }));
+  return BALL_DEFS.map((def, i) => {
+    const drum = drums[def.side];
+    const x = drum.cx + offsets[next[def.side]++] * ballR;
+    const y = drum.cy;
+    return {
+      id: i,
+      name: def.name,
+      hue: def.hue,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      r: ballR,
+      glow: 0,
+      finished: false,
+      rank: null,
+      stuckTimer: 0,
+      maxY: y,
+      dropDelay: 0,
+    };
+  });
 }
 
 // ─── Collision helpers ────────────────────────────────────────────────────────
@@ -613,6 +634,16 @@ function resolveCauldron(
     resolveSegment(ball, seg.x1, seg.y1, seg.x2, seg.y2, cauldron.thickness, audio);
   }
   resolveRotor(ball, cauldron.rotor, angle, maxSpeed, audio);
+}
+
+// A start drum's wall, resolved as a static polyline for this frame — its
+// segments already encode the current rotation (see buildDrumSegs), so no
+// surface-velocity fling is needed here the way the cauldron's spinner
+// needs one; the wall just holds the ball until the gap swings under it.
+function resolveDrum(ball: Ball, segs: Seg[], thickness: number, audio: RaceAudio) {
+  for (const seg of segs) {
+    resolveSegment(ball, seg.x1, seg.y1, seg.x2, seg.y2, thickness, audio);
+  }
 }
 
 function bounceBalls(a: Ball, b: Ball, audio: RaceAudio) {
@@ -1138,28 +1169,6 @@ function drawFunnel(
   ctx.restore();
 }
 
-// The central divider between the two peg lanes, in the pegs' blue accent
-// so it reads as part of that section.
-function drawDivider(
-  ctx: CanvasRenderingContext2D,
-  divider: Seg,
-  thickness: number,
-  camY: number,
-  arenaY: number,
-) {
-  ctx.save();
-  ctx.strokeStyle = LEVEL_THEMES[0].obstacle;
-  ctx.shadowColor = LEVEL_THEMES[0].obstacleGlow;
-  ctx.shadowBlur = 10;
-  ctx.lineWidth = thickness;
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  ctx.moveTo(divider.x1, divider.y1 - camY + arenaY);
-  ctx.lineTo(divider.x2, divider.y2 - camY + arenaY);
-  ctx.stroke();
-  ctx.restore();
-}
-
 // The cauldron bowl, in the same pink accent as the funnel it seals
 // against — drawn as two true arcs (the collision polyline is an invisible
 // physics detail), leaving the mouth open at the top and the exit gap at
@@ -1225,36 +1234,28 @@ function drawRotor(
   ctx.restore();
 }
 
-function drawStartPlatform(
+// A start drum, in the pegs' blue accent since it feeds straight into that
+// field — drawn as a single true arc covering the ring minus its gap
+// (canvas can stroke that natively; the polyline in buildDrumSegs exists
+// only for collision math).
+function drawDrum(
   ctx: CanvasRenderingContext2D,
-  platform: StartPlatform,
+  drum: StartDrum,
+  angle: number,
   camY: number,
   arenaY: number,
-  t: number,
 ) {
-  const halves: { half: PlatformHalf; dir: -1 | 1 }[] = [
-    { half: platform.left, dir: -1 },
-    { half: platform.right, dir: 1 },
-  ];
+  const { cx, cy, r, thickness, gapHalf } = drum;
+  const sy = cy - camY + arenaY;
   ctx.save();
-  ctx.strokeStyle = "rgba(247, 201, 72, 0.55)";
-  ctx.lineWidth = 2;
-  ctx.shadowColor = "rgba(247, 201, 72, 0.28)";
+  ctx.strokeStyle = LEVEL_THEMES[0].obstacle;
+  ctx.shadowColor = LEVEL_THEMES[0].obstacleGlow;
   ctx.shadowBlur = 10;
-  for (const { half, dir } of halves) {
-    const slideX = dir * t * half.w * 0.9;
-    const dropY = t * half.h * 6;
-    const sy = half.y - camY + arenaY + dropY;
-    const grad = ctx.createLinearGradient(0, sy, 0, sy + half.h);
-    grad.addColorStop(0, "#3a4362");
-    grad.addColorStop(1, "#1c2237");
-    ctx.fillStyle = grad;
-    ctx.globalAlpha = Math.max(0, 1 - t * 1.2);
-    ctx.beginPath();
-    ctx.rect(half.x + slideX, sy, half.w, half.h);
-    ctx.fill();
-    ctx.stroke();
-  }
+  ctx.lineWidth = thickness;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.arc(cx, sy, r, angle + gapHalf, angle - gapHalf + Math.PI * 2);
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -1618,7 +1619,7 @@ const BallRace = () => {
     const ballR = arena.width * 0.048 * 0.7 * 0.8 * 0.8;
     const course = generateCourse(arena, ballR);
     courseRef.current = course;
-    ballsRef.current = spawnBalls(course.platform, ballR);
+    ballsRef.current = spawnBalls(course.drums, ballR);
     particlesRef.current = [];
     leadingBallRef.current = null;
     finishOrderRef.current = [];
@@ -1706,6 +1707,19 @@ const BallRace = () => {
         const rotorAngle =
           (now / 1000) * course.cauldron.rotor.angularSpeed + course.cauldron.rotor.phase;
         const maxFling = arena.width * ROTOR_FLING_MAX_K;
+        // Each drum's wall segments (its gap position) are recomputed once
+        // per frame from wall-clock time — same cadence as rotorAngle —
+        // and reused across every substep and ball this frame.
+        const drumSegs: Record<BallSide, Seg[]> = {
+          left: buildDrumSegs(
+            course.drums.left,
+            (now / 1000) * course.drums.left.angularSpeed + course.drums.left.phase,
+          ),
+          right: buildDrumSegs(
+            course.drums.right,
+            (now / 1000) * course.drums.right.angularSpeed + course.drums.right.phase,
+          ),
+        };
 
         for (let s = 0; s < SUBSTEPS; s++) {
           for (const ball of balls) {
@@ -1716,8 +1730,8 @@ const BallRace = () => {
             if (ball.glow > 0) ball.glow -= subDt;
             resolveWalls(ball, left, right, audio);
             for (const peg of course.pegs) resolvePeg(ball, peg, audio);
-            const dv = course.divider;
-            resolveSegment(ball, dv.x1, dv.y1, dv.x2, dv.y2, course.funnel.thickness, audio);
+            resolveDrum(ball, drumSegs.left, course.drums.left.thickness, audio);
+            resolveDrum(ball, drumSegs.right, course.drums.right.thickness, audio);
             resolveFunnel(ball, course.funnel, audio);
             resolveCauldron(ball, course.cauldron, rotorAngle, maxFling, audio);
           }
@@ -1738,6 +1752,20 @@ const BallRace = () => {
 
         for (const ball of balls) {
           if (ball.finished || elapsedRace < ball.dropDelay) continue;
+          // A ball waiting out its drum's rotation for a lucky gap
+          // alignment isn't "stuck" in the anti-stall sense — it's meant
+          // to sit there, possibly for several seconds. Reset its timer
+          // instead of letting anti-stall yank it out early.
+          const inDrum =
+            Math.hypot(ball.x - course.drums.left.cx, ball.y - course.drums.left.cy) <
+              course.drums.left.r ||
+            Math.hypot(ball.x - course.drums.right.cx, ball.y - course.drums.right.cy) <
+              course.drums.right.r;
+          if (inDrum) {
+            ball.stuckTimer = 0;
+            ball.maxY = ball.y;
+            continue;
+          }
           applyAntiStall(ball, dt);
         }
 
@@ -1796,21 +1824,17 @@ const BallRace = () => {
       if (phaseNow !== "menu") {
         const rotorAngle =
           (now / 1000) * course.cauldron.rotor.angularSpeed + course.cauldron.rotor.phase;
+        const leftDrumAngle =
+          (now / 1000) * course.drums.left.angularSpeed + course.drums.left.phase;
+        const rightDrumAngle =
+          (now / 1000) * course.drums.right.angularSpeed + course.drums.right.phase;
+        drawDrum(ctx, course.drums.left, leftDrumAngle, camY, arena.y);
+        drawDrum(ctx, course.drums.right, rightDrumAngle, camY, arena.y);
         drawPegs(ctx, course.pegs, camY, arena.y, arena.height);
-        drawDivider(ctx, course.divider, course.funnel.thickness, camY, arena.y);
         drawFunnel(ctx, course.funnel, camY, arena.y);
         drawCauldron(ctx, course.cauldron, camY, arena.y);
         drawRotor(ctx, course.cauldron.rotor, rotorAngle, camY, arena.y);
         drawFinishLine(ctx, course, arena, camY);
-      }
-
-      if (phaseNow === "countdown") {
-        drawStartPlatform(ctx, course.platform, camY, arena.y, 0);
-      } else if (phaseNow === "racing" && raceStartAt !== null) {
-        const openT = Math.min(1, (now - raceStartAt) / PLATFORM_OPEN_MS);
-        if (openT < 1) {
-          drawStartPlatform(ctx, course.platform, camY, arena.y, openT);
-        }
       }
 
       const bob =
