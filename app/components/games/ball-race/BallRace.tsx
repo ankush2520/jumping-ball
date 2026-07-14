@@ -237,9 +237,19 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
   arena: Arena;
   dpr: number;
 } {
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);
-  const W = Math.round(window.visualViewport?.width ?? window.innerWidth);
-  const H = Math.round(window.visualViewport?.height ?? window.innerHeight);
+  // Cap at 4 (not the usual 3) so 3.5–4x Android screens render at true
+  // native resolution instead of being upscaled a hair, which reads as
+  // softness on exactly the class of device this game is filmed on.
+  const dpr = Math.min(window.devicePixelRatio || 1, 4);
+  // Size the backing store from the canvas's actual laid-out CSS box (the
+  // stylesheet pins it to 100% × 100dvh with !important, overriding any
+  // inline style). Measuring the box directly — instead of trusting
+  // visualViewport, which can disagree with 100dvh by the mobile URL bar's
+  // height mid-animation — keeps backing store and displayed size 1:1, so
+  // the browser never has to stretch (blur) the canvas.
+  const rect = canvas.getBoundingClientRect();
+  const W = Math.round(rect.width) || Math.round(window.innerWidth);
+  const H = Math.round(rect.height) || Math.round(window.innerHeight);
   const mobile = W < 600;
   const hudH = mobile ? HUD_MOBILE : HUD_DESKTOP;
   const maxWidth = mobile ? Infinity : 520;
@@ -248,15 +258,12 @@ function resizeCanvas(canvas: HTMLCanvasElement): {
   const x = Math.round((W - width) / 2);
   const y = hudH;
 
-  canvas.style.width = `${W}px`;
-  canvas.style.height = `${H}px`;
-  canvas.width = Math.floor(W * dpr);
-  canvas.height = Math.floor(H * dpr);
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
 
   const ctx = canvas.getContext("2d");
   if (ctx) {
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
   return { arena: { x, y, width, height, W, H }, dpr };
