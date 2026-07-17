@@ -31,10 +31,9 @@ type Pt = { x: number; y: number };
 
 type Shape = { name: string; pts: Pt[] };
 
-// Level 1 is the zigzag-bottom block from the sketch — a piece that fixes
-// into a matching zigzag notch in the ground. Every level after that gets a
-// freshly generated random shape (see makeShapeForLevel), so the sequence
-// is different every run and never settles into plain triangles/diamonds.
+// The zigzag-bottom block from the original sketch — a piece that fixes into a
+// matching zigzag notch in the ground. Now one of the COMPLEX-tier shapes (see
+// makeShapeForLevel) that only appears at higher levels.
 const SHAPE_L1: Pt[] = [
   { x: -1, y: -1 },
   { x: 1, y: -1 },
@@ -91,6 +90,18 @@ function blobPts(n: number): Pt[] {
   return pts;
 }
 
+// A regular n-gon on the unit circle. `rotation` (radians) lets us sit a
+// square flat (rotate 45°) or leave a triangle/pentagon point-up. With a high
+// `sides` count this doubles as a smooth circle.
+function regularPolygon(sides: number, rotation = 0): Pt[] {
+  const pts: Pt[] = [];
+  for (let i = 0; i < sides; i++) {
+    const a = (Math.PI * 2 * i) / sides - Math.PI / 2 + rotation;
+    pts.push({ x: Math.cos(a), y: Math.sin(a) });
+  }
+  return pts;
+}
+
 const ri = (lo: number, hi: number) =>
   lo + Math.floor(Math.random() * (hi - lo + 1));
 
@@ -127,54 +138,116 @@ const HOUSE: Pt[] = [
   { x: -1, y: -0.12 },
 ];
 
-// The random shape for a given level. Level 1 is always the sketch's zigzag
-// block; from level 2 on, a generator is picked at random — weighted toward
-// the procedural ones (star / sunburst / sawblade / crystal / splinter) so
-// the shapes feel genuinely varied rather than a fixed rotation.
+// Top-down jet silhouette, nose pointing +x, drawn as a filled polygon rather
+// than the ✈️ emoji — some mobile browsers have no glyph for that emoji and
+// rendered a blank box, so the plane was invisible on the user's phone.
+const PLANE_SHAPE: Pt[] = [
+  { x: 1.0, y: 0 }, // nose
+  { x: 0.3, y: 0.08 },
+  { x: 0.15, y: 0.08 },
+  { x: -0.25, y: 0.62 }, // right wing tip (swept back)
+  { x: -0.42, y: 0.62 },
+  { x: -0.1, y: 0.08 },
+  { x: -0.7, y: 0.08 },
+  { x: -0.8, y: 0.3 }, // right tailplane
+  { x: -0.96, y: 0.3 },
+  { x: -0.9, y: 0.06 },
+  { x: -1.0, y: 0.05 }, // tail
+  { x: -1.0, y: -0.05 },
+  { x: -0.9, y: -0.06 },
+  { x: -0.96, y: -0.3 }, // left tailplane
+  { x: -0.8, y: -0.3 },
+  { x: -0.7, y: -0.08 },
+  { x: -0.1, y: -0.08 },
+  { x: -0.42, y: -0.62 }, // left wing tip
+  { x: -0.25, y: -0.62 },
+  { x: 0.15, y: -0.08 },
+  { x: 0.3, y: -0.08 },
+];
+
+type ShapeGen = () => Shape;
+
+// Difficulty tiers. SIMPLE is the everyday-object stuff a beginner reads
+// instantly (circle / square / triangle); MEDIUM adds more sides and a few
+// familiar silhouettes; COMPLEX is the spiky procedural family that needs a
+// careful drop. makeShapeForLevel widens the pool as the level climbs.
+const SIMPLE_SHAPES: ShapeGen[] = [
+  () => ({ name: "Circle", pts: normalizeShape(regularPolygon(40)) }),
+  () => ({
+    name: "Square",
+    pts: normalizeShape(regularPolygon(4, Math.PI / 4)),
+  }),
+  () => ({ name: "Triangle", pts: normalizeShape(regularPolygon(3)) }),
+];
+
+const MEDIUM_SHAPES: ShapeGen[] = [
+  () => ({ name: "Diamond", pts: normalizeShape(regularPolygon(4)) }),
+  () => ({ name: "Pentagon", pts: normalizeShape(regularPolygon(5)) }),
+  () => ({ name: "Hexagon", pts: normalizeShape(regularPolygon(6)) }),
+  () => {
+    const spikes = ri(5, 6);
+    return {
+      name: `${spikes}-Point Star`,
+      pts: normalizeShape(starPts(spikes, 0.42 + Math.random() * 0.08)),
+    };
+  },
+  () => ({ name: "Arrow", pts: normalizeShape(ARROW) }),
+  () => ({ name: "Cross", pts: normalizeShape(PLUS) }),
+  () => ({ name: "House", pts: normalizeShape(HOUSE) }),
+];
+
+const COMPLEX_SHAPES: ShapeGen[] = [
+  () => {
+    const spikes = ri(6, 7);
+    return {
+      name: `${spikes}-Point Star`,
+      pts: normalizeShape(starPts(spikes, 0.36 + Math.random() * 0.12)),
+    };
+  },
+  () => ({
+    name: "Sunburst",
+    pts: normalizeShape(starPts(ri(8, 11), 0.55 + Math.random() * 0.1)),
+  }),
+  () => ({
+    name: "Sawblade",
+    pts: normalizeShape(starPts(ri(9, 14), 0.78 + Math.random() * 0.08)),
+  }),
+  () => ({ name: "Crystal", pts: normalizeShape(blobPts(ri(6, 9))) }),
+  () => ({ name: "Shard", pts: normalizeShape(blobPts(5)) }),
+  () => {
+    // Irregular star — every spike a different length.
+    const spikes = ri(5, 7);
+    const n = spikes * 2;
+    const pts: Pt[] = [];
+    for (let i = 0; i < n; i++) {
+      const a = (Math.PI * 2 * i) / n - Math.PI / 2;
+      const r =
+        i % 2 === 0 ? 0.78 + Math.random() * 0.22 : 0.28 + Math.random() * 0.24;
+      pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
+    }
+    return { name: "Splinter", pts: normalizeShape(pts) };
+  },
+  () => ({ name: "Zigzag Block", pts: SHAPE_L1 }),
+];
+
+// The random shape for a given level. Early levels draw only from SIMPLE, then
+// the pool progressively widens — simple+medium, medium, medium+complex, and
+// finally pure complex — so the challenge ramps up while every round is still
+// a fresh random pick.
 function makeShapeForLevel(level: number): Shape {
-  if (level <= 1) return { name: "Zigzag Block", pts: SHAPE_L1 };
-
-  const generators: (() => Shape)[] = [
-    () => {
-      const spikes = ri(5, 7);
-      return {
-        name: `${spikes}-Point Star`,
-        pts: normalizeShape(starPts(spikes, 0.36 + Math.random() * 0.12)),
-      };
-    },
-    () => ({
-      name: "Sunburst",
-      pts: normalizeShape(starPts(ri(8, 11), 0.55 + Math.random() * 0.1)),
-    }),
-    () => ({
-      name: "Sawblade",
-      pts: normalizeShape(starPts(ri(9, 14), 0.78 + Math.random() * 0.08)),
-    }),
-    () => ({ name: "Crystal", pts: normalizeShape(blobPts(ri(6, 9))) }),
-    () => ({ name: "Shard", pts: normalizeShape(blobPts(5)) }),
-    () => {
-      // Irregular star — every spike a different length.
-      const spikes = ri(5, 7);
-      const n = spikes * 2;
-      const pts: Pt[] = [];
-      for (let i = 0; i < n; i++) {
-        const a = (Math.PI * 2 * i) / n - Math.PI / 2;
-        const r =
-          i % 2 === 0
-            ? 0.78 + Math.random() * 0.22
-            : 0.28 + Math.random() * 0.24;
-        pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
-      }
-      return { name: "Splinter", pts: normalizeShape(pts) };
-    },
-    () => ({ name: "Arrow", pts: normalizeShape(ARROW) }),
-    () => ({ name: "Cross", pts: normalizeShape(PLUS) }),
-    () => ({ name: "House", pts: normalizeShape(HOUSE) }),
-  ];
-
-  // Bias toward the procedural generators (indices 0–5).
-  const pool = [0, 0, 1, 2, 3, 3, 4, 5, 5, 6, 7, 8];
-  return generators[pool[Math.floor(Math.random() * pool.length)]]();
+  let pool: ShapeGen[];
+  if (level <= 2) {
+    pool = SIMPLE_SHAPES;
+  } else if (level <= 4) {
+    pool = [...SIMPLE_SHAPES, ...MEDIUM_SHAPES];
+  } else if (level <= 6) {
+    pool = MEDIUM_SHAPES;
+  } else if (level <= 8) {
+    pool = [...MEDIUM_SHAPES, ...COMPLEX_SHAPES];
+  } else {
+    pool = COMPLEX_SHAPES;
+  }
+  return pool[Math.floor(Math.random() * pool.length)]();
 }
 
 const LEVEL_COLORS = [
@@ -221,7 +294,9 @@ function computeLayout(width: number, height: number): Layout {
     // Tuned so the drop takes ~1s: long enough that the plane's forward
     // speed carries the piece along a clearly visible parabolic arc.
     gravity: height * 1.15,
-    pieceSize: Math.max(34, Math.min(64, width * 0.12)),
+    // 0.6× the former size — the dropping pieces (and their matching slot) sit
+    // smaller on screen.
+    pieceSize: Math.max(34, Math.min(64, width * 0.12)) * 0.6,
     planeSpeed: Math.max(110, width * 0.2),
   };
 }
@@ -340,7 +415,11 @@ function createSkyAudio(): SkyAudio {
 
   // Fallback prop-engine, only used if the recording can't load: band-passed
   // white-noise hiss + a low rumble, amplitude-chopped for the propeller buzz.
-  const startSynthEngine = (ctx: AudioContext, master: GainNode, eng: Engine) => {
+  const startSynthEngine = (
+    ctx: AudioContext,
+    master: GainNode,
+    eng: Engine,
+  ) => {
     const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
     const data = noiseBuf.getChannelData(0);
     for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
@@ -393,7 +472,7 @@ function createSkyAudio(): SkyAudio {
       const master = ctx.createGain();
       master.gain.value = 0.0001;
       master.connect(ctx.destination);
-      master.gain.setTargetAtTime(0.1575, ctx.currentTime, 0.5);
+      master.gain.setTargetAtTime(0.039375, ctx.currentTime, 0.5);
       const eng: Engine = { gain: master, nodes: [] };
       engine = eng;
 
@@ -737,10 +816,7 @@ const SkyDrop = () => {
             audioRef.current?.placed();
           } else {
             // Fell over where it landed.
-            piece.rotation = Math.max(
-              -0.5,
-              Math.min(0.5, piece.vx * 0.004),
-            );
+            piece.rotation = Math.max(-0.5, Math.min(0.5, piece.vx * 0.004));
             resultRef.current = {
               text: "MISSED!",
               sub: "Try again",
@@ -814,7 +890,7 @@ const SkyDrop = () => {
       ctx.save();
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillStyle = "rgba(226, 246, 255, 0.1)";
+      ctx.fillStyle = "rgba(226, 246, 255, 0.3)";
       const labelSize = Math.max(16, Math.min(30, width * 0.055));
       ctx.font = `900 ${labelSize}px Arial, Helvetica, sans-serif`;
       ctx.fillText("TAP SCREEN TO DROP THIS PIECE", width / 2, height * 0.5);
@@ -885,14 +961,30 @@ const SkyDrop = () => {
         ctx.restore();
       }
 
-      // Plane (emoji, mirrored to face its direction of travel)
+      // Plane — a drawn silhouette (mirrored to face its direction of travel).
+      // Not an emoji: ✈️ was blank on some phones.
       ctx.save();
       ctx.translate(plane.x, planeY);
       if (plane.vx < 0) ctx.scale(-1, 1);
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.font = `${Math.max(28, width * 0.065)}px Arial, sans-serif`;
-      ctx.fillText("✈️", 0, 0);
+      const ps = Math.max(24, width * 0.058);
+      tracePath(ctx, PLANE_SHAPE, ps);
+      ctx.fillStyle = "#eef2f7";
+      ctx.shadowColor = "rgba(2, 6, 23, 0.45)";
+      ctx.shadowBlur = 8;
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.lineJoin = "round";
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = "rgba(30, 41, 59, 0.5)";
+      ctx.stroke();
+      // Cockpit canopy tucked behind the nose.
+      ctx.beginPath();
+      ctx.moveTo(0.58 * ps, 0);
+      ctx.lineTo(0.32 * ps, 0.055 * ps);
+      ctx.lineTo(0.32 * ps, -0.055 * ps);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(56, 189, 248, 0.85)";
+      ctx.fill();
       ctx.restore();
 
       // The piece
@@ -932,10 +1024,11 @@ const SkyDrop = () => {
       // of the home button in the top-left corner. (No shadowBlur on any
       // fillText — WebKit ghosting bug.)
       const titleY = Math.max(36, height * 0.052);
-      // ~1.3× the previous heading/subheading sizes, with a real gap between.
+      // ~1.3× the previous heading/subheading sizes, with a reduced gap.
       const titleSize = Math.max(23, Math.min(34, width * 0.065));
       const subSize = Math.max(16, Math.min(20, width * 0.039));
-      const headingGap = 16;
+      // Reduce gap between title and subheading by half.
+      const headingGap = 8;
       const subY = titleY + titleSize / 2 + subSize / 2 + headingGap;
 
       ctx.textAlign = "center";
@@ -947,15 +1040,14 @@ const SkyDrop = () => {
       ctx.font = `700 ${subSize}px Arial, Helvetica, sans-serif`;
       ctx.fillText("Drop the piece into its matching slot", width / 2, subY);
 
-      // Level badge — first line aligned to the heading's baseline.
-      ctx.textAlign = "right";
+      // Level label: center it and move down by 10px from the subheading.
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
       ctx.fillStyle = "rgba(250, 204, 21, 0.92)";
-      const levelSize = Math.max(15, Math.min(21, width * 0.038));
-      ctx.font = `900 ${levelSize}px Arial, Helvetica, sans-serif`;
-      ctx.fillText(`LEVEL ${level}`, width - 16, titleY);
-      ctx.fillStyle = "rgba(226, 246, 255, 0.6)";
-      ctx.font = `700 ${Math.max(11, levelSize * 0.62)}px Arial, Helvetica, sans-serif`;
-      ctx.fillText(shape.name, width - 16, titleY + levelSize * 0.92);
+      const levelSize = Math.max(14, Math.min(20, width * 0.036));
+      ctx.font = `700 ${levelSize}px Arial, Helvetica, sans-serif`;
+      const levelY = subY + headingGap + 10; // nudge down 10px
+      ctx.fillText(`Level ${level} : ${shape.name}`, width / 2, levelY);
 
       // Result banner
       if (phaseRef.current === "result" && resultRef.current.timer > 0) {

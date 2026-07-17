@@ -54,6 +54,14 @@ export type Category = {
 
 export const categories: Category[] = [
   {
+    id: "games",
+    title: "Games",
+    subtitle: "TAP & TIME IT RIGHT",
+    description: "Skill-based mini games — tap at the right moment to land the shot.",
+    icon: "games-category",
+    glow: "card-violet",
+  },
+  {
     id: "race",
     title: "Race",
     subtitle: "SPEED & COLLISIONS",
@@ -76,14 +84,6 @@ export const categories: Category[] = [
     description: "Scattered pieces bounce around and merge back into perfect shapes.",
     icon: "merging-shapes-category",
     glow: "card-orange",
-  },
-  {
-    id: "games",
-    title: "Games",
-    subtitle: "TAP & TIME IT RIGHT",
-    description: "Skill-based mini games — tap at the right moment to land the shot.",
-    icon: "games-category",
-    glow: "card-violet",
   },
 ];
 
