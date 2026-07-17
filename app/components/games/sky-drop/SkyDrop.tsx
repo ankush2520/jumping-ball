@@ -20,80 +20,162 @@ const RESULT_HOLD_MISS_S = 1.2;
 // fraction of the piece's size — the rest pokes out above the surface.
 const SLOT_SINK_FRAC = 0.42;
 
+// From this level on, the ground slot slides left/right on its own — a free
+// bounce between the two margins, independent of the plane — so the player
+// has to lead a moving target as well as time the swing.
+const TARGET_MOVE_START_LEVEL = 4;
+
 type Phase = "swing" | "falling" | "result";
 
 type Pt = { x: number; y: number };
 
-// Each level's piece, as a polygon in a unit box (x,y ∈ [-1, 1], y down).
-// The ground slot is the same silhouette sunk into the ground, so the piece
-// visually "fixes" into a matching notch — level 1 is the zigzag-bottom
-// block from the sketch; every level after brings a new shape.
-const SHAPES: { name: string; pts: Pt[] }[] = [
-  {
-    name: "Zigzag Block",
-    pts: [
-      { x: -1, y: -1 },
-      { x: 1, y: -1 },
-      { x: 1, y: 0.3 },
-      { x: 0.5, y: 1 },
-      { x: 0, y: 0.3 },
-      { x: -0.5, y: 1 },
-      { x: -1, y: 0.3 },
-    ],
-  },
-  {
-    name: "Triangle",
-    pts: [
-      { x: -1, y: -1 },
-      { x: 1, y: -1 },
-      { x: 0, y: 1 },
-    ],
-  },
-  {
-    name: "Diamond",
-    pts: [
-      { x: 0, y: -1 },
-      { x: 1, y: 0 },
-      { x: 0, y: 1 },
-      { x: -1, y: 0 },
-    ],
-  },
-  {
-    name: "T-Block",
-    pts: [
-      { x: -1, y: -1 },
-      { x: 1, y: -1 },
-      { x: 1, y: -0.2 },
-      { x: 0.4, y: -0.2 },
-      { x: 0.4, y: 1 },
-      { x: -0.4, y: 1 },
-      { x: -0.4, y: -0.2 },
-      { x: -1, y: -0.2 },
-    ],
-  },
-  {
-    name: "Hexagon",
-    pts: [
-      { x: -0.5, y: -1 },
-      { x: 0.5, y: -1 },
-      { x: 1, y: 0 },
-      { x: 0.5, y: 1 },
-      { x: -0.5, y: 1 },
-      { x: -1, y: 0 },
-    ],
-  },
-  {
-    name: "Chevron",
-    pts: [
-      { x: -1, y: -1 },
-      { x: 0, y: -0.2 },
-      { x: 1, y: -1 },
-      { x: 1, y: 0 },
-      { x: 0, y: 1 },
-      { x: -1, y: 0 },
-    ],
-  },
+type Shape = { name: string; pts: Pt[] };
+
+// Level 1 is the zigzag-bottom block from the sketch — a piece that fixes
+// into a matching zigzag notch in the ground. Every level after that gets a
+// freshly generated random shape (see makeShapeForLevel), so the sequence
+// is different every run and never settles into plain triangles/diamonds.
+const SHAPE_L1: Pt[] = [
+  { x: -1, y: -1 },
+  { x: 1, y: -1 },
+  { x: 1, y: 0.3 },
+  { x: 0.5, y: 1 },
+  { x: 0, y: 0.3 },
+  { x: -0.5, y: 1 },
+  { x: -1, y: 0.3 },
 ];
+
+// Recenter on the bounding-box center and scale uniformly so the larger
+// dimension fills the [-1, 1] unit box — keeps every generated shape a
+// consistent on-screen size regardless of its raw proportions.
+function normalizeShape(pts: Pt[]): Pt[] {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    minX = Math.min(minX, p.x);
+    maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y);
+    maxY = Math.max(maxY, p.y);
+  }
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const ext = Math.max(maxX - minX, maxY - minY) / 2 || 1;
+  return pts.map((p) => ({ x: (p.x - cx) / ext, y: (p.y - cy) / ext }));
+}
+
+// Star/gear family: `spikes` outer points at radius 1 alternating with inner
+// points at radius `inner`, evenly spaced around the circle. Low inner → a
+// pointy star; high inner → a cog/sawblade.
+function starPts(spikes: number, inner: number): Pt[] {
+  const pts: Pt[] = [];
+  const n = spikes * 2;
+  for (let i = 0; i < n; i++) {
+    const a = (Math.PI * 2 * i) / n - Math.PI / 2;
+    const r = i % 2 === 0 ? 1 : inner;
+    pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
+  }
+  return pts;
+}
+
+// A jagged "crystal": `n` vertices at even angles, each pushed out to a
+// random radius. Radially monotone, so it's always a simple polygon.
+function blobPts(n: number): Pt[] {
+  const pts: Pt[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (Math.PI * 2 * i) / n - Math.PI / 2;
+    const r = 0.5 + Math.random() * 0.5;
+    pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
+  }
+  return pts;
+}
+
+const ri = (lo: number, hi: number) =>
+  lo + Math.floor(Math.random() * (hi - lo + 1));
+
+const ARROW: Pt[] = [
+  { x: 0, y: -1 },
+  { x: 0.62, y: -0.15 },
+  { x: 0.26, y: -0.15 },
+  { x: 0.26, y: 1 },
+  { x: -0.26, y: 1 },
+  { x: -0.26, y: -0.15 },
+  { x: -0.62, y: -0.15 },
+];
+const PLUS: Pt[] = [
+  { x: -0.34, y: -1 },
+  { x: 0.34, y: -1 },
+  { x: 0.34, y: -0.34 },
+  { x: 1, y: -0.34 },
+  { x: 1, y: 0.34 },
+  { x: 0.34, y: 0.34 },
+  { x: 0.34, y: 1 },
+  { x: -0.34, y: 1 },
+  { x: -0.34, y: 0.34 },
+  { x: -1, y: 0.34 },
+  { x: -1, y: -0.34 },
+  { x: -0.34, y: -0.34 },
+];
+const HOUSE: Pt[] = [
+  { x: 0, y: -1 },
+  { x: 1, y: -0.12 },
+  { x: 0.62, y: -0.12 },
+  { x: 0.62, y: 1 },
+  { x: -0.62, y: 1 },
+  { x: -0.62, y: -0.12 },
+  { x: -1, y: -0.12 },
+];
+
+// The random shape for a given level. Level 1 is always the sketch's zigzag
+// block; from level 2 on, a generator is picked at random — weighted toward
+// the procedural ones (star / sunburst / sawblade / crystal / splinter) so
+// the shapes feel genuinely varied rather than a fixed rotation.
+function makeShapeForLevel(level: number): Shape {
+  if (level <= 1) return { name: "Zigzag Block", pts: SHAPE_L1 };
+
+  const generators: (() => Shape)[] = [
+    () => {
+      const spikes = ri(5, 7);
+      return {
+        name: `${spikes}-Point Star`,
+        pts: normalizeShape(starPts(spikes, 0.36 + Math.random() * 0.12)),
+      };
+    },
+    () => ({
+      name: "Sunburst",
+      pts: normalizeShape(starPts(ri(8, 11), 0.55 + Math.random() * 0.1)),
+    }),
+    () => ({
+      name: "Sawblade",
+      pts: normalizeShape(starPts(ri(9, 14), 0.78 + Math.random() * 0.08)),
+    }),
+    () => ({ name: "Crystal", pts: normalizeShape(blobPts(ri(6, 9))) }),
+    () => ({ name: "Shard", pts: normalizeShape(blobPts(5)) }),
+    () => {
+      // Irregular star — every spike a different length.
+      const spikes = ri(5, 7);
+      const n = spikes * 2;
+      const pts: Pt[] = [];
+      for (let i = 0; i < n; i++) {
+        const a = (Math.PI * 2 * i) / n - Math.PI / 2;
+        const r =
+          i % 2 === 0
+            ? 0.78 + Math.random() * 0.22
+            : 0.28 + Math.random() * 0.24;
+        pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
+      }
+      return { name: "Splinter", pts: normalizeShape(pts) };
+    },
+    () => ({ name: "Arrow", pts: normalizeShape(ARROW) }),
+    () => ({ name: "Cross", pts: normalizeShape(PLUS) }),
+    () => ({ name: "House", pts: normalizeShape(HOUSE) }),
+  ];
+
+  // Bias toward the procedural generators (indices 0–5).
+  const pool = [0, 0, 1, 2, 3, 3, 4, 5, 5, 6, 7, 8];
+  return generators[pool[Math.floor(Math.random() * pool.length)]]();
+}
 
 const LEVEL_COLORS = [
   { light: "#fde68a", base: "#f59e0b", deep: "#d97706" },
@@ -185,6 +267,180 @@ function tracePath(ctx: CanvasRenderingContext2D, pts: Pt[], half: number) {
   ctx.closePath();
 }
 
+// ─── Audio ──────────────────────────────────────────────────────────────────
+// A tiny WebAudio kit: a continuous propeller drone while flying, plus one-off
+// cues for releasing the piece, a good placement, and a failed ground hit.
+// Everything is synthesized, so there are no asset files to load.
+type SkyAudio = {
+  unlock: () => void;
+  startEngine: () => void;
+  stopEngine: () => void;
+  drop: () => void;
+  placed: () => void;
+  thud: () => void;
+  dispose: () => void;
+};
+
+function createSkyAudio(): SkyAudio {
+  let ac: AudioContext | null = null;
+  let engine: {
+    gain: GainNode;
+    nodes: (OscillatorNode | AudioBufferSourceNode)[];
+  } | null = null;
+
+  const ensure = () => {
+    if (!ac) {
+      const w = window as typeof globalThis & {
+        webkitAudioContext?: typeof AudioContext;
+      };
+      const AC = w.AudioContext || w.webkitAudioContext;
+      if (!AC) return null;
+      ac = new AC();
+    }
+    if (ac.state === "suspended") void ac.resume();
+    return ac;
+  };
+
+  const blip = (
+    freq: number,
+    dur: number,
+    type: OscillatorType,
+    vol: number,
+    sweepTo?: number,
+  ) => {
+    const ctx = ensure();
+    if (!ctx) return;
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    if (sweepTo) osc.frequency.exponentialRampToValueAtTime(sweepTo, t + dur);
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(vol, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + dur + 0.03);
+    osc.onended = () => {
+      osc.disconnect();
+      gain.disconnect();
+    };
+  };
+
+  return {
+    unlock: () => {
+      ensure();
+    },
+    startEngine: () => {
+      const ctx = ensure();
+      if (!ctx || engine) return;
+      // A real-ish prop plane: broadband engine/wind HISS (looping white noise
+      // through a bandpass) plus a low engine RUMBLE, with the hiss amplitude
+      // chopped at the propeller's blade-pass rate to give the "brrrr" buzz.
+      const master = ctx.createGain();
+      master.gain.value = 0.0001;
+      master.connect(ctx.destination);
+
+      // Engine / wind hiss — 2s of looping white noise, band-limited.
+      const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+      const data = noiseBuf.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      const noise = ctx.createBufferSource();
+      noise.buffer = noiseBuf;
+      noise.loop = true;
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = 640;
+      bp.Q.value = 0.75;
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.value = 0.09;
+      noise.connect(bp);
+      bp.connect(noiseGain);
+      noiseGain.connect(master);
+
+      // Low engine rumble.
+      const rumble = ctx.createOscillator();
+      rumble.type = "triangle";
+      rumble.frequency.value = 76;
+      const rumbleLp = ctx.createBiquadFilter();
+      rumbleLp.type = "lowpass";
+      rumbleLp.frequency.value = 210;
+      const rumbleGain = ctx.createGain();
+      rumbleGain.gain.value = 0.05;
+      rumble.connect(rumbleLp);
+      rumbleLp.connect(rumbleGain);
+      rumbleGain.connect(master);
+
+      // Propeller chop — amplitude-modulate the hiss at blade-pass rate.
+      const prop = ctx.createOscillator();
+      prop.type = "sawtooth";
+      prop.frequency.value = 17;
+      const propDepth = ctx.createGain();
+      propDepth.gain.value = 0.07;
+      prop.connect(propDepth);
+      propDepth.connect(noiseGain.gain);
+
+      noise.start();
+      rumble.start();
+      prop.start();
+      master.gain.setTargetAtTime(0.5, ctx.currentTime, 0.5);
+      engine = { gain: master, nodes: [noise, rumble, prop] };
+    },
+    stopEngine: () => {
+      if (!ac || !engine) return;
+      const t = ac.currentTime;
+      const e = engine;
+      engine = null;
+      e.gain.gain.cancelScheduledValues(t);
+      e.gain.gain.setValueAtTime(e.gain.gain.value, t);
+      e.gain.gain.linearRampToValueAtTime(0.0001, t + 0.25);
+      window.setTimeout(() => {
+        for (const n of e.nodes) {
+          try {
+            n.stop();
+          } catch {
+            /* already stopped */
+          }
+        }
+      }, 400);
+    },
+    drop: () => blip(680, 0.2, "triangle", 0.12, 200),
+    placed: () => {
+      blip(660, 0.16, "sine", 0.14);
+      window.setTimeout(() => blip(880, 0.18, "sine", 0.14), 90);
+      window.setTimeout(() => blip(1174, 0.26, "sine", 0.12), 190);
+    },
+    thud: () => {
+      const ctx = ensure();
+      if (!ctx) return;
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(160, t);
+      osc.frequency.exponentialRampToValueAtTime(55, t + 0.2);
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.linearRampToValueAtTime(0.22, t + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.24);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.26);
+      osc.onended = () => {
+        osc.disconnect();
+        gain.disconnect();
+      };
+    },
+    dispose: () => {
+      engine = null;
+      void ac?.close();
+      ac = null;
+    },
+  };
+}
+
 const SkyDrop = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number | null>(null);
@@ -203,6 +459,14 @@ const SkyDrop = () => {
   }>({ text: "", sub: "", color: "#ffffff", timer: 0, success: false });
   const particlesRef = useRef<Particle[]>([]);
   const trailRef = useRef<Pt[]>([]);
+  // The current level's shape, generated once per level and reused for both
+  // the falling piece and its ground slot so they always match.
+  const currentShapeRef = useRef<Shape>({
+    name: "Zigzag Block",
+    pts: SHAPE_L1,
+  });
+  const shapeLevelRef = useRef(0);
+  const audioRef = useRef<SkyAudio | null>(null);
 
   const planeRef = useRef({ x: 0, vx: 1 });
   const ropeRef = useRef({ theta: 0, thetaDot: 0 });
@@ -214,9 +478,8 @@ const SkyDrop = () => {
     rotation: 0,
     rotationSpeed: 0,
   });
-  const targetRef = useRef({ x: 0 });
+  const targetRef = useRef({ x: 0, vx: 0 });
 
-  const shapeForLevel = (level: number) => SHAPES[(level - 1) % SHAPES.length];
   const colorForLevel = (level: number) =>
     LEVEL_COLORS[(level - 1) % LEVEL_COLORS.length];
 
@@ -228,9 +491,22 @@ const SkyDrop = () => {
   const planeSpeedFor = (level: number, layout: Layout) =>
     layout.planeSpeed * Math.min(1.6, 1 + (level - 1) * 0.07);
 
+  // How fast the slot slides once target motion kicks in (level ≥
+  // TARGET_MOVE_START_LEVEL); ramps up gently with each higher level.
+  const targetSpeedFor = (level: number, layout: Layout) =>
+    layout.planeSpeed *
+    Math.min(0.72, 0.32 + (level - TARGET_MOVE_START_LEVEL) * 0.06);
+
   const resetRound = () => {
     const layout = layoutRef.current;
     if (!layout) return;
+
+    // Generate a fresh shape whenever we reach a new level; a retry after a
+    // miss keeps the same level, and so the same shape.
+    if (shapeLevelRef.current !== levelRef.current) {
+      currentShapeRef.current = makeShapeForLevel(levelRef.current);
+      shapeLevelRef.current = levelRef.current;
+    }
 
     const dir = Math.random() < 0.5 ? 1 : -1;
     planeRef.current = {
@@ -239,8 +515,13 @@ const SkyDrop = () => {
     };
     ropeRef.current = { theta: (Math.random() - 0.5) * 0.5, thetaDot: 0 };
     const margin = layout.pieceSize;
+    const targetMoves = levelRef.current >= TARGET_MOVE_START_LEVEL;
     targetRef.current = {
       x: margin + Math.random() * (layout.width - margin * 2),
+      vx: targetMoves
+        ? targetSpeedFor(levelRef.current, layout) *
+          (Math.random() < 0.5 ? 1 : -1)
+        : 0,
     };
     pieceRef.current.rotation = 0;
     pieceRef.current.rotationSpeed = 0;
@@ -280,11 +561,17 @@ const SkyDrop = () => {
     piece.rotationSpeed = thetaDot;
     trailRef.current = [];
     phaseRef.current = "falling";
+    audioRef.current?.drop();
   };
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    audioRef.current = createSkyAudio();
+    // Try to start the propeller drone right away; on mobile the AudioContext
+    // stays suspended until the first tap, so we start it again there too.
+    audioRef.current.startEngine();
 
     const init = () => {
       const layout = resizeCanvas(canvas);
@@ -299,7 +586,12 @@ const SkyDrop = () => {
     window.addEventListener("resize", handleResize);
     window.visualViewport?.addEventListener("resize", handleResize);
 
-    const handlePointerDown = () => dropPiece();
+    const handlePointerDown = () => {
+      // First tap doubles as the audio unlock gesture on mobile.
+      audioRef.current?.unlock();
+      audioRef.current?.startEngine();
+      dropPiece();
+    };
     canvas.addEventListener("pointerdown", handlePointerDown);
 
     const tick = (now: number) => {
@@ -324,25 +616,37 @@ const SkyDrop = () => {
       const half = pieceSize / 2;
       const sink = pieceSize * SLOT_SINK_FRAC;
 
-      // Plane ping-pongs between the two side margins. A direction flip is
-      // an impulsive pivot-velocity change, so it whips the pendulum — the
-      // hanging piece keeps its inertia while the anchor reverses.
+      // Plane ping-pongs between the two side margins, reversing cleanly at
+      // each edge. No turnaround impulse is fed into the rope, so the towed
+      // piece keeps hanging steady instead of jerking when the plane flips.
       plane.x += plane.vx * dt;
-      let flipDelta = 0;
       if (plane.x > width - SIDE_PAD) {
         plane.x = width - SIDE_PAD;
-        flipDelta = -2 * Math.abs(plane.vx);
         plane.vx = -Math.abs(plane.vx);
       } else if (plane.x < SIDE_PAD) {
         plane.x = SIDE_PAD;
-        flipDelta = 2 * Math.abs(plane.vx);
         plane.vx = Math.abs(plane.vx);
       }
 
-      if (phaseRef.current === "swing") {
-        if (flipDelta !== 0) {
-          rope.thetaDot -= (flipDelta * Math.cos(rope.theta)) / ropeLength;
+      // From TARGET_MOVE_START_LEVEL on, the slot slides on its own, bouncing
+      // freely between the two margins — independent of the plane. Frozen once
+      // a piece has landed so a placed piece stays sitting in its slot.
+      if (
+        levelRef.current >= TARGET_MOVE_START_LEVEL &&
+        phaseRef.current !== "result"
+      ) {
+        const m = pieceSize;
+        target.x += target.vx * dt;
+        if (target.x < m) {
+          target.x = m;
+          target.vx = Math.abs(target.vx);
+        } else if (target.x > width - m) {
+          target.x = width - m;
+          target.vx = -Math.abs(target.vx);
         }
+      }
+
+      if (phaseRef.current === "swing") {
         const thetaDotDot =
           -(gravity / ropeLength) * Math.sin(rope.theta) -
           SWING_DAMPING * rope.thetaDot;
@@ -392,6 +696,7 @@ const SkyDrop = () => {
               30,
             );
             spawnBurst(target.x, groundY, "#4ade80", 16);
+            audioRef.current?.placed();
           } else {
             // Fell over where it landed.
             piece.rotation = Math.max(
@@ -406,6 +711,7 @@ const SkyDrop = () => {
               success: false,
             };
             spawnBurst(piece.x, groundY, "#94a3b8", 14);
+            audioRef.current?.thud();
           }
           phaseRef.current = "result";
         }
@@ -440,7 +746,7 @@ const SkyDrop = () => {
       const half = pieceSize / 2;
       const sink = pieceSize * SLOT_SINK_FRAC;
       const level = levelRef.current;
-      const shape = shapeForLevel(level);
+      const shape = currentShapeRef.current;
       const colors = colorForLevel(level);
       // Where a correctly-placed piece rests: partly sunk into the slot.
       const slotRestY = groundY + sink - half;
@@ -582,31 +888,36 @@ const SkyDrop = () => {
         ctx.restore();
       }
 
-      // Heading (no shadowBlur on fillText — WebKit ghosting bug)
+      // Heading + level badge share one top band. The heading is centered;
+      // the level labels are right-aligned with their first line on the same
+      // baseline as the title, so the top row reads as one tidy strip clear
+      // of the home button in the top-left corner. (No shadowBlur on any
+      // fillText — WebKit ghosting bug.)
+      const titleY = Math.max(36, height * 0.052);
+      // ~1.3× the previous heading/subheading sizes, with a real gap between.
+      const titleSize = Math.max(23, Math.min(34, width * 0.065));
+      const subSize = Math.max(16, Math.min(20, width * 0.039));
+      const headingGap = 16;
+      const subY = titleY + titleSize / 2 + subSize / 2 + headingGap;
+
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      const titleSize = Math.max(18, Math.min(26, width * 0.05));
       ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
       ctx.font = `900 ${titleSize}px Arial, Helvetica, sans-serif`;
-      ctx.fillText("Sky Drop", width / 2, Math.max(30, height * 0.055));
+      ctx.fillText("Sky Drop", width / 2, titleY);
       ctx.fillStyle = "rgba(248, 250, 252, 0.72)";
-      const subSize = Math.max(12, Math.min(15, width * 0.03));
       ctx.font = `700 ${subSize}px Arial, Helvetica, sans-serif`;
-      ctx.fillText(
-        "Drop the piece into its matching slot",
-        width / 2,
-        Math.max(30, height * 0.055) + titleSize * 0.85,
-      );
+      ctx.fillText("Drop the piece into its matching slot", width / 2, subY);
 
-      // Level badge
+      // Level badge — first line aligned to the heading's baseline.
       ctx.textAlign = "right";
       ctx.fillStyle = "rgba(250, 204, 21, 0.92)";
-      const levelSize = Math.max(15, Math.min(20, width * 0.036));
+      const levelSize = Math.max(15, Math.min(21, width * 0.038));
       ctx.font = `900 ${levelSize}px Arial, Helvetica, sans-serif`;
-      ctx.fillText(`LEVEL ${level}`, width - 18, 26);
+      ctx.fillText(`LEVEL ${level}`, width - 16, titleY);
       ctx.fillStyle = "rgba(226, 246, 255, 0.6)";
       ctx.font = `700 ${Math.max(11, levelSize * 0.62)}px Arial, Helvetica, sans-serif`;
-      ctx.fillText(shape.name, width - 18, 26 + levelSize * 0.95);
+      ctx.fillText(shape.name, width - 16, titleY + levelSize * 0.92);
 
       // Result banner
       if (phaseRef.current === "result" && resultRef.current.timer > 0) {
@@ -634,6 +945,9 @@ const SkyDrop = () => {
       window.removeEventListener("resize", handleResize);
       window.visualViewport?.removeEventListener("resize", handleResize);
       canvas.removeEventListener("pointerdown", handlePointerDown);
+      audioRef.current?.stopEngine();
+      audioRef.current?.dispose();
+      audioRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
