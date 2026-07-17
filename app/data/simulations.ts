@@ -200,7 +200,7 @@ export const simulations: Simulation[] = [
     id: "sky-drop",
     title: "Sky Drop",
     subtitle: "DROP THE PIECE",
-    description: "A plane tows a piece on a rope — tap at the right moment to drop it onto the target below.",
+    description: "A plane tows a shape on a rope — tap at the right moment to drop it into its matching slot. New shape every level.",
     component: SkyDrop,
     status: "experimental",
     accentColor: "#a78bfa",
