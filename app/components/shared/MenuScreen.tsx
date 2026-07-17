@@ -1,15 +1,114 @@
 "use client";
 
 import React, { useState } from "react";
-import type { Simulation } from "../../data/simulations";
+import type { IconKey, Simulation, SimulationStatus } from "../../data/simulations";
 import { trackEvent } from "../../lib/analytics";
 
+export type MenuItem = {
+  id: string;
+  title: string;
+  subtitle: string;
+  description: string;
+  icon: IconKey;
+  glow: Simulation["glow"];
+  status?: SimulationStatus;
+};
+
 interface Props {
-  simulations: Simulation[];
-  onLaunch: (id: string) => void;
+  items: MenuItem[];
+  onSelect: (id: string) => void;
+  heroLine1: string;
+  heroLine2: string;
+  heroSubtitle: string;
+  onBack?: () => void;
 }
 
-const renderSimulationIcon = (icon: Simulation["icon"]) => {
+const renderSimulationIcon = (icon: IconKey) => {
+  if (icon === "race-category") {
+    return renderSimulationIcon("ball-race");
+  }
+
+  if (icon === "ball-simulation-category") {
+    return renderSimulationIcon("plasma-bounce");
+  }
+
+  if (icon === "merging-shapes-category") {
+    return renderSimulationIcon("merging-perfect-shape");
+  }
+
+  if (icon === "games-category") {
+    return renderSimulationIcon("sky-drop");
+  }
+
+  if (icon === "sky-drop") {
+    return (
+      <svg
+        viewBox="0 0 72 72"
+        width="54"
+        height="54"
+        fill="none"
+        aria-hidden="true"
+      >
+        <defs>
+          <filter id="sky-drop-glow" x="-45%" y="-45%" width="190%" height="190%">
+            <feGaussianBlur stdDeviation="2.4" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <rect
+          x="12"
+          y="12"
+          width="48"
+          height="48"
+          rx="5"
+          fill="rgba(2,6,23,0.72)"
+          stroke="rgba(148,163,184,0.28)"
+        />
+        <text
+          x="34"
+          y="27"
+          textAnchor="middle"
+          fontSize="16"
+          filter="url(#sky-drop-glow)"
+        >
+          ✈️
+        </text>
+        <line
+          x1="34"
+          y1="30"
+          x2="34"
+          y2="42"
+          stroke="rgba(226,232,240,0.6)"
+          strokeWidth="1.5"
+          strokeDasharray="2 2"
+        />
+        <rect
+          x="28"
+          y="42"
+          width="12"
+          height="12"
+          rx="2.5"
+          fill="#f59e0b"
+          filter="url(#sky-drop-glow)"
+        />
+        <rect
+          x="20"
+          y="56"
+          width="24"
+          height="4"
+          rx="2"
+          fill="none"
+          stroke="rgba(250,204,21,0.8)"
+          strokeWidth="2"
+          strokeDasharray="3 3"
+        />
+      </svg>
+    );
+  }
+
   if (icon === "country-escape-challenge") {
     return (
       <svg
@@ -600,22 +699,29 @@ const renderSimulationIcon = (icon: Simulation["icon"]) => {
   return null;
 };
 
-const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
+const MenuScreen: React.FC<Props> = ({
+  items,
+  onSelect,
+  heroLine1,
+  heroLine2,
+  heroSubtitle,
+  onBack,
+}) => {
   const [comingSoonTitle, setComingSoonTitle] = useState<string | null>(null);
 
-  const handleLaunch = (simulation: Simulation) => {
-    if (simulation.status === "coming-soon" || !simulation.component) {
-      setComingSoonTitle(simulation.title);
+  const handleLaunch = (item: MenuItem) => {
+    if (item.status === "coming-soon") {
+      setComingSoonTitle(item.title);
       return;
     }
 
     trackEvent("simulation_selected", {
-      simulationId: simulation.id,
-      simulationName: simulation.title,
-      simulationStatus: simulation.status,
+      simulationId: item.id,
+      simulationName: item.title,
+      simulationStatus: item.status ?? "stable",
     });
 
-    onLaunch(simulation.id);
+    onSelect(item.id);
   };
 
   return (
@@ -625,52 +731,74 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
       <div className="glow-orb glow-orb-2" />
       <div className="light-rays" />
 
+      {onBack && (
+        <button
+          type="button"
+          aria-label="Back"
+          title="Back"
+          className="back-button"
+          onClick={onBack}
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            width="17"
+            height="17"
+            fill="none"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2.2"
+          >
+            <path d="M15 18l-6-6 6-6" />
+          </svg>
+        </button>
+      )}
+
       <div className="menu-container">
         {/* Hero Section */}
         <div className="hero-section">
           <div className="hero-accent" />
           <h1 className="hero-title">
-            BOUNCING <span className="gradient-text">SHAPES</span>
+            {heroLine1} <span className="gradient-text">{heroLine2}</span>
           </h1>
-          <p className="hero-subtitle">Interactive Simulation Playground</p>
+          <p className="hero-subtitle">{heroSubtitle}</p>
           <div className="hero-divider" />
         </div>
 
-        {/* Simulation Grid */}
+        {/* Grid */}
         <div className="buttons-section">
-          {simulations.map((simulation) => (
+          {items.map((item) => (
             <button
-              key={simulation.id}
-              onClick={() => handleLaunch(simulation)}
-              className={`launch-button ${simulation.glow} ${
-                simulation.status === "coming-soon" ? "is-coming-soon" : ""
+              key={item.id}
+              onClick={() => handleLaunch(item)}
+              className={`launch-button ${item.glow} ${
+                item.status === "coming-soon" ? "is-coming-soon" : ""
               }`}
             >
               <div className="button-content">
                 <div
                   className={`button-icon ${
-                    simulation.icon === "shrinking-escape"
+                    item.icon === "shrinking-escape"
                       ? "button-icon-thumbnail"
                       : ""
                   }`}
                 >
-                  {renderSimulationIcon(simulation.icon)}
+                  {renderSimulationIcon(item.icon)}
                 </div>
                 <div className="button-text">
-                  <div className="button-title">{simulation.title}</div>
-                  <div className="button-subtitle">{simulation.subtitle}</div>
+                  <div className="button-title">{item.title}</div>
+                  <div className="button-subtitle">{item.subtitle}</div>
                   <div className="button-description">
-                    {simulation.description}
+                    {item.description}
                   </div>
                 </div>
               </div>
               <div className="button-arrow">
                 <span>
-                  {simulation.status === "coming-soon"
-                    ? "COMING SOON"
-                    : "Launch"}
+                  {item.status === "coming-soon" ? "COMING SOON" : "Launch"}
                 </span>
-                {simulation.status === "coming-soon" ? null : (
+                {item.status === "coming-soon" ? null : (
                   <svg
                     viewBox="0 0 24 24"
                     fill="none"
@@ -712,6 +840,39 @@ const MenuScreen: React.FC<Props> = ({ simulations, onLaunch }) => {
       <style jsx>{`
         * {
           box-sizing: border-box;
+        }
+
+        .back-button {
+          position: fixed;
+          left: 10px;
+          top: 10px;
+          z-index: 20;
+          width: 34px;
+          height: 34px;
+          display: grid;
+          place-items: center;
+          padding: 0;
+          border-radius: 999px;
+          border: 1px solid rgba(248, 250, 252, 0.16);
+          background: rgba(15, 23, 42, 0.58);
+          color: #f8fafc;
+          cursor: pointer;
+          box-shadow: 0 8px 22px rgba(15, 23, 42, 0.28);
+          backdrop-filter: blur(8px);
+        }
+
+        @media (max-width: 600px) {
+          .back-button {
+            left: 14px !important;
+            top: calc(14px + env(safe-area-inset-top, 0px)) !important;
+            width: 42px !important;
+            height: 42px !important;
+          }
+
+          .back-button svg {
+            width: 20px;
+            height: 20px;
+          }
         }
 
         .menu-root {

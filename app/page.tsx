@@ -2,10 +2,24 @@
 
 import { useEffect, useState } from "react";
 import MenuScreen from "./components/shared/MenuScreen";
-import { getSimulationById, simulations } from "./data/simulations";
+import {
+  categories,
+  getCategoryById,
+  getSimulationById,
+  getSimulationsByCategory,
+  type CategoryId,
+} from "./data/simulations";
 import { trackEvent, trackWebsiteVisit } from "./lib/analytics";
 
+const categoryHeroText: Record<CategoryId, [string, string]> = {
+  race: ["ARENA", "RACE"],
+  "ball-simulation": ["BALL", "SIMULATION"],
+  "merging-shapes": ["MERGING", "SHAPES"],
+  games: ["TAP", "GAMES"],
+};
+
 export default function Home() {
+  const [categoryId, setCategoryId] = useState<CategoryId | null>(null);
   const [activeSimulationId, setActiveSimulationId] = useState<string | null>(
     null,
   );
@@ -13,10 +27,36 @@ export default function Home() {
     ? getSimulationById(activeSimulationId)
     : null;
   const ActiveSimulation = activeSimulation?.component ?? null;
+  const activeCategory = categoryId ? getCategoryById(categoryId) : null;
+  const categorySimulations = categoryId
+    ? getSimulationsByCategory(categoryId)
+    : [];
 
   useEffect(() => {
     trackWebsiteVisit();
   }, []);
+
+  const handleSelectCategory = (id: string) => {
+    const category = getCategoryById(id);
+    if (!category) return;
+
+    trackEvent("category_selected", { categoryId: id });
+
+    const simsInCategory = getSimulationsByCategory(category.id);
+    setCategoryId(category.id);
+    if (simsInCategory.length === 1) {
+      setActiveSimulationId(simsInCategory[0].id);
+    }
+  };
+
+  const handleBackFromSimulation = () => {
+    trackEvent("home_clicked", { button_name: "home" });
+    const simsInCategory = categoryId ? getSimulationsByCategory(categoryId) : [];
+    setActiveSimulationId(null);
+    if (simsInCategory.length <= 1) {
+      setCategoryId(null);
+    }
+  };
 
   return (
     <div
@@ -36,12 +76,7 @@ export default function Home() {
             aria-label="Back to menu"
             title="Back to menu"
             className="home-button"
-            onClick={() => {
-              trackEvent("home_clicked", {
-                button_name: "home",
-              });
-              setActiveSimulationId(null);
-            }}
+            onClick={handleBackFromSimulation}
             style={{
               position: "fixed",
               left: 10,
@@ -108,10 +143,22 @@ export default function Home() {
             }
           `}</style>
         </div>
+      ) : categoryId && activeCategory ? (
+        <MenuScreen
+          items={categorySimulations}
+          onSelect={setActiveSimulationId}
+          heroLine1={categoryHeroText[categoryId][0]}
+          heroLine2={categoryHeroText[categoryId][1]}
+          heroSubtitle={activeCategory.description}
+          onBack={() => setCategoryId(null)}
+        />
       ) : (
         <MenuScreen
-          simulations={simulations}
-          onLaunch={setActiveSimulationId}
+          items={categories}
+          onSelect={handleSelectCategory}
+          heroLine1="BOUNCING"
+          heroLine2="SHAPES"
+          heroSubtitle="Interactive Simulation Playground"
         />
       )}
     </div>

@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -86,21 +92,33 @@ const DRUM_TOP_MARGIN_FACTOR = 1.5; // gap above the drums, in ball-radii
 const DRUM_GAP_FACTOR = 4; // exit chord width, in ball-radii — ~2.7 ball diameters
 const DRUM_ANGULAR_SPEED = 0.8; // rad/s
 
-// Four countries in two starting drums: France + Spain in the LEFT drum,
-// Argentina + England in the RIGHT one — both drums feed the same shared
-// peg field once a ball's lucky moment comes (see generateCourse). hue
-// drives only the glow/particle-trail/HUD-dot effects; it's spread around
-// the wheel so those small flat-color contexts stay distinguishable. The
-// ball itself renders as the country's actual flag (drawCountryFlag),
-// which is the real identity signal.
-const BALL_DEFS = [
-  { name: "France", hue: 260, side: "left" },
-  { name: "Spain", hue: 45, side: "left" },
-  { name: "Argentina", hue: 195, side: "right" },
-  { name: "England", hue: 350, side: "right" },
+// Every country drawCountryFlag knows how to render, in a fixed canonical
+// order. The setup popup lets the player pick how many balls race (an even
+// count, split evenly between the two starting drums) and which of these
+// countries fill the slots — the first half (in this canonical order) goes
+// in the LEFT drum, the second half in the RIGHT one, so the default
+// selection reproduces the original France+Spain vs Argentina+England
+// split. hue drives only the glow/particle-trail/HUD-dot effects; it's
+// spread around the wheel so those small flat-color contexts stay
+// distinguishable. The ball itself renders as the country's actual flag
+// (drawCountryFlag), which is the real identity signal.
+const COUNTRY_OPTIONS = [
+  { name: "France", hue: 260 },
+  { name: "Spain", hue: 45 },
+  { name: "Argentina", hue: 195 },
+  { name: "England", hue: 350 },
+  { name: "Switzerland", hue: 5 },
+  { name: "Norway", hue: 225 },
+  { name: "Belgium", hue: 60 },
+  { name: "Morocco", hue: 130 },
 ] as const;
 
-type BallSide = (typeof BALL_DEFS)[number]["side"];
+const DEFAULT_BALL_COUNT = 4;
+const BALL_COUNT_OPTIONS = [2, 4, 6, 8] as const;
+
+type BallSide = "left" | "right";
+
+type BallDef = { name: string; hue: number; side: BallSide };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -524,17 +542,27 @@ function generateCourse(arena: Arena, ballR: number): Course {
   return { drums, gateY, pegs, funnel, cauldron, finishY };
 }
 
-function spawnBalls(drums: Record<BallSide, StartDrum>, ballR: number): Ball[] {
-  // Two balls per drum, side by side near its center — well clear of the
-  // walls, so gravity settles them naturally once racing starts. All
-  // released on the same frame (dropDelay 0); which one actually falls
-  // out first is down to the drum's rotation, not a scripted stagger.
+function spawnBalls(
+  defs: BallDef[],
+  drums: Record<BallSide, StartDrum>,
+  ballR: number,
+): Ball[] {
+  // N balls per drum, spread evenly side by side near its center — well
+  // clear of the walls, so gravity settles them naturally once racing
+  // starts. All released on the same frame (dropDelay 0); which one
+  // actually falls out first is down to the drum's rotation, not a
+  // scripted stagger.
+  const countPerSide: Record<BallSide, number> = { left: 0, right: 0 };
+  for (const def of defs) countPerSide[def.side]++;
   const next: Record<BallSide, number> = { left: 0, right: 0 };
-  const offsets = [-1.15, 1.15];
+  const offsetStep = 2.3; // ball-radii between adjacent slots in a drum
 
-  return BALL_DEFS.map((def, i) => {
+  return defs.map((def, i) => {
     const drum = drums[def.side];
-    const x = drum.cx + offsets[next[def.side]++] * ballR;
+    const idx = next[def.side]++;
+    const count = countPerSide[def.side];
+    const offset = (idx - (count - 1) / 2) * offsetStep;
+    const x = drum.cx + offset * ballR;
     const y = drum.cy;
     return {
       id: i,
@@ -1813,23 +1841,57 @@ const BallRace = () => {
 
   const [phase, setPhase] = useState<Phase>("menu");
   const [standings, setStandings] = useState<Ball[]>([]);
-  const [musicPromptOpen, setMusicPromptOpen] = useState(true);
+  const [setupOpen, setSetupOpen] = useState(true);
+  const [musicOn, setMusicOn] = useState(true);
+  const [ballCount, setBallCount] = useState<number>(DEFAULT_BALL_COUNT);
+  const [selectedCountries, setSelectedCountries] = useState<string[]>(() =>
+    COUNTRY_OPTIONS.slice(0, DEFAULT_BALL_COUNT).map((c) => c.name),
+  );
 
-  const enableMusic = useCallback(() => {
-    audioRef.current.unlock();
-    audioRef.current.startMusic(BG_MUSIC_VOLUME);
-    setMusicPromptOpen(false);
-  }, []);
+  // Canonical-order names → BallDefs, first half in the LEFT drum, second
+  // half in the RIGHT — kept in a ref (not just a memo) so buildRace, which
+  // isn't triggered by React re-renders, always reads the latest selection.
+  const ballDefs = useMemo<BallDef[]>(() => {
+    const ordered = COUNTRY_OPTIONS.filter((c) =>
+      selectedCountries.includes(c.name),
+    );
+    const half = Math.floor(ordered.length / 2);
+    return ordered.map((c, i) => ({
+      name: c.name,
+      hue: c.hue,
+      side: i < half ? "left" : ("right" as BallSide),
+    }));
+  }, [selectedCountries]);
+  const ballDefsRef = useRef<BallDef[]>(ballDefs);
+  useEffect(() => {
+    ballDefsRef.current = ballDefs;
+  }, [ballDefs]);
 
-  const skipMusic = useCallback(() => {
-    setMusicPromptOpen(false);
+  const toggleCountry = useCallback((name: string) => {
+    setSelectedCountries((prev) => {
+      if (prev.includes(name)) return prev.filter((n) => n !== name);
+      if (prev.length >= ballCount) return prev;
+      return [...prev, name];
+    });
+  }, [ballCount]);
+
+  const handleBallCountChange = useCallback((n: number) => {
+    setBallCount(n);
+    setSelectedCountries((prev) => {
+      const names = COUNTRY_OPTIONS.map((c) => c.name);
+      const ordered = names.filter((name) => prev.includes(name));
+      if (ordered.length === n) return ordered;
+      if (ordered.length > n) return ordered.slice(0, n);
+      const remaining = names.filter((name) => !ordered.includes(name));
+      return [...ordered, ...remaining.slice(0, n - ordered.length)];
+    });
   }, []);
 
   const buildRace = useCallback((arena: Arena) => {
     const ballR = arena.width * 0.048 * 0.7 * 0.8 * 0.8;
     const course = generateCourse(arena, ballR);
     courseRef.current = course;
-    ballsRef.current = spawnBalls(course.drums, ballR);
+    ballsRef.current = spawnBalls(ballDefsRef.current, course.drums, ballR);
     particlesRef.current = [];
     finishOrderRef.current = [];
     raceStartAtRef.current = null;
@@ -1863,6 +1925,15 @@ const BallRace = () => {
     countdownEndAtRef.current = performance.now() + COUNTDOWN_MS;
     setPhase("countdown");
   }, [buildRace]);
+
+  const confirmSetup = useCallback(() => {
+    audioRef.current.unlock();
+    if (musicOn) {
+      audioRef.current.startMusic(BG_MUSIC_VOLUME);
+    }
+    setSetupOpen(false);
+    startRace();
+  }, [musicOn, startRace]);
 
   useEffect(() => {
     resizeOnly();
@@ -2224,28 +2295,70 @@ const BallRace = () => {
     <div className="cr-root">
       <canvas ref={canvasRef} className="cr-canvas" />
 
-      {musicPromptOpen && (
+      {setupOpen && (
         <div className="cr-finished">
-          <div className="cr-panel">
-            <h2 className="cr-panel-title">🎵 Background Music</h2>
-            <p className="cr-music-desc">
-              Play music while you race? You can turn it off anytime.
-            </p>
-            <button type="button" className="cr-play-btn" onClick={enableMusic}>
-              🎶 MUSIC ON
-            </button>
-            <button type="button" className="cr-skip-btn" onClick={skipMusic}>
-              Skip
+          <div className="cr-panel cr-setup-panel">
+            <h2 className="cr-panel-title">🏁 Race Setup</h2>
+
+            <div className="cr-setup-group">
+              <div className="cr-setup-label">Number of Balls</div>
+              <div className="cr-chip-row">
+                {BALL_COUNT_OPTIONS.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={`cr-chip${ballCount === n ? " cr-chip-active" : ""}`}
+                    onClick={() => handleBallCountChange(n)}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="cr-setup-group">
+              <div className="cr-setup-label">
+                Countries ({selectedCountries.length}/{ballCount})
+              </div>
+              <div className="cr-chip-row cr-chip-wrap">
+                {COUNTRY_OPTIONS.map((c) => {
+                  const active = selectedCountries.includes(c.name);
+                  const full = !active && selectedCountries.length >= ballCount;
+                  return (
+                    <button
+                      key={c.name}
+                      type="button"
+                      disabled={full}
+                      className={`cr-chip${active ? " cr-chip-active" : ""}${full ? " cr-chip-disabled" : ""}`}
+                      onClick={() => toggleCountry(c.name)}
+                    >
+                      {c.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="cr-setup-group">
+              <div className="cr-setup-label">Music</div>
+              <button
+                type="button"
+                className={`cr-chip${musicOn ? " cr-chip-active" : ""}`}
+                onClick={() => setMusicOn((v) => !v)}
+              >
+                {musicOn ? "🎶 Music On" : "🔇 Music Off"}
+              </button>
+            </div>
+
+            <button
+              type="button"
+              className="cr-play-btn"
+              disabled={selectedCountries.length !== ballCount}
+              onClick={confirmSetup}
+            >
+              ▶ START
             </button>
           </div>
-        </div>
-      )}
-
-      {phase === "menu" && (
-        <div className="cr-menu">
-          <button type="button" className="cr-play-btn" onClick={startRace}>
-            ▶ PLAY
-          </button>
         </div>
       )}
 
@@ -2279,16 +2392,6 @@ const BallRace = () => {
           width: 100% !important;
           height: 100dvh !important;
           min-height: 100dvh !important;
-        }
-
-        .cr-menu {
-          position: absolute;
-          inset: 0;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          pointer-events: none;
-          padding: 0 24px;
         }
 
         .cr-play-btn {
@@ -2329,6 +2432,13 @@ const BallRace = () => {
           transform: scale(0.97);
         }
 
+        .cr-play-btn:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+          transform: none;
+          box-shadow: none;
+        }
+
         .cr-finished {
           position: absolute;
           inset: 0;
@@ -2365,25 +2475,62 @@ const BallRace = () => {
           color: #fde9b8;
         }
 
-        .cr-music-desc {
-          margin: 0;
-          font-family: Arial, Helvetica, sans-serif;
-          font-size: clamp(0.85rem, 3vw, 0.95rem);
-          text-align: center;
-          color: rgba(254, 247, 233, 0.78);
+        .cr-setup-panel {
+          width: min(94vw, 460px);
+          max-height: 88dvh;
+          overflow-y: auto;
         }
 
-        .cr-skip-btn {
-          pointer-events: all;
-          background: none;
-          border: none;
-          color: rgba(254, 247, 233, 0.6);
+        .cr-setup-group {
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .cr-setup-label {
           font-family: Arial, Helvetica, sans-serif;
-          font-size: clamp(0.8rem, 2.5vw, 0.9rem);
+          font-size: clamp(0.75rem, 2.5vw, 0.85rem);
           font-weight: 700;
           letter-spacing: 0.08em;
-          text-decoration: underline;
+          text-transform: uppercase;
+          color: rgba(254, 247, 233, 0.6);
+          text-align: center;
+        }
+
+        .cr-chip-row {
+          display: flex;
+          flex-wrap: wrap;
+          justify-content: center;
+          gap: 8px;
+        }
+
+        .cr-chip {
+          pointer-events: all;
+          padding: 8px 16px;
+          border: 1px solid rgba(247, 201, 72, 0.3);
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.04);
+          color: rgba(254, 247, 233, 0.85);
+          font-family: Arial, Helvetica, sans-serif;
+          font-size: clamp(0.78rem, 2.6vw, 0.9rem);
+          font-weight: 700;
           cursor: pointer;
+          transition:
+            background 0.15s,
+            border-color 0.15s,
+            color 0.15s;
+        }
+
+        .cr-chip-active {
+          background: rgba(247, 201, 72, 0.22);
+          border-color: rgba(247, 201, 72, 0.85);
+          color: #fde9b8;
+        }
+
+        .cr-chip-disabled {
+          opacity: 0.35;
+          cursor: not-allowed;
         }
 
         .cr-standings {
