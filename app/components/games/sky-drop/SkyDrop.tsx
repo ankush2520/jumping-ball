@@ -343,7 +343,7 @@ function tracePath(ctx: CanvasRenderingContext2D, pts: Pt[], half: number) {
 }
 
 // ─── Audio ──────────────────────────────────────────────────────────────────
-// A tiny WebAudio kit: a continuous propeller drone while flying, plus one-off
+// A tiny WebAudio kit: a continuous chiptune engine drone while flying, plus one-off
 // cues for releasing the piece, a good placement, and a failed ground hit.
 // Everything is synthesized, so there are no asset files to load.
 type SkyAudio = {
@@ -356,11 +356,6 @@ type SkyAudio = {
   dispose: () => void;
 };
 
-// A real recorded piston-aircraft engine loop (see public/audio/CREDITS.md).
-// A short WAV — no encoder padding, so the whole buffer loops gaplessly.
-// The synth engine below is only a fallback if this file can't load.
-const PLANE_ENGINE_SRC = `${process.env.NEXT_PUBLIC_BASE_PATH || ""}/audio/plane.wav`;
-
 type Engine = {
   gain: GainNode;
   nodes: (OscillatorNode | AudioBufferSourceNode)[];
@@ -369,8 +364,6 @@ type Engine = {
 function createSkyAudio(): SkyAudio {
   let ac: AudioContext | null = null;
   let engine: Engine | null = null;
-  let planeBuffer: AudioBuffer | null = null;
-  let planeTried = false;
 
   const ensure = () => {
     if (!ac) {
@@ -413,53 +406,45 @@ function createSkyAudio(): SkyAudio {
     };
   };
 
-  // Fallback prop-engine, only used if the recording can't load: band-passed
-  // white-noise hiss + a low rumble, amplitude-chopped for the propeller buzz.
+  // Retro chiptune engine: two detuned square waves a fifth apart for the
+  // 8-bit drone, wobbled by a slow LFO on pitch, then rolled off up top so the
+  // square-wave harmonics don't get shrill.
   const startSynthEngine = (
     ctx: AudioContext,
     master: GainNode,
     eng: Engine,
   ) => {
-    const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
-    const data = noiseBuf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
-    const noise = ctx.createBufferSource();
-    noise.buffer = noiseBuf;
-    noise.loop = true;
-    const bp = ctx.createBiquadFilter();
-    bp.type = "bandpass";
-    bp.frequency.value = 640;
-    bp.Q.value = 0.75;
-    const noiseGain = ctx.createGain();
-    noiseGain.gain.value = 0.09;
-    noise.connect(bp);
-    bp.connect(noiseGain);
-    noiseGain.connect(master);
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 2000;
+    lp.connect(master);
 
-    const rumble = ctx.createOscillator();
-    rumble.type = "triangle";
-    rumble.frequency.value = 76;
-    const rumbleLp = ctx.createBiquadFilter();
-    rumbleLp.type = "lowpass";
-    rumbleLp.frequency.value = 210;
-    const rumbleGain = ctx.createGain();
-    rumbleGain.gain.value = 0.05;
-    rumble.connect(rumbleLp);
-    rumbleLp.connect(rumbleGain);
-    rumbleGain.connect(master);
+    // Slow pitch wobble shared by both voices — the classic chiptune vibrato.
+    const wobble = ctx.createOscillator();
+    wobble.type = "sine";
+    wobble.frequency.value = 6;
+    const wobbleDepth = ctx.createGain();
+    wobbleDepth.gain.value = 4;
+    wobble.connect(wobbleDepth);
 
-    const prop = ctx.createOscillator();
-    prop.type = "sawtooth";
-    prop.frequency.value = 17;
-    const propDepth = ctx.createGain();
-    propDepth.gain.value = 0.07;
-    prop.connect(propDepth);
-    propDepth.connect(noiseGain.gain);
+    const voice = (freq: number, vol: number) => {
+      const osc = ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.value = freq;
+      wobbleDepth.connect(osc.frequency);
+      const g = ctx.createGain();
+      g.gain.value = vol;
+      osc.connect(g);
+      g.connect(lp);
+      osc.start();
+      eng.nodes.push(osc);
+    };
 
-    noise.start();
-    rumble.start();
-    prop.start();
-    eng.nodes.push(noise, rumble, prop);
+    voice(110, 0.09); // root
+    voice(165, 0.05); // fifth above
+
+    wobble.start();
+    eng.nodes.push(wobble);
   };
 
   return {
@@ -472,38 +457,10 @@ function createSkyAudio(): SkyAudio {
       const master = ctx.createGain();
       master.gain.value = 0.0001;
       master.connect(ctx.destination);
-      master.gain.setTargetAtTime(0.039375, ctx.currentTime, 0.5);
+      master.gain.setTargetAtTime(0.008859375, ctx.currentTime, 0.5);
       const eng: Engine = { gain: master, nodes: [] };
       engine = eng;
-
-      const startBufferLoop = (buffer: AudioBuffer) => {
-        if (engine !== eng) return; // engine was stopped while decoding
-        const src = ctx.createBufferSource();
-        src.buffer = buffer;
-        // WAV has no encoder padding, so looping the whole buffer is gapless;
-        // the file is already a crossfaded seamless engine loop.
-        src.loop = true;
-        src.connect(master);
-        src.start();
-        eng.nodes.push(src);
-      };
-
-      if (planeBuffer) {
-        startBufferLoop(planeBuffer);
-      } else if (!planeTried) {
-        planeTried = true;
-        fetch(PLANE_ENGINE_SRC)
-          .then((r) => r.arrayBuffer())
-          .then((ab) => ctx.decodeAudioData(ab))
-          .then((buf) => {
-            planeBuffer = buf;
-            startBufferLoop(buf);
-          })
-          .catch(() => startSynthEngine(ctx, master, eng));
-      } else {
-        // A previous fetch/decode failed — use the synth engine instead.
-        startSynthEngine(ctx, master, eng);
-      }
+      startSynthEngine(ctx, master, eng);
     },
     stopEngine: () => {
       if (!ac || !engine) return;
