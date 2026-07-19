@@ -584,15 +584,45 @@ function drawArena(
   ctx.font = `900 ${mobile ? 22 : 32}px Arial, Helvetica, sans-serif`;
   const cx = x + size / 2;
   ctx.fillText("Red vs Green:", cx, y - (mobile ? 92 : 96));
-  ctx.fillText("who takes over?", cx, y - (mobile ? 68 : 60));
+  ctx.fillText("who fills the box first?", cx, y - (mobile ? 68 : 60));
 
-  ctx.font = `700 ${mobile ? 12 : 14}px Arial, Helvetica, sans-serif`;
-  ctx.fillStyle = "rgba(248, 250, 252, 0.68)";
-  ctx.fillText(
-    "SIZE makes a ball bigger. +1 clones it at the same size",
+  // the two orb names are tinted to match the orbs themselves, so a viewer can
+  // map each rule onto the thing bouncing around the arena without being told
+  drawTintedLine(
+    ctx,
+    [
+      { text: "Touch ", color: "rgba(248, 250, 252, 0.72)" },
+      { text: "SIZE", color: `rgb(${ORB_GROW})` },
+      { text: " to GROW   ", color: "rgba(248, 250, 252, 0.72)" },
+      { text: "+1", color: `rgb(${ORB_CLONE})` },
+      { text: " to MULTIPLY", color: "rgba(248, 250, 252, 0.72)" },
+    ],
+    `900 ${mobile ? 13 : 15}px Arial, Helvetica, sans-serif`,
     cx,
-    y - (mobile ? 46 : 36),
+    y - (mobile ? 44 : 34),
   );
+  ctx.restore();
+}
+
+// draws one centred line made of differently coloured runs
+function drawTintedLine(
+  ctx: CanvasRenderingContext2D,
+  parts: { text: string; color: string }[],
+  font: string,
+  cx: number,
+  baselineY: number,
+) {
+  ctx.save();
+  ctx.font = font;
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = "left";
+  const total = parts.reduce((w, p) => w + ctx.measureText(p.text).width, 0);
+  let penX = cx - total / 2;
+  for (const p of parts) {
+    ctx.fillStyle = p.color;
+    ctx.fillText(p.text, penX, baselineY);
+    penX += ctx.measureText(p.text).width;
+  }
   ctx.restore();
 }
 
