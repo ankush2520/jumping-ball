@@ -13,23 +13,25 @@ const MAX_DT = 1 / 30;
 const SOUND_GAP_MS = 60;
 const MATCH_MS = 60000;
 const RESULT_DELAY_MS = 5000;
-// balls and orbs are 0.66x their original size
+// balls and orbs are 0.66x their original size, and orbs match the balls exactly
 const BALL_RADIUS_RATIO = 0.014 * 1.5 * 0.66;
-// orbs carry a "2x" / "½x" label, so they need enough face to stay readable
-const ORB_RADIUS_RATIO = BALL_RADIUS_RATIO * 2.2;
-const START_PER_TEAM = 4;
-// after an orb hit a team ignores orbs briefly — without this a team that falls
-// behind gets chain-halved to zero in seconds and the match never reaches 0:00
+const ORB_RADIUS_RATIO = BALL_RADIUS_RATIO;
+const START_PER_TEAM = 2;
+// after an orb hit a team ignores orbs briefly, so a single pass through an orb
+// can't chain into several halvings before the ball has cleared it
 const TEAM_COOLDOWN_MS = 2500;
 const MAX_PER_TEAM = 64;
-const INK = "#0f172a";
-const PAPER = "#f8fafc";
+const TEAM_RED = "#ef4444";
+const TEAM_GREEN = "#22c55e";
+// power-up hues deliberately avoid red/green so they never read as a team ball
+const ORB_DOUBLE = "56, 189, 248"; // cyan
+const ORB_HALF = "251, 191, 36"; // amber
 const WALL_THICKNESS_RATIO = 0.016;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Phase = "menu" | "playing";
-type BallKind = "yin" | "yang";
+type BallKind = "red" | "green";
 type OrbKind = "double" | "half";
 
 type Mover = {
@@ -124,16 +126,14 @@ function makeBall(kind: BallKind, x: number, y: number, r: number): Ball {
 function spawnBalls(arena: Arena): Ball[] {
   const r = getBallRadius(arena);
   const balls: Ball[] = [];
-  // black starts walled off in the top-left room, white in the bottom-right.
-  // starting at 4 apiece takes three ½x hits to wipe a team out, so matches
-  // usually run the full clock instead of ending in a quick knockout
+  // red starts walled off in the top-left room, green in the bottom-right
   for (let i = 0; i < START_PER_TEAM; i++) {
     const p = randomPointInRoom(arena, 0, 0, r);
-    balls.push(makeBall("yin", p.x, p.y, r));
+    balls.push(makeBall("red", p.x, p.y, r));
   }
   for (let i = 0; i < START_PER_TEAM; i++) {
     const p = randomPointInRoom(arena, 1, 1, r);
-    balls.push(makeBall("yang", p.x, p.y, r));
+    balls.push(makeBall("green", p.x, p.y, r));
   }
   return balls;
 }
@@ -197,10 +197,11 @@ function doubleTeam(balls: Ball[], kind: BallKind, arena: Arena): Ball[] {
   return [...balls, ...clones];
 }
 
-// halves the team — a lone ball is wiped out entirely
+// halves the team, but never below one — a team can be ground down to a single
+// ball and still climb back, so neither side is ever knocked out
 function halveTeam(balls: Ball[], kind: BallKind): Ball[] {
   const team = balls.filter((b) => b.kind === kind);
-  const survivors = team.length === 1 ? 0 : Math.floor(team.length / 2);
+  const survivors = Math.max(1, Math.floor(team.length / 2));
   const kept = new Set(team.slice(0, survivors));
   return balls.filter((b) => b.kind !== kind || kept.has(b));
 }
@@ -599,34 +600,32 @@ function createAudio() {
 
 // ─── Drawing: Balls ───────────────────────────────────────────────────────────
 
-// solid discs rather than full taijitu swirls — at 0.66x size the swirl turns to
-// mud, while a black/white disc stays legible down to a few pixels
+// solid discs — at 0.66x size hue carries much further than any inner detail
 function drawBall(ctx: CanvasRenderingContext2D, ball: Ball) {
   const { r, glow } = ball;
-  const isYin = ball.kind === "yin";
+  const isRed = ball.kind === "red";
 
   ctx.save();
   ctx.translate(ball.x, ball.y);
 
-  ctx.shadowColor = isYin
-    ? `rgba(148, 163, 184, ${0.45 + glow * 0.5})`
-    : `rgba(248, 250, 252, ${0.5 + glow * 0.5})`;
-  ctx.shadowBlur = r * (0.9 + glow * 1.6);
+  ctx.shadowColor = isRed
+    ? `rgba(239, 68, 68, ${0.55 + glow * 0.45})`
+    : `rgba(34, 197, 94, ${0.55 + glow * 0.45})`;
+  ctx.shadowBlur = r * (1.1 + glow * 1.6);
   ctx.beginPath();
   ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.fillStyle = isYin ? INK : PAPER;
+  ctx.fillStyle = isRed ? TEAM_RED : TEAM_GREEN;
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  // black reads as a bright ring around a dark centre, white as a solid disc —
-  // at this size that silhouette difference carries further than any inner dot
-  if (isYin) {
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.82, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(226, 232, 240, 0.95)";
-    ctx.lineWidth = Math.max(1.4, r * 0.36);
-    ctx.stroke();
-  }
+  // pale rim lifts the saturated fill off the dark background
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.strokeStyle = isRed
+    ? "rgba(254, 226, 226, 0.8)"
+    : "rgba(220, 252, 231, 0.8)";
+  ctx.lineWidth = Math.max(1, r * 0.16);
+  ctx.stroke();
 
   ctx.restore();
 }
@@ -637,36 +636,39 @@ function drawOrb(ctx: CanvasRenderingContext2D, orb: Orb) {
   const { r } = orb;
   const isDouble = orb.kind === "double";
   const pulse = 0.5 + Math.sin(orb.pulse) * 0.5;
-  const hue = isDouble ? "52, 211, 153" : "248, 113, 113";
+  const hue = isDouble ? ORB_DOUBLE : ORB_HALF;
 
   ctx.save();
   ctx.translate(orb.x, orb.y);
 
   ctx.save();
-  ctx.shadowColor = `rgba(${hue}, ${0.4 + pulse * 0.4})`;
-  ctx.shadowBlur = r * (0.7 + pulse * 0.5);
+  ctx.shadowColor = `rgba(${hue}, ${0.55 + pulse * 0.45})`;
+  ctx.shadowBlur = r * (1.4 + pulse * 1.2);
   ctx.beginPath();
   ctx.arc(0, 0, r, 0, Math.PI * 2);
-  const grad = ctx.createRadialGradient(-r * 0.3, -r * 0.3, r * 0.1, 0, 0, r);
-  grad.addColorStop(0, isDouble ? "#134e4a" : "#4c1d1d");
-  grad.addColorStop(1, "#0a0a0a");
-  ctx.fillStyle = grad;
+  ctx.fillStyle = `rgb(${hue})`;
   ctx.fill();
   ctx.restore();
 
   ctx.beginPath();
   ctx.arc(0, 0, r, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(${hue}, ${0.65 + pulse * 0.3})`;
-  ctx.lineWidth = Math.max(1.4, r * 0.11);
+  ctx.strokeStyle = "rgba(248, 250, 252, 0.9)";
+  ctx.lineWidth = Math.max(1, r * 0.16);
   ctx.stroke();
 
-  // label — no shadowBlur on fillText, it ghosts badly on iOS
-  ctx.shadowBlur = 0;
+  // the orb is now ball-sized, so the label rides above it instead of inside.
+  // outlined with strokeText rather than a shadow — shadowBlur on text ghosts on iOS
+  const label = isDouble ? "2x" : "½x";
+  const fontSize = Math.max(11, r * 1.7);
   ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = isDouble ? "#a7f3d0" : "#fecaca";
-  ctx.font = `900 ${Math.max(9, r * 0.78)}px Arial, Helvetica, sans-serif`;
-  ctx.fillText(isDouble ? "2x" : "½x", 0, r * 0.06);
+  ctx.textBaseline = "bottom";
+  ctx.font = `900 ${fontSize}px Arial, Helvetica, sans-serif`;
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(2.5, fontSize * 0.3);
+  ctx.strokeStyle = "rgba(2, 6, 23, 0.95)";
+  ctx.strokeText(label, 0, -r * 1.5);
+  ctx.fillStyle = `rgb(${hue})`;
+  ctx.fillText(label, 0, -r * 1.5);
 
   ctx.restore();
 }
@@ -703,22 +705,22 @@ function drawArena(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean)
   ctx.fillStyle = "#f8fafc";
   ctx.font = `900 ${mobile ? 22 : 32}px Arial, Helvetica, sans-serif`;
   const cx = x + size / 2;
-  ctx.fillText("Black vs White:", cx, y - (mobile ? 92 : 96));
+  ctx.fillText("Red vs Green:", cx, y - (mobile ? 92 : 96));
   ctx.fillText("who owns 60 seconds?", cx, y - (mobile ? 68 : 60));
 
   ctx.font = `700 ${mobile ? 12 : 14}px Arial, Helvetica, sans-serif`;
   ctx.fillStyle = "rgba(248, 250, 252, 0.68)";
-  ctx.fillText("Grab 2x to multiply. Touch ½x and half your army dies", cx, y - (mobile ? 46 : 36));
+  ctx.fillText("Grab 2x to double. Touch ½x and half your army dies", cx, y - (mobile ? 46 : 36));
   ctx.restore();
 }
 
-// live scoreboard: black count · clock · white count
+// live scoreboard: red count · clock · green count
 function drawScoreboard(
   ctx: CanvasRenderingContext2D,
   arena: Arena,
   mobile: boolean,
-  yin: number,
-  yang: number,
+  red: number,
+  green: number,
   msLeft: number,
 ) {
   const cx = arena.x + arena.size / 2;
@@ -738,26 +740,23 @@ function drawScoreboard(
 
   ctx.font = `900 ${mobile ? 17 : 21}px Arial, Helvetica, sans-serif`;
 
-  // black team on the left
+  // red team on the left
   ctx.beginPath();
   ctx.arc(cx - gap - dotR * 2.2, baseY, dotR, 0, Math.PI * 2);
-  ctx.fillStyle = INK;
+  ctx.fillStyle = TEAM_RED;
   ctx.fill();
-  ctx.strokeStyle = "rgba(226, 232, 240, 0.85)";
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
   ctx.textAlign = "left";
-  ctx.fillStyle = "#e2e8f0";
-  ctx.fillText(String(yin), cx - gap, baseY);
+  ctx.fillStyle = "#fecaca";
+  ctx.fillText(String(red), cx - gap, baseY);
 
-  // white team on the right
+  // green team on the right
   ctx.beginPath();
   ctx.arc(cx + gap + dotR * 2.2, baseY, dotR, 0, Math.PI * 2);
-  ctx.fillStyle = PAPER;
+  ctx.fillStyle = TEAM_GREEN;
   ctx.fill();
   ctx.textAlign = "right";
-  ctx.fillStyle = "#e2e8f0";
-  ctx.fillText(String(yang), cx + gap, baseY);
+  ctx.fillStyle = "#bbf7d0";
+  ctx.fillText(String(green), cx + gap, baseY);
 
   ctx.restore();
 }
@@ -798,8 +797,8 @@ const YinYangBalls = () => {
   const startedAtRef = useRef<number | null>(null);
   const endedAtRef = useRef<number | null>(null);
   const resultRef = useRef<string>("");
-  const cooldownRef = useRef<Record<BallKind, number>>({ yin: 0, yang: 0 });
-  const finalCountsRef = useRef<{ yin: number; yang: number }>({ yin: 0, yang: 0 });
+  const cooldownRef = useRef<Record<BallKind, number>>({ red: 0, green: 0 });
+  const finalCountsRef = useRef<{ red: number; green: number }>({ red: 0, green: 0 });
 
   const [phase, setPhase] = useState<Phase>("menu");
 
@@ -820,7 +819,7 @@ const YinYangBalls = () => {
     startedAtRef.current = performance.now();
     endedAtRef.current = null;
     resultRef.current = "";
-    cooldownRef.current = { yin: 0, yang: 0 };
+    cooldownRef.current = { red: 0, green: 0 };
     setPhase("playing");
     const canvas = canvasRef.current;
     if (canvas) {
@@ -878,7 +877,7 @@ const YinYangBalls = () => {
           if (b.glow > 0) b.glow = Math.max(0, b.glow - dt * 1.4);
 
           const playWallSound = () =>
-            b.kind === "yin" ? audio.wallYin() : audio.wallYang();
+            b.kind === "red" ? audio.wallYin() : audio.wallYang();
 
           resolveBoundaryCollision(b, arena, playWallSound);
           resolveWallSegCollisions(b, wallSegs, wallHalfThickness, playWallSound);
@@ -929,20 +928,18 @@ const YinYangBalls = () => {
             orbs[i] = makeOrb(orb.kind, arena);
           }
 
-          const yin = countOf(ballsRef.current, "yin");
-          const yang = countOf(ballsRef.current, "yang");
-          const elapsed = now - (startedAtRef.current ?? now);
-
-          // a wipeout ends it early; otherwise the clock decides
-          if (elapsed >= MATCH_MS || yin === 0 || yang === 0) {
+          // neither team can be wiped out any more, so the clock alone decides
+          if (now - (startedAtRef.current ?? now) >= MATCH_MS) {
+            const red = countOf(ballsRef.current, "red");
+            const green = countOf(ballsRef.current, "green");
             endedAtRef.current = now;
-            finalCountsRef.current = { yin, yang };
+            finalCountsRef.current = { red, green };
             resultRef.current =
-              yin === yang
-                ? `DRAW — ${yin} EACH`
-                : yin > yang
-                  ? `BLACK WINS ${yin} – ${yang}`
-                  : `WHITE WINS ${yang} – ${yin}`;
+              red === green
+                ? `DRAW — ${red} EACH`
+                : red > green
+                  ? `RED WINS ${red} – ${green}`
+                  : `GREEN WINS ${green} – ${red}`;
             audio.horn();
           }
         }
@@ -954,14 +951,14 @@ const YinYangBalls = () => {
         const counts = ended
           ? finalCountsRef.current
           : {
-              yin: countOf(ballsRef.current, "yin"),
-              yang: countOf(ballsRef.current, "yang"),
+              red: countOf(ballsRef.current, "red"),
+              green: countOf(ballsRef.current, "green"),
             };
         const msLeft = ended
           ? Math.max(0, MATCH_MS - (ended - (startedAtRef.current ?? ended)))
           : MATCH_MS - (now - (startedAtRef.current ?? now));
 
-        drawScoreboard(ctx, arena, mobile, counts.yin, counts.yang, msLeft);
+        drawScoreboard(ctx, arena, mobile, counts.red, counts.green, msLeft);
 
         if (ended !== null) {
           drawResult(ctx, arena, mobile, (now - ended) / 600, resultRef.current);
