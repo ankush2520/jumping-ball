@@ -15,11 +15,15 @@ const SOUND_GAP_MS = 60;
 const BALL_RADIUS_RATIO = 0.014 * 1.5 * 0.66;
 const ORB_RADIUS_RATIO = BALL_RADIUS_RATIO;
 const START_PER_TEAM = 1;
-// each "grow" hit scales that one ball's radius by this much
-const GROWTH_FACTOR = 1.25;
+// each "grow" hit scales that one ball's radius by this much — a +62.5% step,
+// i.e. 2.5x the growth rate of the original +25%
+const GROWTH_FACTOR = 1.625 * 0.66;
 // a ball stops growing once it spans the arena — at this point it fills the
 // square edge to edge and has no free area left to claim
 const MAX_RADIUS_RATIO = 0.48;
+// balls may fill this share of the square between them; the rest is the slack
+// circles need in order to keep moving instead of grinding against each other
+const AREA_FILL_LIMIT = 0.7;
 const MAX_PER_TEAM = 64;
 const TEAM_RED = "#ef4444";
 const TEAM_GREEN = "#22c55e";
@@ -62,7 +66,6 @@ type Arena = {
   W: number;
   H: number;
 };
-
 
 // ─── Canvas / Arena ───────────────────────────────────────────────────────────
 
@@ -112,7 +115,12 @@ function clampToArena(v: number, min: number, span: number, r: number) {
 
 // picks a random point inside one of the arena's four quadrants — the arena is
 // open now, so these only spread the starting positions apart
-function randomPointInQuadrant(arena: Arena, col: 0 | 1, row: 0 | 1, r: number) {
+function randomPointInQuadrant(
+  arena: Arena,
+  col: 0 | 1,
+  row: 0 | 1,
+  r: number,
+) {
   const margin = r * 1.6;
   const half = arena.size * 0.5 - margin * 2;
   return {
@@ -171,10 +179,29 @@ function countOf(balls: Ball[], kind: BallKind) {
   return balls.reduce((n, b) => (b.kind === kind ? n + 1 : n), 0);
 }
 
-// grows one ball, capped once it spans the arena, and nudges it back inside so
+function totalBallArea(balls: Ball[]) {
+  return balls.reduce((a, b) => a + Math.PI * b.r * b.r, 0);
+}
+
+// How much of the square the balls may occupy in total. Circles cannot tile a
+// square, so this stays below 1 — pushing for a literal 100% fill just forces
+// permanent overlap that the pair resolver fights against forever.
+function areaBudget(arena: Arena) {
+  return arena.size * arena.size * AREA_FILL_LIMIT;
+}
+
+// The largest this ball may become: it can claim the free area that is left,
+// but never more, and never more than the square itself can hold.
+function maxRadiusFor(ball: Ball, balls: Ball[], arena: Arena) {
+  const others = totalBallArea(balls) - Math.PI * ball.r * ball.r;
+  const free = Math.max(0, areaBudget(arena) - others);
+  return Math.min(arena.size * MAX_RADIUS_RATIO, Math.sqrt(free / Math.PI));
+}
+
+// grows one ball into whatever free area remains, then nudges it back inside so
 // the new radius can't leave it straddling a wall
-function growBall(ball: Ball, arena: Arena) {
-  const maxR = arena.size * MAX_RADIUS_RATIO;
+function growBall(ball: Ball, balls: Ball[], arena: Arena) {
+  const maxR = maxRadiusFor(ball, balls, arena);
   if (ball.r >= maxR) return false;
 
   ball.r = Math.min(maxR, ball.r * GROWTH_FACTOR);
@@ -191,6 +218,14 @@ function cloneBall(balls: Ball[], parent: Ball, arena: Arena): Ball[] {
   // two balls this size need 4r of clear width; past that the twin would spawn
   // permanently overlapped and the pair resolver would jitter it forever
   if (parent.r * 4 > arena.size) return balls;
+  // the twin has to fit in the free area too, or the arena overfills and balls
+  // get shoved straight through the walls
+  if (
+    totalBallArea(balls) + Math.PI * parent.r * parent.r >
+    areaBudget(arena)
+  ) {
+    return balls;
+  }
 
   const angle = Math.random() * Math.PI * 2;
   const clone = makeBall(
@@ -763,6 +798,13 @@ const YinYangBalls = () => {
           }
         }
 
+        // Pair separation runs after the wall pass and can shove a ball back
+        // through a wall, so the arena bounds get the final say every frame.
+        for (const b of balls) {
+          b.x = clampToArena(b.x, arena.x, arena.size, b.r);
+          b.y = clampToArena(b.y, arena.y, arena.size, b.r);
+        }
+
         // Orb effects fire once, on the frame a ball first makes contact, and
         // apply to that single ball rather than its whole team. Orbs never move
         // off their trajectory when hit.
@@ -775,7 +817,7 @@ const YinYangBalls = () => {
             if (orb.touching.has(b)) continue; // already counted on entry
 
             if (orb.kind === "grow") {
-              if (growBall(b, arena)) audio.grow();
+              if (growBall(b, ballsRef.current, arena)) audio.grow();
             } else {
               ballsRef.current = cloneBall(ballsRef.current, b, arena);
               audio.clone();
