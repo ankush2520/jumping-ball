@@ -102,9 +102,9 @@ export const simulations: Simulation[] = [
   },
   {
     id: "yin-yang-balls",
-    title: "Red vs Green: Who Owns 60 Seconds?",
+    title: "Red vs Green: Who Takes Over?",
     subtitle: "DOUBLE OR HALVE",
-    description: "Red and green armies bounce through a maze for 60 seconds — hit the 2x orb to double, touch ½x and half your balls vanish.",
+    description: "Red and green armies bounce around an open arena — hit the 2x orb to double, touch ½x and half your balls vanish.",
     component: YinYangBalls,
     status: "experimental",
     accentColor: "#cbd5e1",

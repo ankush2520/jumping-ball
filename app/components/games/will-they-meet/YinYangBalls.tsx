@@ -11,28 +11,27 @@ const BASE_SPEED = 150;
 const ORB_SPEED = BASE_SPEED * 0.5;
 const MAX_DT = 1 / 30;
 const SOUND_GAP_MS = 60;
-const MATCH_MS = 60000;
-const RESULT_DELAY_MS = 5000;
-// balls and orbs are 0.66x their original size, and orbs match the balls exactly
+// balls and orbs are 0.66x their original size, and orbs match a starting ball
 const BALL_RADIUS_RATIO = 0.014 * 1.5 * 0.66;
 const ORB_RADIUS_RATIO = BALL_RADIUS_RATIO;
-const START_PER_TEAM = 2;
-// after an orb hit a team ignores orbs briefly, so a single pass through an orb
-// can't chain into several halvings before the ball has cleared it
-const TEAM_COOLDOWN_MS = 2500;
+const START_PER_TEAM = 1;
+// each "grow" hit scales that one ball's radius by this much
+const GROWTH_FACTOR = 1.25;
+// a ball stops growing once it spans the arena — at this point it fills the
+// square edge to edge and has no free area left to claim
+const MAX_RADIUS_RATIO = 0.48;
 const MAX_PER_TEAM = 64;
 const TEAM_RED = "#ef4444";
 const TEAM_GREEN = "#22c55e";
 // power-up hues deliberately avoid red/green so they never read as a team ball
-const ORB_DOUBLE = "56, 189, 248"; // cyan
-const ORB_HALF = "251, 191, 36"; // amber
-const WALL_THICKNESS_RATIO = 0.016;
+const ORB_GROW = "251, 191, 36"; // amber
+const ORB_CLONE = "56, 189, 248"; // cyan
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Phase = "menu" | "playing";
 type BallKind = "red" | "green";
-type OrbKind = "double" | "half";
+type OrbKind = "grow" | "clone";
 
 type Mover = {
   x: number;
@@ -50,6 +49,10 @@ type Ball = Mover & {
 type Orb = Mover & {
   kind: OrbKind;
   pulse: number;
+  // balls currently overlapping this orb. An orb fires only on the frame a ball
+  // first touches it — without this a ball that has grown large enough to
+  // swallow the orb would re-trigger it on every single frame.
+  touching: Set<Ball>;
 };
 
 type Arena = {
@@ -60,7 +63,6 @@ type Arena = {
   H: number;
 };
 
-type WallSeg = { x1: number; y1: number; x2: number; y2: number };
 
 // ─── Canvas / Arena ───────────────────────────────────────────────────────────
 
@@ -108,8 +110,9 @@ function clampToArena(v: number, min: number, span: number, r: number) {
   return Math.min(Math.max(v, min + r), min + span - r);
 }
 
-// picks a random point inside one of the four quadrant rooms
-function randomPointInRoom(arena: Arena, col: 0 | 1, row: 0 | 1, r: number) {
+// picks a random point inside one of the arena's four quadrants — the arena is
+// open now, so these only spread the starting positions apart
+function randomPointInQuadrant(arena: Arena, col: 0 | 1, row: 0 | 1, r: number) {
   const margin = r * 1.6;
   const half = arena.size * 0.5 - margin * 2;
   return {
@@ -126,13 +129,13 @@ function makeBall(kind: BallKind, x: number, y: number, r: number): Ball {
 function spawnBalls(arena: Arena): Ball[] {
   const r = getBallRadius(arena);
   const balls: Ball[] = [];
-  // red starts walled off in the top-left room, green in the bottom-right
+  // red starts in the top-left quadrant, green in the bottom-right
   for (let i = 0; i < START_PER_TEAM; i++) {
-    const p = randomPointInRoom(arena, 0, 0, r);
+    const p = randomPointInQuadrant(arena, 0, 0, r);
     balls.push(makeBall("red", p.x, p.y, r));
   }
   for (let i = 0; i < START_PER_TEAM; i++) {
-    const p = randomPointInRoom(arena, 1, 1, r);
+    const p = randomPointInQuadrant(arena, 1, 1, r);
     balls.push(makeBall("green", p.x, p.y, r));
   }
   return balls;
@@ -140,11 +143,11 @@ function spawnBalls(arena: Arena): Ball[] {
 
 function makeOrb(kind: OrbKind, arena: Arena): Orb {
   const r = getOrbRadius(arena);
-  // orbs live in the two rooms the balls DON'T start in, one each
+  // orbs start in the two quadrants the balls DON'T, one each
   const p =
-    kind === "double"
-      ? randomPointInRoom(arena, 1, 0, r)
-      : randomPointInRoom(arena, 0, 1, r);
+    kind === "grow"
+      ? randomPointInQuadrant(arena, 1, 0, r)
+      : randomPointInQuadrant(arena, 0, 1, r);
   const v = randomVelocity(ORB_SPEED);
   return {
     x: p.x,
@@ -154,140 +157,65 @@ function makeOrb(kind: OrbKind, arena: Arena): Orb {
     r,
     kind,
     pulse: Math.random() * Math.PI * 2,
+    touching: new Set<Ball>(),
   };
 }
 
 function spawnOrbs(arena: Arena): Orb[] {
-  return [makeOrb("double", arena), makeOrb("half", arena)];
+  return [makeOrb("grow", arena), makeOrb("clone", arena)];
 }
 
-// ─── Team count changes ───────────────────────────────────────────────────────
+// ─── Ball powers ──────────────────────────────────────────────────────────────
 
 function countOf(balls: Ball[], kind: BallKind) {
   return balls.reduce((n, b) => (b.kind === kind ? n + 1 : n), 0);
 }
 
-// doubles the team by cloning each of its balls next to its parent
-function doubleTeam(balls: Ball[], kind: BallKind, arena: Arena): Ball[] {
-  const team = balls.filter((b) => b.kind === kind);
-  const clonesAllowed = Math.min(team.length, MAX_PER_TEAM - team.length);
-  const clones: Ball[] = [];
-  for (let i = 0; i < clonesAllowed; i++) {
-    const parent = team[i];
-    const angle = Math.random() * Math.PI * 2;
-    const clone = makeBall(
-      kind,
-      clampToArena(
-        parent.x + Math.cos(angle) * parent.r * 1.2,
-        arena.x,
-        arena.size,
-        parent.r,
-      ),
-      clampToArena(
-        parent.y + Math.sin(angle) * parent.r * 1.2,
-        arena.y,
-        arena.size,
-        parent.r,
-      ),
+// grows one ball, capped once it spans the arena, and nudges it back inside so
+// the new radius can't leave it straddling a wall
+function growBall(ball: Ball, arena: Arena) {
+  const maxR = arena.size * MAX_RADIUS_RATIO;
+  if (ball.r >= maxR) return false;
+
+  ball.r = Math.min(maxR, ball.r * GROWTH_FACTOR);
+  ball.x = clampToArena(ball.x, arena.x, arena.size, ball.r);
+  ball.y = clampToArena(ball.y, arena.y, arena.size, ball.r);
+  ball.glow = 1;
+  return true;
+}
+
+// adds one more ball of the same colour AND the same radius as the one that hit
+// the orb — a ball grown to 3x spawns a 3x twin, not a fresh small one
+function cloneBall(balls: Ball[], parent: Ball, arena: Arena): Ball[] {
+  if (countOf(balls, parent.kind) >= MAX_PER_TEAM) return balls;
+  // two balls this size need 4r of clear width; past that the twin would spawn
+  // permanently overlapped and the pair resolver would jitter it forever
+  if (parent.r * 4 > arena.size) return balls;
+
+  const angle = Math.random() * Math.PI * 2;
+  const clone = makeBall(
+    parent.kind,
+    clampToArena(
+      parent.x + Math.cos(angle) * parent.r * 2.1,
+      arena.x,
+      arena.size,
       parent.r,
-    );
-    clone.glow = 1;
-    clones.push(clone);
-  }
-  return [...balls, ...clones];
+    ),
+    clampToArena(
+      parent.y + Math.sin(angle) * parent.r * 2.1,
+      arena.y,
+      arena.size,
+      parent.r,
+    ),
+    parent.r,
+  );
+  clone.glow = 1;
+  return [...balls, clone];
 }
 
-// halves the team, but never below one — a team can be ground down to a single
-// ball and still climb back, so neither side is ever knocked out
-function halveTeam(balls: Ball[], kind: BallKind): Ball[] {
-  const team = balls.filter((b) => b.kind === kind);
-  const survivors = Math.max(1, Math.floor(team.length / 2));
-  const kept = new Set(team.slice(0, survivors));
-  return balls.filter((b) => b.kind !== kind || kept.has(b));
-}
-
-// ─── Maze walls ───────────────────────────────────────────────────────────────
-
-function getWallSegments(arena: Arena): WallSeg[] {
-  const { x, y, size } = arena;
-  const at = (f: number) => x + size * f;
-  const up = (f: number) => y + size * f;
-  const vx = at(0.5);
-  const hy = up(0.5);
-
-  return [
-    // central cross — gaps are narrower and pushed toward the corners, so
-    // reaching them takes a longer detour than a straight shot through the middle
-    { x1: vx, y1: y, x2: vx, y2: up(0.14) },
-    { x1: vx, y1: up(0.24), x2: vx, y2: up(0.78) },
-    { x1: vx, y1: up(0.88), x2: vx, y2: y + size },
-    { x1: x, y1: hy, x2: at(0.14), y2: hy },
-    { x1: at(0.24), y1: hy, x2: at(0.78), y2: hy },
-    { x1: at(0.88), y1: hy, x2: x + size, y2: hy },
-    // two staggered decoy stubs per quadrant, forcing an S-turn instead of a
-    // straight run toward the nearest gap
-    { x1: at(0.08), y1: up(0.2), x2: at(0.24), y2: up(0.2) },
-    { x1: at(0.3), y1: up(0.06), x2: at(0.3), y2: up(0.2) },
-    { x1: at(0.62), y1: up(0.14), x2: at(0.62), y2: up(0.3) },
-    { x1: at(0.7), y1: up(0.38), x2: at(0.9), y2: up(0.38) },
-    { x1: at(0.6), y1: up(0.68), x2: at(0.78), y2: up(0.68) },
-    { x1: at(0.86), y1: up(0.74), x2: at(0.86), y2: up(0.92) },
-    { x1: at(0.16), y1: up(0.62), x2: at(0.16), y2: up(0.8) },
-    { x1: at(0.24), y1: up(0.88), x2: at(0.44), y2: up(0.88) },
-  ];
-}
-
-function resolveWallSegCollisions(
-  body: Mover,
-  segs: WallSeg[],
-  halfThickness: number,
-  onHit: () => void,
-) {
-  for (const seg of segs) {
-    const rx = Math.min(seg.x1, seg.x2) - halfThickness;
-    const ry = Math.min(seg.y1, seg.y2) - halfThickness;
-    const rw = Math.abs(seg.x2 - seg.x1) + halfThickness * 2;
-    const rh = Math.abs(seg.y2 - seg.y1) + halfThickness * 2;
-
-    const closestX = Math.min(Math.max(body.x, rx), rx + rw);
-    const closestY = Math.min(Math.max(body.y, ry), ry + rh);
-    const dx = body.x - closestX;
-    const dy = body.y - closestY;
-    const distSq = dx * dx + dy * dy;
-    if (distSq >= body.r * body.r) continue;
-
-    const dist = Math.sqrt(distSq);
-    let nx: number;
-    let ny: number;
-    if (dist > 0.0001) {
-      nx = dx / dist;
-      ny = dy / dist;
-    } else {
-      const overlapX = rw / 2 - Math.abs(body.x - (rx + rw / 2));
-      const overlapY = rh / 2 - Math.abs(body.y - (ry + rh / 2));
-      if (overlapX < overlapY) {
-        nx = body.x < rx + rw / 2 ? -1 : 1;
-        ny = 0;
-      } else {
-        nx = 0;
-        ny = body.y < ry + rh / 2 ? -1 : 1;
-      }
-    }
-
-    const overlap = body.r - dist;
-    body.x += nx * overlap;
-    body.y += ny * overlap;
-
-    const vDotN = body.vx * nx + body.vy * ny;
-    if (vDotN < 0) {
-      body.vx -= 2 * vDotN * nx;
-      body.vy -= 2 * vDotN * ny;
-    }
-    onHit();
-  }
-}
-
-// equal-mass elastic bounce — black and white just knock each other away now
+// Elastic bounce with mass proportional to area. Balls can now differ hugely in
+// size, and equal-mass maths would let a tiny ball punt a giant one across the
+// arena; weighting by r² makes the big one shrug it off instead.
 function resolveBallPair(a: Ball, b: Ball) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -296,25 +224,30 @@ function resolveBallPair(a: Ball, b: Ball) {
   if (distSq >= minDist * minDist) return;
 
   const dist = Math.sqrt(distSq);
-  // clones spawn on top of their parent, so handle the exact-overlap case
+  // clones spawn beside their parent but can still land flush, so handle the
+  // exact-overlap case rather than dividing by zero
   const nx = dist > 0.0001 ? dx / dist : 1;
   const ny = dist > 0.0001 ? dy / dist : 0;
 
-  const overlap = (minDist - dist) / 2;
-  a.x -= nx * overlap;
-  a.y -= ny * overlap;
-  b.x += nx * overlap;
-  b.y += ny * overlap;
+  const invA = 1 / (a.r * a.r);
+  const invB = 1 / (b.r * b.r);
+  const invSum = invA + invB;
 
-  const rvx = b.vx - a.vx;
-  const rvy = b.vy - a.vy;
-  const vDotN = rvx * nx + rvy * ny;
+  // separate them along the normal, the lighter ball giving way the most
+  const overlap = minDist - dist;
+  a.x -= nx * overlap * (invA / invSum);
+  a.y -= ny * overlap * (invA / invSum);
+  b.x += nx * overlap * (invB / invSum);
+  b.y += ny * overlap * (invB / invSum);
+
+  const vDotN = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
   if (vDotN > 0) return; // already separating
 
-  a.vx += vDotN * nx;
-  a.vy += vDotN * ny;
-  b.vx -= vDotN * nx;
-  b.vy -= vDotN * ny;
+  const impulse = (-2 * vDotN) / invSum;
+  a.vx -= impulse * invA * nx;
+  a.vy -= impulse * invA * ny;
+  b.vx += impulse * invB * nx;
+  b.vy += impulse * invB * ny;
 }
 
 function resolveBoundaryCollision(
@@ -348,23 +281,6 @@ function resolveBoundaryCollision(
   }
 
   if (hit) onHit();
-}
-
-function drawWalls(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean) {
-  const segs = getWallSegments(arena);
-  ctx.save();
-  ctx.shadowColor = "rgba(148, 163, 184, 0.32)";
-  ctx.shadowBlur = mobile ? 8 : 12;
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.75)";
-  ctx.lineWidth = mobile ? 2.5 : 3.5;
-  ctx.lineCap = "round";
-  for (const seg of segs) {
-    ctx.beginPath();
-    ctx.moveTo(seg.x1, seg.y1);
-    ctx.lineTo(seg.x2, seg.y2);
-    ctx.stroke();
-  }
-  ctx.restore();
 }
 
 // ─── Audio ────────────────────────────────────────────────────────────────────
@@ -470,63 +386,22 @@ function createAudio() {
     }, 620);
   };
 
-  // bright rising arpeggio for a team doubling
-  const gain2x = () => {
+  // low swelling pair for a ball growing
+  const grow = () => {
+    const ctx = ensure();
+    if (!ctx || ctx.state !== "running") return;
+    [196.0, 293.66].forEach((freq, i) => {
+      window.setTimeout(() => ping(`grow${i}`, freq, 0.34, 0.13), i * 70);
+    });
+  };
+
+  // bright rising arpeggio for a ball splitting off a twin
+  const clone = () => {
     const ctx = ensure();
     if (!ctx || ctx.state !== "running") return;
     [523.25, 659.25, 880].forEach((freq, i) => {
-      window.setTimeout(() => ping(`gain${i}`, freq, 0.22, 0.13), i * 55);
+      window.setTimeout(() => ping(`clone${i}`, freq, 0.22, 0.13), i * 55);
     });
-  };
-
-  // dull falling pair for a team being halved
-  const lose2x = () => {
-    const ctx = ensure();
-    if (!ctx || ctx.state !== "running") return;
-    [392, 261.63].forEach((freq, i) => {
-      window.setTimeout(() => ping(`lose${i}`, freq, 0.3, 0.14), i * 80);
-    });
-  };
-
-  const horn = () => {
-    const ctx = ensure();
-    if (!ctx || ctx.state !== "running") return;
-    const t = ctx.currentTime;
-
-    // filtered noise burst
-    const bufferSize = ctx.sampleRate * 0.4;
-    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
-    }
-    const noise = ctx.createBufferSource();
-    noise.buffer = buffer;
-    const noiseFilter = ctx.createBiquadFilter();
-    noiseFilter.type = "lowpass";
-    noiseFilter.frequency.setValueAtTime(1800, t);
-    noiseFilter.frequency.exponentialRampToValueAtTime(120, t + 0.4);
-    const noiseGain = ctx.createGain();
-    noiseGain.gain.setValueAtTime(0.32, t);
-    noiseGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
-    noise.connect(noiseFilter);
-    noiseFilter.connect(noiseGain);
-    noiseGain.connect(ctx.destination);
-    noise.start(t);
-    noise.stop(t + 0.4);
-
-    // low thump
-    const osc = ctx.createOscillator();
-    const oscGain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(160, t);
-    osc.frequency.exponentialRampToValueAtTime(40, t + 0.35);
-    oscGain.gain.setValueAtTime(0.4, t);
-    oscGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
-    osc.connect(oscGain);
-    oscGain.connect(ctx.destination);
-    osc.start(t);
-    osc.stop(t + 0.4);
   };
 
   // very quiet, slow ambient pad — starts once and loops for as long as the audio context lives
@@ -584,12 +459,11 @@ function createAudio() {
       ensure();
       startMusic();
     },
-    wallYin: () => pianoNote("wallYin", 261.63), // C4
-    wallYang: () => pianoNote("wallYang", 392.0), // G4
+    wallRed: () => pianoNote("wallRed", 261.63), // C4
+    wallGreen: () => pianoNote("wallGreen", 392.0), // G4
     wallOrb: () => ping("wallOrb", 220, 0.18, 0.08),
-    gain2x,
-    lose2x,
-    horn,
+    grow,
+    clone,
     dispose: () => {
       stopMusic();
       void ac?.close();
@@ -634,9 +508,9 @@ function drawBall(ctx: CanvasRenderingContext2D, ball: Ball) {
 
 function drawOrb(ctx: CanvasRenderingContext2D, orb: Orb) {
   const { r } = orb;
-  const isDouble = orb.kind === "double";
+  const isGrow = orb.kind === "grow";
   const pulse = 0.5 + Math.sin(orb.pulse) * 0.5;
-  const hue = isDouble ? ORB_DOUBLE : ORB_HALF;
+  const hue = isGrow ? ORB_GROW : ORB_CLONE;
 
   ctx.save();
   ctx.translate(orb.x, orb.y);
@@ -658,7 +532,7 @@ function drawOrb(ctx: CanvasRenderingContext2D, orb: Orb) {
 
   // the orb is now ball-sized, so the label rides above it instead of inside.
   // outlined with strokeText rather than a shadow — shadowBlur on text ghosts on iOS
-  const label = isDouble ? "2x" : "½x";
+  const label = isGrow ? "SIZE" : "+1";
   const fontSize = Math.max(11, r * 1.7);
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
@@ -681,7 +555,11 @@ function drawBackground(ctx: CanvasRenderingContext2D, W: number, H: number) {
   ctx.fillRect(0, 0, W, H);
 }
 
-function drawArena(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean) {
+function drawArena(
+  ctx: CanvasRenderingContext2D,
+  arena: Arena,
+  mobile: boolean,
+) {
   const { x, y, size } = arena;
 
   ctx.save();
@@ -706,39 +584,34 @@ function drawArena(ctx: CanvasRenderingContext2D, arena: Arena, mobile: boolean)
   ctx.font = `900 ${mobile ? 22 : 32}px Arial, Helvetica, sans-serif`;
   const cx = x + size / 2;
   ctx.fillText("Red vs Green:", cx, y - (mobile ? 92 : 96));
-  ctx.fillText("who owns 60 seconds?", cx, y - (mobile ? 68 : 60));
+  ctx.fillText("who takes over?", cx, y - (mobile ? 68 : 60));
 
   ctx.font = `700 ${mobile ? 12 : 14}px Arial, Helvetica, sans-serif`;
   ctx.fillStyle = "rgba(248, 250, 252, 0.68)";
-  ctx.fillText("Grab 2x to double. Touch ½x and half your army dies", cx, y - (mobile ? 46 : 36));
+  ctx.fillText(
+    "SIZE makes a ball bigger. +1 clones it at the same size",
+    cx,
+    y - (mobile ? 46 : 36),
+  );
   ctx.restore();
 }
 
-// live scoreboard: red count · clock · green count
+// live scoreboard: red count · green count
 function drawScoreboard(
   ctx: CanvasRenderingContext2D,
   arena: Arena,
   mobile: boolean,
   red: number,
   green: number,
-  msLeft: number,
 ) {
   const cx = arena.x + arena.size / 2;
   const baseY = arena.y - (mobile ? 16 : 12);
   const dotR = mobile ? 7 : 9;
-  const gap = mobile ? 52 : 68;
-  const seconds = Math.max(0, Math.ceil(msLeft / 1000));
+  const gap = mobile ? 34 : 44;
 
   ctx.save();
   ctx.textBaseline = "middle";
-
-  // clock in the middle, turning red in the last ten seconds
-  ctx.textAlign = "center";
-  ctx.font = `900 ${mobile ? 20 : 24}px Arial, Helvetica, sans-serif`;
-  ctx.fillStyle = seconds <= 10 ? "#fca5a5" : "#f8fafc";
-  ctx.fillText(`0:${String(seconds).padStart(2, "0")}`, cx, baseY);
-
-  ctx.font = `900 ${mobile ? 17 : 21}px Arial, Helvetica, sans-serif`;
+  ctx.font = `900 ${mobile ? 19 : 23}px Arial, Helvetica, sans-serif`;
 
   // red team on the left
   ctx.beginPath();
@@ -761,28 +634,6 @@ function drawScoreboard(
   ctx.restore();
 }
 
-function drawResult(
-  ctx: CanvasRenderingContext2D,
-  arena: Arena,
-  mobile: boolean,
-  progress: number,
-  text: string,
-) {
-  const alpha = Math.min(progress * 3, 1);
-  if (alpha <= 0.01) return;
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "#f8fafc";
-  ctx.font = `900 ${mobile ? 20 : 28}px Arial, Helvetica, sans-serif`;
-  ctx.fillText(
-    text,
-    arena.x + arena.size / 2,
-    arena.y + arena.size + (mobile ? 34 : 44),
-  );
-  ctx.restore();
-}
 // ─── Component ────────────────────────────────────────────────────────────────
 
 const YinYangBalls = () => {
@@ -794,11 +645,6 @@ const YinYangBalls = () => {
   const lastTRef = useRef<number>(0);
   const audioRef = useRef(createAudio());
   const phaseRef = useRef<Phase>("menu");
-  const startedAtRef = useRef<number | null>(null);
-  const endedAtRef = useRef<number | null>(null);
-  const resultRef = useRef<string>("");
-  const cooldownRef = useRef<Record<BallKind, number>>({ red: 0, green: 0 });
-  const finalCountsRef = useRef<{ red: number; green: number }>({ red: 0, green: 0 });
 
   const [phase, setPhase] = useState<Phase>("menu");
 
@@ -816,10 +662,6 @@ const YinYangBalls = () => {
   const startGame = useCallback(() => {
     audioRef.current.unlock();
     phaseRef.current = "playing";
-    startedAtRef.current = performance.now();
-    endedAtRef.current = null;
-    resultRef.current = "";
-    cooldownRef.current = { red: 0, green: 0 };
     setPhase("playing");
     const canvas = canvasRef.current;
     if (canvas) {
@@ -861,116 +703,68 @@ const YinYangBalls = () => {
       drawBackground(ctx, W, H);
       drawCanvasWatermark(ctx, W, H);
       drawArena(ctx, arena, mobile);
-      drawWalls(ctx, arena, mobile);
 
       if (phaseRef.current === "playing") {
         const orbs = orbsRef.current;
-        const wallSegs = getWallSegments(arena);
-        const wallHalfThickness = arena.size * WALL_THICKNESS_RATIO;
-        const running = endedAtRef.current === null;
 
         for (const b of ballsRef.current) {
-          if (running) {
-            b.x += b.vx * dt;
-            b.y += b.vy * dt;
-          }
+          b.x += b.vx * dt;
+          b.y += b.vy * dt;
           if (b.glow > 0) b.glow = Math.max(0, b.glow - dt * 1.4);
 
-          const playWallSound = () =>
-            b.kind === "red" ? audio.wallYin() : audio.wallYang();
-
-          resolveBoundaryCollision(b, arena, playWallSound);
-          resolveWallSegCollisions(b, wallSegs, wallHalfThickness, playWallSound);
-        }
-
-        for (const orb of orbs) {
-          if (running) {
-            orb.x += orb.vx * dt;
-            orb.y += orb.vy * dt;
-          }
-          orb.pulse += dt * 4;
-
-          resolveBoundaryCollision(orb, arena, () => audio.wallOrb());
-          resolveWallSegCollisions(orb, wallSegs, wallHalfThickness, () =>
-            audio.wallOrb(),
+          resolveBoundaryCollision(b, arena, () =>
+            b.kind === "red" ? audio.wallRed() : audio.wallGreen(),
           );
         }
 
-        if (running) {
-          // balls bounce off each other now — opposite colours no longer merge
-          const balls = ballsRef.current;
-          for (let i = 0; i < balls.length; i++) {
-            for (let j = i + 1; j < balls.length; j++) {
-              resolveBallPair(balls[i], balls[j]);
-            }
+        for (const orb of orbs) {
+          orb.x += orb.vx * dt;
+          orb.y += orb.vy * dt;
+          orb.pulse += dt * 4;
+
+          resolveBoundaryCollision(orb, arena, () => audio.wallOrb());
+        }
+
+        // balls bounce off each other — opposite colours never merge
+        const balls = ballsRef.current;
+        for (let i = 0; i < balls.length; i++) {
+          for (let j = i + 1; j < balls.length; j++) {
+            resolveBallPair(balls[i], balls[j]);
           }
+        }
 
-          // a ball touching an orb doubles or halves its whole team, then the
-          // orb jumps to a fresh spot so one hit can't cascade
-          for (let i = 0; i < orbs.length; i++) {
-            const orb = orbs[i];
-            const hit = ballsRef.current.find(
-              (b) =>
-                Math.hypot(b.x - orb.x, b.y - orb.y) < b.r + orb.r &&
-                now >= cooldownRef.current[b.kind],
-            );
-            if (!hit) continue;
+        // Orb effects fire once, on the frame a ball first makes contact, and
+        // apply to that single ball rather than its whole team. Orbs never move
+        // off their trajectory when hit.
+        for (const orb of orbs) {
+          const overlapping = new Set<Ball>();
 
-            cooldownRef.current[hit.kind] = now + TEAM_COOLDOWN_MS;
+          for (const b of ballsRef.current) {
+            if (Math.hypot(b.x - orb.x, b.y - orb.y) >= b.r + orb.r) continue;
+            overlapping.add(b);
+            if (orb.touching.has(b)) continue; // already counted on entry
 
-            if (orb.kind === "double") {
-              ballsRef.current = doubleTeam(ballsRef.current, hit.kind, arena);
-              audio.gain2x();
+            if (orb.kind === "grow") {
+              if (growBall(b, arena)) audio.grow();
             } else {
-              ballsRef.current = halveTeam(ballsRef.current, hit.kind);
-              audio.lose2x();
+              ballsRef.current = cloneBall(ballsRef.current, b, arena);
+              audio.clone();
             }
-            orbs[i] = makeOrb(orb.kind, arena);
           }
 
-          // neither team can be wiped out any more, so the clock alone decides
-          if (now - (startedAtRef.current ?? now) >= MATCH_MS) {
-            const red = countOf(ballsRef.current, "red");
-            const green = countOf(ballsRef.current, "green");
-            endedAtRef.current = now;
-            finalCountsRef.current = { red, green };
-            resultRef.current =
-              red === green
-                ? `DRAW — ${red} EACH`
-                : red > green
-                  ? `RED WINS ${red} – ${green}`
-                  : `GREEN WINS ${green} – ${red}`;
-            audio.horn();
-          }
+          orb.touching = overlapping;
         }
 
         for (const b of ballsRef.current) drawBall(ctx, b);
         for (const orb of orbs) drawOrb(ctx, orb);
 
-        const ended = endedAtRef.current;
-        const counts = ended
-          ? finalCountsRef.current
-          : {
-              red: countOf(ballsRef.current, "red"),
-              green: countOf(ballsRef.current, "green"),
-            };
-        const msLeft = ended
-          ? Math.max(0, MATCH_MS - (ended - (startedAtRef.current ?? ended)))
-          : MATCH_MS - (now - (startedAtRef.current ?? now));
-
-        drawScoreboard(ctx, arena, mobile, counts.red, counts.green, msLeft);
-
-        if (ended !== null) {
-          drawResult(ctx, arena, mobile, (now - ended) / 600, resultRef.current);
-          if (now - ended > RESULT_DELAY_MS) {
-            ballsRef.current = [];
-            orbsRef.current = [];
-            endedAtRef.current = null;
-            startedAtRef.current = null;
-            phaseRef.current = "menu";
-            setPhase("menu");
-          }
-        }
+        drawScoreboard(
+          ctx,
+          arena,
+          mobile,
+          countOf(ballsRef.current, "red"),
+          countOf(ballsRef.current, "green"),
+        );
       }
 
       rafRef.current = requestAnimationFrame(tick);
