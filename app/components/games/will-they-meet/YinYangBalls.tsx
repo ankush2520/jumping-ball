@@ -8,7 +8,7 @@ import { drawCanvasWatermark } from "@/app/lib/watermark";
 const HUD_DESKTOP = 148;
 const HUD_MOBILE = 168;
 const BASE_SPEED = 150;
-const ORB_SPEED = BASE_SPEED * 0.5;
+const ORB_SPEED = BASE_SPEED * 0.75;
 const MAX_DT = 1 / 30;
 const SOUND_GAP_MS = 60;
 // balls and orbs are 0.66x their original size, and orbs match a starting ball
@@ -17,7 +17,7 @@ const ORB_RADIUS_RATIO = BALL_RADIUS_RATIO;
 const START_PER_TEAM = 1;
 // each "grow" hit scales that one ball's radius by this much — a +62.5% step,
 // i.e. 2.5x the growth rate of the original +25%
-const GROWTH_FACTOR = 1.625 * 0.66;
+const GROWTH_FACTOR = 1.625 * 0.8;
 // a ball stops growing once it spans the arena — at this point it fills the
 // square edge to edge and has no free area left to claim
 const MAX_RADIUS_RATIO = 0.48;
