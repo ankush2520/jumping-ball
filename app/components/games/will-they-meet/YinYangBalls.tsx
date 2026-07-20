@@ -24,7 +24,7 @@ const MAX_RADIUS_RATIO = 0.48;
 // balls may fill this share of the square between them; the rest is the slack
 // circles need in order to keep moving instead of grinding against each other
 const AREA_FILL_LIMIT = 0.7;
-const MAX_PER_TEAM = 64;
+const MAX_PER_TEAM = 96;
 // orbs use their own powers on each other: SIZE fattens the orb it hits, +1
 // duplicates it. Both are capped much tighter than the balls' — orbs are
 // obstacles, not contenders, so they must never crowd out the arena.
