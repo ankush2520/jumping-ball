@@ -25,6 +25,12 @@ const MAX_RADIUS_RATIO = 0.48;
 // circles need in order to keep moving instead of grinding against each other
 const AREA_FILL_LIMIT = 0.7;
 const MAX_PER_TEAM = 64;
+// orbs use their own powers on each other: SIZE fattens the orb it hits, +1
+// duplicates it. Both are capped much tighter than the balls' — orbs are
+// obstacles, not contenders, so they must never crowd out the arena.
+const ORB_GROWTH_FACTOR = 1.28;
+const MAX_ORB_RADIUS_RATIO = ORB_RADIUS_RATIO * 4;
+const MAX_ORBS = 8;
 const TEAM_RED = "#ef4444";
 const TEAM_GREEN = "#22c55e";
 // power-up hues deliberately avoid red/green so they never read as a team ball
@@ -57,6 +63,9 @@ type Orb = Mover & {
   // first touches it — without this a ball that has grown large enough to
   // swallow the orb would re-trigger it on every single frame.
   touching: Set<Ball>;
+  // same edge-trigger idea for the other orbs, so a lingering orb-on-orb
+  // overlap fires its power once instead of every frame
+  touchingOrbs: Set<Orb>;
 };
 
 type Arena = {
@@ -149,13 +158,18 @@ function spawnBalls(arena: Arena): Ball[] {
   return balls;
 }
 
-function makeOrb(kind: OrbKind, arena: Arena): Orb {
-  const r = getOrbRadius(arena);
+function makeOrb(
+  kind: OrbKind,
+  arena: Arena,
+  at?: { x: number; y: number; r: number },
+): Orb {
+  const r = at?.r ?? getOrbRadius(arena);
   // orbs start in the two quadrants the balls DON'T, one each
   const p =
-    kind === "grow"
+    at ??
+    (kind === "grow"
       ? randomPointInQuadrant(arena, 1, 0, r)
-      : randomPointInQuadrant(arena, 0, 1, r);
+      : randomPointInQuadrant(arena, 0, 1, r));
   const v = randomVelocity(ORB_SPEED);
   return {
     x: p.x,
@@ -166,11 +180,48 @@ function makeOrb(kind: OrbKind, arena: Arena): Orb {
     kind,
     pulse: Math.random() * Math.PI * 2,
     touching: new Set<Ball>(),
+    touchingOrbs: new Set<Orb>(),
   };
 }
 
 function spawnOrbs(arena: Arena): Orb[] {
   return [makeOrb("grow", arena), makeOrb("clone", arena)];
+}
+
+// ─── Orb powers (orb on orb) ──────────────────────────────────────────────────
+
+// the SIZE orb's power, aimed at another orb
+function growOrb(orb: Orb, arena: Arena) {
+  const maxR = arena.size * MAX_ORB_RADIUS_RATIO;
+  if (orb.r >= maxR) return false;
+  orb.r = Math.min(maxR, orb.r * ORB_GROWTH_FACTOR);
+  orb.x = clampToArena(orb.x, arena.x, arena.size, orb.r);
+  orb.y = clampToArena(orb.y, arena.y, arena.size, orb.r);
+  return true;
+}
+
+// the +1 orb's power: a twin of the orb it hit, same kind and same radius,
+// dropped just clear of its parent so the two don't spawn locked together
+function twinOrb(parent: Orb, orbs: Orb[], arena: Arena): Orb | null {
+  if (orbs.length >= MAX_ORBS) return null;
+  if (parent.r * 4 > arena.size) return null;
+
+  const angle = Math.random() * Math.PI * 2;
+  return makeOrb(parent.kind, arena, {
+    x: clampToArena(
+      parent.x + Math.cos(angle) * parent.r * 2.1,
+      arena.x,
+      arena.size,
+      parent.r,
+    ),
+    y: clampToArena(
+      parent.y + Math.sin(angle) * parent.r * 2.1,
+      arena.y,
+      arena.size,
+      parent.r,
+    ),
+    r: parent.r,
+  });
 }
 
 // ─── Ball powers ──────────────────────────────────────────────────────────────
@@ -251,7 +302,7 @@ function cloneBall(balls: Ball[], parent: Ball, arena: Arena): Ball[] {
 // Elastic bounce with mass proportional to area. Balls can now differ hugely in
 // size, and equal-mass maths would let a tiny ball punt a giant one across the
 // arena; weighting by r² makes the big one shrug it off instead.
-function resolveBallPair(a: Ball, b: Ball) {
+function resolveCirclePair(a: Mover, b: Mover) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const distSq = dx * dx + dy * dy;
@@ -790,11 +841,53 @@ const YinYangBalls = () => {
           resolveBoundaryCollision(orb, arena, () => audio.wallOrb());
         }
 
+        // Orbs use their powers on each other, not just on the balls: when SIZE
+        // and +1 meet, SIZE fattens the +1 orb and +1 splits a twin off the
+        // SIZE orb. Same-kind orbs just bounce.
+        const orbContacts = new Map<Orb, Set<Orb>>();
+        for (const orb of orbs) orbContacts.set(orb, new Set<Orb>());
+        const newOrbs: Orb[] = [];
+
+        for (let i = 0; i < orbs.length; i++) {
+          for (let j = i + 1; j < orbs.length; j++) {
+            const a = orbs[i];
+            const b = orbs[j];
+            if (Math.hypot(b.x - a.x, b.y - a.y) >= a.r + b.r) continue;
+
+            orbContacts.get(a)?.add(b);
+            orbContacts.get(b)?.add(a);
+            resolveCirclePair(a, b);
+
+            if (a.touchingOrbs.has(b)) continue; // already counted on entry
+            if (a.kind === b.kind) continue;
+
+            const grower = a.kind === "grow" ? a : b;
+            const cloner = a.kind === "grow" ? b : a;
+            if (growOrb(cloner, arena)) audio.grow();
+            const twin = twinOrb(grower, [...orbs, ...newOrbs], arena);
+            if (twin) {
+              newOrbs.push(twin);
+              audio.clone();
+            }
+          }
+        }
+
+        for (const orb of orbs) {
+          orb.touchingOrbs = orbContacts.get(orb) ?? new Set<Orb>();
+        }
+        // a twin lands beside its parent and can still be overlapping it, so
+        // both sides start out "already touching" and it can't re-fire at once
+        for (const twin of newOrbs) {
+          twin.touchingOrbs = new Set(orbs);
+          for (const orb of orbs) orb.touchingOrbs.add(twin);
+        }
+        if (newOrbs.length > 0) orbsRef.current = [...orbs, ...newOrbs];
+
         // balls bounce off each other — opposite colours never merge
         const balls = ballsRef.current;
         for (let i = 0; i < balls.length; i++) {
           for (let j = i + 1; j < balls.length; j++) {
-            resolveBallPair(balls[i], balls[j]);
+            resolveCirclePair(balls[i], balls[j]);
           }
         }
 
@@ -828,7 +921,7 @@ const YinYangBalls = () => {
         }
 
         for (const b of ballsRef.current) drawBall(ctx, b);
-        for (const orb of orbs) drawOrb(ctx, orb);
+        for (const orb of orbsRef.current) drawOrb(ctx, orb);
 
         drawScoreboard(
           ctx,
