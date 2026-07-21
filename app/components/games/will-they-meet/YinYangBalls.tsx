@@ -5,6 +5,7 @@ import { drawCanvasWatermark } from "@/app/lib/watermark";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+// headroom above the arena: the two heading lines + subheading live here
 const HUD_DESKTOP = 148;
 const HUD_MOBILE = 168;
 const BASE_SPEED = 150;
@@ -666,27 +667,37 @@ function drawArena(
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "bottom";
-  ctx.fillStyle = "#f8fafc";
-  ctx.font = `900 ${mobile ? 22 : 32}px Arial, Helvetica, sans-serif`;
   const cx = x + size / 2;
-  ctx.fillText("Red vs Green:", cx, y - (mobile ? 92 : 96));
-  ctx.fillText("who fills the box first?", cx, y - (mobile ? 68 : 60));
 
-  // the two orb names are tinted to match the orbs themselves, so a viewer can
-  // map each rule onto the thing bouncing around the arena without being told
+  // heading — the two orb names are tinted to match the orbs themselves, so a
+  // viewer can map each rule onto the thing bouncing around the arena
+  const headingFont = `900 ${mobile ? 20 : 26}px Arial, Helvetica, sans-serif`;
+  const headingWhite = "#f8fafc";
   drawTintedLine(
     ctx,
     [
-      { text: "Touch ", color: "rgba(248, 250, 252, 0.72)" },
       { text: "SIZE", color: `rgb(${ORB_GROW})` },
-      { text: " to GROW   ", color: "rgba(248, 250, 252, 0.72)" },
-      { text: "+1", color: `rgb(${ORB_CLONE})` },
-      { text: " to MULTIPLY", color: "rgba(248, 250, 252, 0.72)" },
+      { text: " ball grows the balls", color: headingWhite },
     ],
-    `900 ${mobile ? 13 : 15}px Arial, Helvetica, sans-serif`,
+    headingFont,
     cx,
-    y - (mobile ? 44 : 34),
+    y - (mobile ? 98 : 104),
   );
+  drawTintedLine(
+    ctx,
+    [
+      { text: "+1", color: `rgb(${ORB_CLONE})` },
+      { text: " ball adds more balls", color: headingWhite },
+    ],
+    headingFont,
+    cx,
+    y - (mobile ? 72 : 72),
+  );
+
+  // subheading: the question the whole run is settling
+  ctx.fillStyle = "rgba(226, 232, 240, 0.86)";
+  ctx.font = `700 ${mobile ? 15 : 19}px Arial, Helvetica, sans-serif`;
+  ctx.fillText("Let's see who will get more area", cx, y - (mobile ? 40 : 36));
   ctx.restore();
 }
 

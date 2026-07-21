@@ -102,9 +102,9 @@ export const simulations: Simulation[] = [
   },
   {
     id: "yin-yang-balls",
-    title: "Red vs Green: Who Takes Over?",
-    subtitle: "DOUBLE OR HALVE",
-    description: "Red and green armies bounce around an open arena — hit the 2x orb to double, touch ½x and half your balls vanish.",
+    title: "Red vs Green: Grow & Multiply",
+    subtitle: "WHO CLAIMS MORE AREA?",
+    description: "Red and green balls bounce around a square chasing power orbs — SIZE makes them grow, +1 clones them. Whichever colour claims more of the arena wins.",
     component: YinYangBalls,
     status: "experimental",
     accentColor: "#cbd5e1",
