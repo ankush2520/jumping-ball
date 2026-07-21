@@ -235,6 +235,21 @@ function totalBallArea(balls: Ball[]) {
   return balls.reduce((a, b) => a + Math.PI * b.r * b.r, 0);
 }
 
+// how much of the whole square this team covers right now, as a percentage.
+// Balls only ever graze each other, so summing their circles is close enough.
+function areaShareOf(balls: Ball[], kind: BallKind, arena: Arena) {
+  const area = balls.reduce(
+    (a, b) => (b.kind === kind ? a + Math.PI * b.r * b.r : a),
+    0,
+  );
+  return (area / (arena.size * arena.size)) * 100;
+}
+
+// one decimal while a team is still tiny, so the score never sits at a flat 0%
+function formatAreaPct(pct: number) {
+  return `${pct >= 10 ? Math.round(pct) : pct.toFixed(1)}%`;
+}
+
 // How much of the square the balls may occupy in total. Circles cannot tile a
 // square, so this stays below 1 — pushing for a literal 100% fill just forces
 // permanent overlap that the pair resolver fights against forever.
@@ -723,40 +738,57 @@ function drawTintedLine(
   ctx.restore();
 }
 
-// live scoreboard: red count · green count
+// live scoreboard: share of the square held by red · by green
 function drawScoreboard(
   ctx: CanvasRenderingContext2D,
   arena: Arena,
   mobile: boolean,
-  red: number,
-  green: number,
+  redPct: number,
+  greenPct: number,
 ) {
   const cx = arena.x + arena.size / 2;
   const baseY = arena.y - (mobile ? 16 : 12);
   const dotR = mobile ? 7 : 9;
-  const gap = mobile ? 34 : 44;
+  // clear space either side of the centre line — the labels grow outwards from
+  // it, so a wide "12.5%" can never run into the other team's score
+  const gap = mobile ? 16 : 20;
 
   ctx.save();
   ctx.textBaseline = "middle";
   ctx.font = `900 ${mobile ? 19 : 23}px Arial, Helvetica, sans-serif`;
 
-  // red team on the left
+  const redText = formatAreaPct(redPct);
+  const greenText = formatAreaPct(greenPct);
+
+  // red team on the left, its dot just outside the label
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#fecaca";
+  ctx.fillText(redText, cx - gap, baseY);
   ctx.beginPath();
-  ctx.arc(cx - gap - dotR * 2.2, baseY, dotR, 0, Math.PI * 2);
+  ctx.arc(
+    cx - gap - ctx.measureText(redText).width - dotR * 1.9,
+    baseY,
+    dotR,
+    0,
+    Math.PI * 2,
+  );
   ctx.fillStyle = TEAM_RED;
   ctx.fill();
-  ctx.textAlign = "left";
-  ctx.fillStyle = "#fecaca";
-  ctx.fillText(String(red), cx - gap, baseY);
 
   // green team on the right
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#bbf7d0";
+  ctx.fillText(greenText, cx + gap, baseY);
   ctx.beginPath();
-  ctx.arc(cx + gap + dotR * 2.2, baseY, dotR, 0, Math.PI * 2);
+  ctx.arc(
+    cx + gap + ctx.measureText(greenText).width + dotR * 1.9,
+    baseY,
+    dotR,
+    0,
+    Math.PI * 2,
+  );
   ctx.fillStyle = TEAM_GREEN;
   ctx.fill();
-  ctx.textAlign = "right";
-  ctx.fillStyle = "#bbf7d0";
-  ctx.fillText(String(green), cx + gap, baseY);
 
   ctx.restore();
 }
@@ -938,8 +970,8 @@ const YinYangBalls = () => {
           ctx,
           arena,
           mobile,
-          countOf(ballsRef.current, "red"),
-          countOf(ballsRef.current, "green"),
+          areaShareOf(ballsRef.current, "red", arena),
+          areaShareOf(ballsRef.current, "green", arena),
         );
       }
 
